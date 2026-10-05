@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "exchange": "Bybit",
+  "market": "spot",
+  "category": "spot",
+  "symbol": "BTCUSDT",
+  "status": "pending",
+  "generated_at_utc": null
+}
