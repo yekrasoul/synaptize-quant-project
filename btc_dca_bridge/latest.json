@@ -1,13 +1,11 @@
 {
-  "schema_version": 2,
-  "exchange": "Bybit",
-  "market": "spot",
-  "category": "spot",
-  "symbol": "BTCUSDT",
+  "schema_version": 3,
   "status": "error",
-  "generated_at_utc": "2026-10-05T12:18:53.147874+00:00",
+  "asset": "BTC",
+  "generated_at_utc": "2026-10-05T12:21:58.405545+00:00",
   "errors": [
-    "https://api.bybit.com: HTTP Error 403: Forbidden",
-    "https://api.bytick.com: HTTP Error 403: Forbidden"
+    "collect_bybit: HTTP Error 403: Forbidden",
+    "collect_binance: HTTP Error 451: ",
+    "collect_kucoin: ticker identity mismatch"
   ]
 }
