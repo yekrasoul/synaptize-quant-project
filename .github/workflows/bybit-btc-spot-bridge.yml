@@ -2,7 +2,7 @@ name: Update Bybit BTC Spot bridge
 
 on:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "50 * * * *"
   workflow_dispatch:
 
 permissions:
