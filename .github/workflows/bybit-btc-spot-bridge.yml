@@ -1,10 +1,6 @@
 name: Update Bybit BTC Spot bridge
 
 on:
-  push:
-    paths:
-      - "btc_dca_bridge/collect_bybit_spot.py"
-      - ".github/workflows/bybit-btc-spot-bridge.yml"
   schedule:
     - cron: "7 * * * *"
   workflow_dispatch:
@@ -18,12 +14,18 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Fetch and validate Bybit BTCUSDT Spot data
+        id: collect
+        continue-on-error: true
         run: python btc_dca_bridge/collect_bybit_spot.py
-      - name: Commit latest validated snapshot
+
+      - name: Commit latest snapshot even on collector failure
+        if: always()
         run: |
           git config user.name "btc-dca-bridge"
           git config user.email "actions@users.noreply.github.com"
@@ -33,3 +35,7 @@ jobs:
           fi
           git commit -m "chore: update Bybit BTC Spot snapshot"
           git push
+
+      - name: Mark workflow failed if collector failed
+        if: steps.collect.outcome == 'failure'
+        run: exit 1
