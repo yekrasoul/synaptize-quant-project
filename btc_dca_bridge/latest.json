@@ -1,9 +1,13 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "exchange": "Bybit",
   "market": "spot",
   "category": "spot",
   "symbol": "BTCUSDT",
-  "status": "pending",
-  "generated_at_utc": null
+  "status": "error",
+  "generated_at_utc": "2026-10-05T12:18:53.147874+00:00",
+  "errors": [
+    "https://api.bybit.com: HTTP Error 403: Forbidden",
+    "https://api.bytick.com: HTTP Error 403: Forbidden"
+  ]
 }
