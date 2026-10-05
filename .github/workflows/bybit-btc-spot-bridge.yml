@@ -1,6 +1,10 @@
 name: Update Bybit BTC Spot bridge
 
 on:
+  push:
+    paths:
+      - "btc_dca_bridge/collect_bybit_spot.py"
+      - ".github/workflows/bybit-btc-spot-bridge.yml"
   schedule:
     - cron: "7 * * * *"
   workflow_dispatch:
