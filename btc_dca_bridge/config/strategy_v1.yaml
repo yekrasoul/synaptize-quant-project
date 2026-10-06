@@ -83,6 +83,7 @@ calculation_policy:
     - enforce_minimum_purchase_usd
     - enforce_remaining_calendar_month_budget
   when_remaining_budget_below_minimum_usd: 0
+  when_calculated_allocation_exceeds_remaining_budget: floor_remaining_budget_to_whole_usd
 
 execution_policy:
   mode: recommendation_only

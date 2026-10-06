@@ -35,7 +35,9 @@ Execution evidence ─> reconciliation ─> Execution ledger ─> PortfolioState
 
 ## 4. V1 decision invariants
 
-The canonical config preserves the approved V1 rules exactly: $10 daily core/minimum, $500 hard calendar-month cap, 168-hour rolling-high drawdown bands, Fear & Greed multipliers, nearest-dollar rounding, and no carry-forward. To remove ambiguous prose boundaries, exact -5%, -10%, -15%, and -25% values resolve to the less-severe band (`>=` its lower limit); values below -25% use $100. The cap is a limit, not a target. A remaining budget below $10 produces $0 and a cap-reached outcome.
+The canonical config preserves the approved V1 rules exactly: $10 daily core/minimum, $500 hard calendar-month cap, 168-hour rolling-high drawdown bands, Fear & Greed multipliers, nearest-dollar rounding, and no carry-forward. To remove ambiguous prose boundaries, exact -5%, -10%, -15%, and -25% values resolve to the less-severe band (`>=` its lower limit); values below -25% use $100. The cap is a limit, not a target. A remaining budget below $10 produces $0 and a cap-reached outcome. If a whole-dollar calculated allocation exceeds a remaining budget of at least $10, the final purchase is the remaining budget rounded down to the largest whole-dollar amount that cannot exceed it. Thus fractional confirmed spend can never cause the $500 cap to be exceeded, and `final_purchase_usd` remains an integer.
+
+A current price above its stated rolling 7-day high is contradictory input. It is rejected rather than clamped or converted into a positive drawdown.
 
 The calculation is recommendation-only. An operator must execute any spot purchase separately and reconcile it after confirmation. No module may submit Bybit orders in V1.
 
