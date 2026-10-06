@@ -13,6 +13,14 @@ Start with [the project specification](docs/PROJECT_SPEC.md). It defines source 
 
 `latest.json` and `collect_bybit_spot.py` are legacy collector artifacts pending the migration plan. In particular, the current collector’s cross-exchange fallback is not compliant with V1’s Bybit-only primary market rule and must not be used to create a V1 decision. No purchase history or monthly state is duplicated in this README.
 
-## Phase 1 status
+## Phase 2 offline core
 
-Phase 1 establishes the contracts and data foundation only. It does not calculate or execute live orders. Future components must validate their inputs/outputs against these contracts and must read V1 thresholds from configuration rather than hard-code them.
+Phase 2 adds a deterministic decision engine, read-only ledger validation, derived portfolio state, and an offline JSON CLI. It still does not calculate from live sources or execute orders.
+
+Install the explicitly declared dependencies from this directory (preferably in a virtual environment):
+
+```console
+python -m pip install -e .
+```
+
+Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`, or `calculate`. See [`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for contracts, calculation order, boundary behavior, and examples.
