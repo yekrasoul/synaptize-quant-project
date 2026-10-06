@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/market_snapshot/1.0.0",
+  "title": "MarketSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot_id", "captured_at_utc", "source_exchange", "market_type", "symbol", "current_price_usdt", "rolling_7d_high_usdt", "window_start_utc", "window_end_utc", "validation"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "snapshot_id": {"type": "string", "pattern": "^market_[A-Za-z0-9_-]+$"},
+    "captured_at_utc": {"type": "string", "format": "date-time"},
+    "source_exchange": {"const": "Bybit"},
+    "market_type": {"const": "spot"},
+    "symbol": {"const": "BTCUSDT"},
+    "current_price_usdt": {"type": "number", "exclusiveMinimum": 0},
+    "rolling_7d_high_usdt": {"type": "number", "exclusiveMinimum": 0},
+    "window_start_utc": {"type": "string", "format": "date-time"},
+    "window_end_utc": {"type": "string", "format": "date-time"},
+    "fear_greed_index": {"type": "integer", "minimum": 0, "maximum": 100},
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["same_source_price_and_high", "full_168h_coverage", "fresh"],
+      "properties": {
+        "same_source_price_and_high": {"const": true},
+        "full_168h_coverage": {"const": true},
+        "fresh": {"const": true}
+      }
+    }
+  }
+}

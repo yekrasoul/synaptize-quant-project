@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/decision/1.0.0",
+  "title": "Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "decision_id", "created_at_utc", "strategy_id", "strategy_version", "market_snapshot_id", "drawdown_percent", "fear_greed_index", "base_allocation_usd", "sentiment_multiplier", "calculated_allocation_usd", "monthly_spent_before_usd", "remaining_budget_before_usd", "final_purchase_usd", "status"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "decision_id": {"type": "string", "pattern": "^decision_[A-Za-z0-9_-]+$"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "strategy_id": {"const": "btc_adaptive_dca_v1"},
+    "strategy_version": {"const": "1.0.0"},
+    "market_snapshot_id": {"type": "string", "pattern": "^market_[A-Za-z0-9_-]+$"},
+    "drawdown_percent": {"type": "number", "maximum": 0},
+    "fear_greed_index": {"type": "integer", "minimum": 0, "maximum": 100},
+    "base_allocation_usd": {"type": "integer", "minimum": 10},
+    "sentiment_multiplier": {"type": "number", "exclusiveMinimum": 0},
+    "calculated_allocation_usd": {"type": "integer", "minimum": 10},
+    "monthly_spent_before_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "remaining_budget_before_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "final_purchase_usd": {"type": "integer", "minimum": 0, "maximum": 500},
+    "status": {"enum": ["approved", "monthly_cap_reached", "data_unavailable"]},
+    "reason": {"type": "string"}
+  }
+}
