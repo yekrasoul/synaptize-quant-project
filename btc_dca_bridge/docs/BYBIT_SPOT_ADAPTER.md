@@ -30,7 +30,7 @@ logical `retCode=10006` map to `RATE_LIMITED`.
 
 Malformed JSON/envelopes/OHLC map to `INVALID_RESPONSE`, symbol conflicts to
 `SOURCE_MISMATCH`, non-Spot identity to `INVALID_MARKET_IDENTITY`, exhausted
-transport/API failures to `DATA_UNAVAILABLE`, and gaps or pagination exhaustion
+transport/API failures to `SOURCE_UNAVAILABLE`, and gaps or pagination exhaustion
 to `INSUFFICIENT_HISTORY`. `DATA_STALE` exists in the domain taxonomy, but this
 adapter does not invent a freshness threshold; Phase 3.4 owns that policy.
 
@@ -108,3 +108,30 @@ non-UTC timestamps, and any source/exchange/market/symbol mismatch. The default
 freshness limit is five minutes and may be tightened explicitly by the caller.
 No summary high, percentage performance, derivative field, alternate exchange,
 or calendar-day shortcut is accepted.
+
+## Phase 3.5 source selection
+
+Production source order is strictly:
+
+```text
+Bybit direct Spot -> TradingView exact BYBIT:BTCUSDT Spot -> unavailable
+```
+
+`FallbackMarketDataProvider` invokes complete snapshot sources, not individual
+price/history methods. The direct path must retrieve and validate its own ticker,
+hourly history, and any minute boundary history before it can return. Only after
+that complete path raises an availability-category error is the complete
+TradingView path called. Values retained in local variables from a failed path
+are never passed to the next path, so a Bybit price cannot be combined with
+TradingView history (or vice versa).
+
+Fallback-triggering categories are exactly `SOURCE_UNAVAILABLE`, `RATE_LIMITED`,
+`INVALID_RESPONSE`, and `INSUFFICIENT_HISTORY`. `INVALID_MARKET_IDENTITY`,
+`SOURCE_MISMATCH`, `DATA_STALE`, `INVALID_WINDOW`, and
+`CONTRADICTORY_PRICE_DATA` are hard failures and do not silently select another
+source. When both availability paths fail, `AllSourcesUnavailableError` exposes
+the primary source/category, confirms the fallback attempt, and retains the
+fallback source/category without embedding upstream payloads.
+
+See `TRADINGVIEW_FALLBACK.md` for exact symbol, resolution, protocol, freshness,
+and operational details. This fallback changes no V1 allocation rule.

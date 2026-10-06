@@ -41,6 +41,7 @@ BYBIT_SOURCE = "bybit_api"
 BYBIT_EXCHANGE = "Bybit"
 SPOT_MARKET = "spot"
 BTCUSDT_SYMBOL = "BTCUSDT"
+BYBIT_EXTERNAL_SYMBOL = "BYBIT:BTCUSDT"
 TICKER_PATH = "/v5/market/tickers"
 KLINE_PATH = "/v5/market/kline"
 HOURLY_INTERVAL = "60"
@@ -190,6 +191,7 @@ class _BybitResponseParser:
             exchange=BYBIT_EXCHANGE,
             market=SPOT_MARKET,
             symbol=BTCUSDT_SYMBOL,
+            external_symbol=BYBIT_EXTERNAL_SYMBOL,
         )
 
     def klines(self, payload: dict[str, Any], *, interval_minutes: int) -> _KlinePage:
@@ -239,6 +241,7 @@ class _BybitResponseParser:
             market=SPOT_MARKET,
             symbol=BTCUSDT_SYMBOL,
             interval_minutes=interval_minutes,
+            external_symbol=BYBIT_EXTERNAL_SYMBOL,
         )
 
 
@@ -389,6 +392,7 @@ class BybitSpotAdapter:
             request_count=request_count,
             duplicate_count=duplicate_count,
             complete=True,
+            external_symbol=BYBIT_EXTERNAL_SYMBOL,
         )
 
     def fetch_minute_candles(

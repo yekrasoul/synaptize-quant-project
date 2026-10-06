@@ -23,7 +23,15 @@
       "required": ["observation_resolution_seconds", "trade_level_exact"],
       "properties": {
         "observation_resolution_seconds": {"type": "integer", "enum": [60, 3600]},
-        "trade_level_exact": {"const": false}
+        "trade_level_exact": {"const": false},
+        "source": {"enum": ["bybit_api", "tradingview"]},
+        "external_symbol": {"const": "BYBIT:BTCUSDT"},
+        "primary_source": {"const": "bybit_api"},
+        "primary_failure_category": {
+          "type": ["string", "null"],
+          "enum": [null, "SOURCE_UNAVAILABLE", "RATE_LIMITED", "INVALID_RESPONSE", "INSUFFICIENT_HISTORY"]
+        },
+        "fallback_attempted": {"type": "boolean"}
       }
     },
     "validation": {

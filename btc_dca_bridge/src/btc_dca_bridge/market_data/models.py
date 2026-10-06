@@ -41,6 +41,7 @@ class Ticker:
     exchange: str
     market: str
     symbol: str
+    external_symbol: str = ""
 
     @property
     def identity(self) -> MarketIdentity:
@@ -58,6 +59,7 @@ class Ticker:
             "exchange": self.exchange,
             "market": self.market,
             "symbol": self.symbol,
+            "external_symbol": self.external_symbol,
         }
 
 
@@ -81,6 +83,7 @@ class Candle:
     market: str
     symbol: str
     interval_minutes: int = 60
+    external_symbol: str = ""
 
     @property
     def close_time_exclusive_utc(self) -> datetime:
@@ -104,6 +107,7 @@ class Candle:
             "symbol": self.symbol,
             "interval_minutes": self.interval_minutes,
             "close_time_exclusive_utc": _iso_utc(self.close_time_exclusive_utc),
+            "external_symbol": self.external_symbol,
         }
 
 
@@ -125,6 +129,7 @@ class CandleHistory:
     request_count: int
     duplicate_count: int
     complete: bool = True
+    external_symbol: str = ""
 
     @property
     def identity(self) -> MarketIdentity:
@@ -146,4 +151,5 @@ class CandleHistory:
             "request_count": self.request_count,
             "duplicate_count": self.duplicate_count,
             "complete": self.complete,
+            "external_symbol": self.external_symbol,
         }

@@ -24,6 +24,11 @@ class MarketSnapshot:
     fresh: bool
     observation_resolution_seconds: int = 3600
     trade_level_exact: bool = False
+    source: str = "bybit_api"
+    external_symbol: str = "BYBIT:BTCUSDT"
+    primary_source: str = "bybit_api"
+    primary_failure_category: str | None = None
+    fallback_attempted: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +50,11 @@ class MarketSnapshot:
             "market_data_metadata": {
                 "observation_resolution_seconds": self.observation_resolution_seconds,
                 "trade_level_exact": self.trade_level_exact,
+                "source": self.source,
+                "external_symbol": self.external_symbol,
+                "primary_source": self.primary_source,
+                "primary_failure_category": self.primary_failure_category,
+                "fallback_attempted": self.fallback_attempted,
             },
         }
 

@@ -13,7 +13,7 @@ Phase 1 establishes contracts, configuration, data ownership, and migration boun
 | V1 allocation rules | `config/strategy_v1.yaml` | One definition; code and automation read it rather than duplicate thresholds. |
 | Contract shapes | `schemas/*.schema.json` | Versioned JSON Schema contracts. |
 | Executed-purchase history | `ledger/executions.jsonl` | Reconciled facts only; monthly spend is derived. |
-| Market snapshot | validated `MarketSnapshot` generated from Bybit BTC/USDT Spot | Price and 168h high come from the same Bybit Spot source. |
+| Market snapshot | validated `MarketSnapshot` generated from Bybit BTC/USDT Spot | Prefer Bybit direct; use only TradingView exact `BYBIT:BTCUSDT` Spot when the complete direct path is unavailable. Price and 168h high always come from one source path. |
 | Human-facing documentation | this document and other `docs/` files | Documents policy; it never stores operational state. |
 
 Crypto Fear & Greed is an independent, secondary sentiment input. It may adjust a V1 allocation only through the configured multiplier; derivatives, ETF, macro, funding, OI, and liquidations are contextual research only.
@@ -21,7 +21,9 @@ Crypto Fear & Greed is an independent, secondary sentiment input. It may adjust 
 ## 3. Component boundaries
 
 ```text
-Bybit Spot ──> collector ──> MarketSnapshot ──> deterministic decision engine ──> Decision
+Bybit Spot ──> atomic source selector ──> MarketSnapshot ──> deterministic decision engine ──> Decision
+                     ▲
+TradingView exact BYBIT:BTCUSDT Spot
 F&G source ────────────────┘                         ▲                         │
                                                        │                         ├──> Telegram notification
 Execution evidence ─> reconciliation ─> Execution ledger ─> PortfolioState ────┘
@@ -44,7 +46,7 @@ The calculation is recommendation-only. An operator must execute any spot purcha
 ## 5. Failure policy
 
 - Missing, stale, contradictory, incomplete, or non-Bybit-Spot market data yields `data_unavailable`; no allocation is fabricated.
-- A collector must never silently substitute Binance, KuCoin, derivatives, an index price, or a mixed-source 7D high.
+- A collector must never silently substitute Binance, KuCoin, derivatives, an index price, or a mixed-source 7D high. The only fallback is TradingView's exact `BYBIT:BTCUSDT`; `.P` is forbidden.
 - Invalid Fear & Greed data also yields `data_unavailable`; it is a required V1 input for a final recommendation.
 - A schema validation, ledger parse, or monthly-cap derivation failure stops the run before notification.
 - Notification delivery failure does not change a decision or create an execution; it is recorded as failed and can be retried idempotently.
@@ -70,7 +72,8 @@ Strategy and contract versions are independent semantic versions. A V1 rule chan
 | Chat 04 | architecture, backtest, and controlled evolution | proposes/validates architecture; cannot silently change live V1 |
 | GitHub | versioned code/config/contracts/automation and audit history | no secret or manual-execution substitute |
 | Telegram | delivery channel for notification events | notification is not order confirmation |
-| Bybit | required BTCUSDT Spot market-data source | no trading API use in Phase 1 |
+| Bybit | required BTCUSDT Spot market identity, direct primary source | no trading API use in Phase 1 |
+| TradingView | secondary view of exact `BYBIT:BTCUSDT` Spot | read-only chart data only; no generic or derivative symbol |
 
 ## 9. Repository layout
 
