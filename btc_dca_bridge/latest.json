@@ -2,7 +2,7 @@
   "schema_version": 3,
   "status": "error",
   "asset": "BTC",
-  "generated_at_utc": "2026-10-06T15:28:09.442607+00:00",
+  "generated_at_utc": "2026-10-06T20:34:12.127040+00:00",
   "errors": [
     "collect_bybit: HTTP Error 403: Forbidden",
     "collect_binance: HTTP Error 451: ",
