@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from .config import StrategyConfig
@@ -122,7 +122,9 @@ def calculate_decision(
     )
     base = strategy.base_allocation(drawdown)
     multiplier = strategy.sentiment_multiplier(fear_greed_index)
-    rounded = (base * multiplier).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    rounded = (base * multiplier).quantize(
+        Decimal("1"), rounding=strategy.allocation_rounding
+    )
     calculated = max(rounded, strategy.minimum_purchase_usd)
     remaining = strategy.monthly_cap_usd - spent
 

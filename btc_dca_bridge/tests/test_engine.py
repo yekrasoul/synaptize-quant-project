@@ -126,6 +126,18 @@ class EngineTest(unittest.TestCase):
         decision = self.decision("-11", fear_greed=36)
         self.assertEqual(decision["calculated_allocation_usd"], 58)
 
+    def test_exact_half_dollar_ties_always_round_up(self):
+        cases = (
+            ("-6", 91, 13),   # 25 * 0.50 = 12.50
+            ("-16", 76, 53),  # 75 * 0.70 = 52.50
+        )
+        for drawdown, fear_greed, expected in cases:
+            with self.subTest(drawdown=drawdown, fear_greed=fear_greed):
+                self.assertEqual(
+                    self.decision(drawdown, fear_greed)["calculated_allocation_usd"],
+                    expected,
+                )
+
     def test_repeatability(self):
         first = self.decision("-12.345", fear_greed=30, spent="220.25")
         second = self.decision("-12.345", fear_greed=30, spent="220.25")
@@ -204,6 +216,13 @@ class ConfigurationTest(unittest.TestCase):
             del data["calculation_policy"][
                 "when_calculated_allocation_exceeds_remaining_budget"
             ]
+
+        with self.assertRaises(ConfigurationError):
+            self.load_modified(mutate)
+
+    def test_rejects_noncanonical_rounding_tie_breaking(self):
+        def mutate(data):
+            data["calculation_policy"]["rounding_tie_breaking"] = "ROUND_HALF_EVEN"
 
         with self.assertRaises(ConfigurationError):
             self.load_modified(mutate)

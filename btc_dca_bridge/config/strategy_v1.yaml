@@ -75,6 +75,7 @@ sentiment:
 
 calculation_policy:
   rounding: nearest_whole_usd
+  rounding_tie_breaking: ROUND_HALF_UP
   preserve_minimum_purchase_usd_after_sentiment: true
   cap_application_order:
     - calculate_base_purchase

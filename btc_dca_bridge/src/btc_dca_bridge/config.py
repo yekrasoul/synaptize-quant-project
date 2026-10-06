@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,7 @@ class StrategyConfig:
     monthly_cap_usd: Decimal
     drawdown_bands: tuple[DrawdownBand, ...]
     sentiment_bands: tuple[SentimentBand, ...]
+    allocation_rounding: str = ROUND_HALF_UP
 
     def base_allocation(self, drawdown: Decimal) -> Decimal:
         for band in self.drawdown_bands:
@@ -222,6 +223,8 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
     policy = _mapping(root.get("calculation_policy"), "calculation_policy")
     if policy.get("rounding") != "nearest_whole_usd":
         raise ConfigurationError("unsupported allocation rounding policy")
+    if policy.get("rounding_tie_breaking") != "ROUND_HALF_UP":
+        raise ConfigurationError("nearest_whole_usd must use ROUND_HALF_UP tie-breaking")
     if policy.get("preserve_minimum_purchase_usd_after_sentiment") is not True:
         raise ConfigurationError("V1 minimum preservation must remain enabled")
     if tuple(policy.get("cap_application_order", ())) != EXPECTED_CAP_ORDER:
@@ -243,4 +246,5 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         cap,
         drawdown_bands,
         tuple(sentiment_bands),
+        ROUND_HALF_UP,
     )
