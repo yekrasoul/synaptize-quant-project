@@ -30,7 +30,7 @@ The engine returns recommendations only. A positive `final_purchase_usd` is not 
 3. Select the first matching drawdown band from the canonical configuration.
 4. Select the inclusive Fear & Greed band from the canonical configuration.
 5. Multiply base allocation by the sentiment multiplier.
-6. Round to the nearest whole USD. Exact half-dollar ties use conventional decimal half-up rounding.
+6. Round to the nearest whole USD. The canonical `rounding_tie_breaking: ROUND_HALF_UP` policy means exact positive half-dollar ties round upward (for example, $12.50 becomes $13).
 7. Restore the configured minimum if sentiment reduced the rounded amount below it.
 8. Calculate exact remaining budget as cap minus confirmed spend.
 9. If remaining budget is below the minimum, return zero with `monthly_cap_reached`.
@@ -46,7 +46,7 @@ Fear & Greed bands are inclusive at both ends. Consequently the transitions are 
 
 Malformed YAML, incomplete or overlapping bands, unsupported policy values, and unexpected strategy identity/version raise a configuration error. Invalid snapshot fields, non-positive prices/highs, contradictory price/high pairs, sentiment outside 0–100, and invalid monthly spend raise an input error. Malformed JSONL, schema-invalid executions, and duplicate execution IDs raise a ledger error. No failure path fabricates a decision or modifies the ledger.
 
-All five JSON Schemas are parsed and meta-schema checked. Snapshot, execution, generated decision, and derived portfolio-state boundary artifacts are validated with JSON Schema Draft 2020-12 and format checking.
+All six JSON Schema documents are parsed and meta-schema checked. Snapshot, execution, generated decision, and derived portfolio-state boundary artifacts are validated with JSON Schema Draft 2020-12 and format checking. Portfolio derivation emits schema version 1.1.0. The archived 1.0.0 contract remains available to validate older artifacts, and version dispatch prevents expanded artifacts from claiming that older version.
 
 ## CLI
 

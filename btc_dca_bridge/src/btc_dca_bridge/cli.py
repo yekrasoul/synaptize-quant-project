@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -72,9 +71,11 @@ def _calculate(args: argparse.Namespace) -> dict[str, object]:
 
 def _portfolio(args: argparse.Namespace) -> dict[str, object]:
     strategy = load_strategy_config(args.config)
-    return derive_portfolio(
+    state = derive_portfolio(
         read_executions(args.ledger), args.month, strategy.monthly_cap_usd
     ).to_dict()
+    validate_artifact("portfolio_state", state)
+    return state
 
 
 def _validate(args: argparse.Namespace) -> dict[str, object]:
@@ -83,24 +84,10 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
     executions = read_executions(args.ledger)
     months = sorted({item.executed_at_utc[:7] for item in executions})
     portfolio_states = []
-    as_of = max(
-        (item.executed_at_utc for item in executions),
-        default=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-    )
     for month in months:
-        summary = derive_portfolio(executions, month, strategy.monthly_cap_usd)
-        def number(value):
-            return int(value) if value == value.to_integral_value() else float(value)
-
-        state = {
-            "schema_version": "1.0.0",
-            "as_of_utc": as_of,
-            "calendar_month": month,
-            "monthly_spent_usd": number(summary.monthly_confirmed_usd_deployed),
-            "monthly_remaining_usd": number(summary.remaining_monthly_budget_usd),
-            "executions_count": summary.confirmed_execution_count,
-            "derived_from_execution_ids": list(summary.derived_from_execution_ids),
-        }
+        state = derive_portfolio(
+            executions, month, strategy.monthly_cap_usd
+        ).to_dict()
         validate_artifact("portfolio_state", state)
         portfolio_states.append(month)
     return {

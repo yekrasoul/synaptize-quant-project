@@ -85,13 +85,21 @@ class PortfolioSummary:
     reference_price_derived_nominal_btc: Decimal
     weighted_reference_acquisition_price_usdt: Decimal | None
     derived_from_execution_ids: tuple[str, ...]
+    schema_version: str = "1.1.0"
+    as_of_utc: str = "1970-01-01T00:00:00Z"
 
     def to_dict(self) -> dict[str, Any]:
         def number(value: Decimal) -> int | float:
             return int(value) if value == value.to_integral_value() else float(value)
 
         return {
+            "schema_version": self.schema_version,
+            "as_of_utc": self.as_of_utc,
             "calendar_month": self.calendar_month,
+            # 1.0.0 field names remain present in 1.1.0 for tolerant consumers.
+            "monthly_spent_usd": number(self.monthly_confirmed_usd_deployed),
+            "monthly_remaining_usd": number(self.remaining_monthly_budget_usd),
+            "executions_count": self.confirmed_execution_count,
             "monthly_cap_usd": number(self.monthly_cap_usd),
             "total_confirmed_usd_deployed": number(self.total_confirmed_usd_deployed),
             "monthly_confirmed_usd_deployed": number(self.monthly_confirmed_usd_deployed),
@@ -111,3 +119,7 @@ class PortfolioSummary:
             ),
             "derived_from_execution_ids": list(self.derived_from_execution_ids),
         }
+
+
+# Phase 3.1 contract name; the Phase 2 class name remains an alias-compatible API.
+PortfolioState = PortfolioSummary

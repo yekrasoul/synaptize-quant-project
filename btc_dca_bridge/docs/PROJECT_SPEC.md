@@ -35,7 +35,7 @@ Execution evidence ─> reconciliation ─> Execution ledger ─> PortfolioState
 
 ## 4. V1 decision invariants
 
-The canonical config preserves the approved V1 rules exactly: $10 daily core/minimum, $500 hard calendar-month cap, 168-hour rolling-high drawdown bands, Fear & Greed multipliers, nearest-dollar rounding, and no carry-forward. To remove ambiguous prose boundaries, exact -5%, -10%, -15%, and -25% values resolve to the less-severe band (`>=` its lower limit); values below -25% use $100. The cap is a limit, not a target. A remaining budget below $10 produces $0 and a cap-reached outcome. If a whole-dollar calculated allocation exceeds a remaining budget of at least $10, the final purchase is the remaining budget rounded down to the largest whole-dollar amount that cannot exceed it. Thus fractional confirmed spend can never cause the $500 cap to be exceeded, and `final_purchase_usd` remains an integer.
+The canonical config preserves the approved V1 rules exactly: $10 daily core/minimum, $500 hard calendar-month cap, 168-hour rolling-high drawdown bands, Fear & Greed multipliers, nearest-dollar rounding, and no carry-forward. `nearest_whole_usd` canonically uses decimal `ROUND_HALF_UP`, so an exact positive `.50` tie rounds to the next whole dollar. To remove ambiguous prose boundaries, exact -5%, -10%, -15%, and -25% values resolve to the less-severe band (`>=` its lower limit); values below -25% use $100. The cap is a limit, not a target. A remaining budget below $10 produces $0 and a cap-reached outcome. If a whole-dollar calculated allocation exceeds a remaining budget of at least $10, the final purchase is the remaining budget rounded down to the largest whole-dollar amount that cannot exceed it. Thus fractional confirmed spend can never cause the $500 cap to be exceeded, and `final_purchase_usd` remains an integer.
 
 A current price above its stated rolling 7-day high is contradictory input. It is rejected rather than clamped or converted into a positive drawdown.
 
@@ -57,6 +57,8 @@ API credentials, Telegram bot tokens, and exchange credentials are secrets: use 
 ## 7. Versioning and compatibility
 
 Strategy and contract versions are independent semantic versions. A V1 rule change is not an in-place edit: create a proposed version, document migration impact, obtain explicit approval, and retain old artifacts with their original version. New optional schema fields can be minor-compatible; removals, changed meanings, or stricter required fields require a major version. IDs (`snapshot_id`, `decision_id`, `execution_id`, `event_id`) are immutable and correlation IDs connect a run’s artifacts.
+
+`PortfolioState` 1.1.0 is an additive contract evolution over 1.0.0. It retains every 1.0.0 field and adds the derived totals, counts, cap, nominal BTC, weighted reference price, and explicit quantity disclaimer already produced by the offline portfolio derivation. The original 1.0.0 schema remains archived and boundary validation dispatches by the declared version; producers must never label expanded output as 1.0.0. `PortfolioSummary` remains a source-compatible alias for the `PortfolioState` model. `as_of_utc` is the newest confirmed execution timestamp in the source ledger; for an empty ledger it is deterministically the first instant of the requested calendar month.
 
 ## 8. Operating roles
 

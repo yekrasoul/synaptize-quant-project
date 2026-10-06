@@ -7,12 +7,12 @@ from typing import Iterable
 
 from .errors import LedgerValidationError
 from .ledger import confirmed_executions, executions_for_month
-from .models import Execution, PortfolioSummary
+from .models import Execution, PortfolioState
 
 
 def derive_portfolio(
     executions: Iterable[Execution], calendar_month: str, monthly_cap_usd: Decimal
-) -> PortfolioSummary:
+) -> PortfolioState:
     if (
         not isinstance(monthly_cap_usd, Decimal)
         or not monthly_cap_usd.is_finite()
@@ -48,7 +48,13 @@ def derive_portfolio(
     weighted_price = (
         None if nominal_btc == 0 else reference_priced_usd / nominal_btc
     )
-    return PortfolioSummary(
+    as_of_utc = max(
+        (item.executed_at_utc for item in confirmed),
+        default=f"{calendar_month}-01T00:00:00Z",
+    )
+    return PortfolioState(
+        schema_version="1.1.0",
+        as_of_utc=as_of_utc,
         calendar_month=calendar_month,
         monthly_cap_usd=monthly_cap_usd,
         total_confirmed_usd_deployed=total_spend,

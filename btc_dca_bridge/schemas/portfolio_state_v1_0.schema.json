@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/portfolio_state/1.0.0",
+  "title": "PortfolioState 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "as_of_utc", "calendar_month", "monthly_spent_usd", "monthly_remaining_usd", "executions_count", "derived_from_execution_ids"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "as_of_utc": {"type": "string", "format": "date-time"},
+    "calendar_month": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
+    "monthly_spent_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "monthly_remaining_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "executions_count": {"type": "integer", "minimum": 0},
+    "derived_from_execution_ids": {"type": "array", "items": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}}
+  }
+}

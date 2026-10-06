@@ -3,11 +3,12 @@
 from .config import StrategyConfig, load_strategy_config
 from .engine import calculate_decision, calculate_drawdown
 from .ledger import executions_for_month, read_executions
-from .models import MarketSnapshot, PortfolioSummary, StrategyDecision
+from .models import MarketSnapshot, PortfolioState, PortfolioSummary, StrategyDecision
 from .portfolio import derive_portfolio
 
 __all__ = [
     "MarketSnapshot",
+    "PortfolioState",
     "PortfolioSummary",
     "StrategyConfig",
     "StrategyDecision",

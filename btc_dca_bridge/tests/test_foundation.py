@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FoundationContractsTest(unittest.TestCase):
     def test_schema_files_are_valid_json_schema_documents(self):
         schemas = sorted((ROOT / "schemas").glob("*.schema.json"))
-        self.assertEqual(len(schemas), 5)
+        self.assertEqual(len(schemas), 6)
         for path in schemas:
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload["$schema"], "https://json-schema.org/draft/2020-12/schema")
@@ -37,6 +37,7 @@ class FoundationContractsTest(unittest.TestCase):
             "core_daily_usd: 10",
             "minimum_purchase_usd: 10",
             "monthly_cap_usd: 500",
+            "rounding_tie_breaking: ROUND_HALF_UP",
             "live_order_submission: prohibited",
             "multiplier: 1.50",
             "multiplier: 0.50",

@@ -19,6 +19,7 @@ SCHEMA_FILES = {
     "market_snapshot": "market_snapshot.schema.json",
     "notification_event": "notification_event.schema.json",
     "portfolio_state": "portfolio_state.schema.json",
+    "portfolio_state_1_0": "portfolio_state_v1_0.schema.json",
 }
 
 
@@ -39,7 +40,10 @@ def load_schema(name: str, schemas_path: Path = SCHEMAS_PATH) -> dict[str, Any]:
 def validate_artifact(
     name: str, artifact: dict[str, Any], schemas_path: Path = SCHEMAS_PATH
 ) -> None:
-    schema = load_schema(name, schemas_path)
+    schema_name = name
+    if name == "portfolio_state" and artifact.get("schema_version") == "1.0.0":
+        schema_name = "portfolio_state_1_0"
+    schema = load_schema(schema_name, schemas_path)
     validator = Draft202012Validator(schema, format_checker=FormatChecker())
     errors = sorted(validator.iter_errors(artifact), key=lambda error: list(error.path))
     if errors:

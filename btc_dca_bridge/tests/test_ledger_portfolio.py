@@ -5,10 +5,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from btc_dca_bridge.config import load_strategy_config
-from btc_dca_bridge.errors import LedgerValidationError
+from btc_dca_bridge.errors import LedgerValidationError, SchemaValidationError
 from btc_dca_bridge.ledger import executions_for_month, read_executions
 from btc_dca_bridge.paths import LEDGER_PATH
 from btc_dca_bridge.portfolio import derive_portfolio
+from btc_dca_bridge.schemas import validate_artifact
 
 
 class LedgerTest(unittest.TestCase):
@@ -85,6 +86,46 @@ class PortfolioTest(unittest.TestCase):
         self.assertEqual(state.remaining_monthly_budget_usd, Decimal("440"))
         self.assertEqual(state.confirmed_execution_count, 11)
         self.assertEqual(state.monthly_confirmed_execution_count, 1)
+        self.assertEqual(state.schema_version, "1.1.0")
+        self.assertEqual(state.as_of_utc, "2026-10-05T00:00:00Z")
+
+    def test_derived_portfolio_is_a_schema_valid_v1_1_state(self):
+        state = derive_portfolio(
+            self.executions, "2026-10", self.strategy.monthly_cap_usd
+        ).to_dict()
+        validate_artifact("portfolio_state", state)
+        self.assertEqual(state["monthly_spent_usd"], 60)
+        self.assertEqual(state["monthly_remaining_usd"], 440)
+        self.assertEqual(state["executions_count"], 11)
+
+    def test_empty_portfolio_has_deterministic_as_of_timestamp(self):
+        state = derive_portfolio((), "2026-10", self.strategy.monthly_cap_usd)
+        self.assertEqual(state.as_of_utc, "2026-10-01T00:00:00Z")
+        validate_artifact("portfolio_state", state.to_dict())
+
+    def test_legacy_v1_portfolio_state_remains_schema_valid(self):
+        validate_artifact(
+            "portfolio_state",
+            {
+                "schema_version": "1.0.0",
+                "as_of_utc": "2026-10-05T00:00:00Z",
+                "calendar_month": "2026-10",
+                "monthly_spent_usd": 60,
+                "monthly_remaining_usd": 440,
+                "executions_count": 11,
+                "derived_from_execution_ids": ["execution_20261005_01"],
+            },
+        )
+
+    def test_legacy_version_cannot_masquerade_as_evolved_state(self):
+        state = derive_portfolio(
+            self.executions, "2026-10", self.strategy.monthly_cap_usd
+        ).to_dict()
+        state["schema_version"] = "1.0.0"
+        with self.assertRaisesRegex(
+            SchemaValidationError, "portfolio_state schema violation"
+        ):
+            validate_artifact("portfolio_state", state)
 
     def test_nominal_btc_is_explicitly_reference_price_derived(self):
         state = derive_portfolio(
