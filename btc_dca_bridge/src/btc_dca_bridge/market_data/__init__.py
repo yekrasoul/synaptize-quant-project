@@ -2,6 +2,7 @@
 
 from .bybit import BYBIT_SOURCE, BybitSpotAdapter
 from .models import Candle, CandleHistory, MarketIdentity, Ticker
+from .snapshot import build_market_snapshot
 
 __all__ = [
     "BYBIT_SOURCE",
@@ -10,4 +11,5 @@ __all__ = [
     "CandleHistory",
     "MarketIdentity",
     "Ticker",
+    "build_market_snapshot",
 ]

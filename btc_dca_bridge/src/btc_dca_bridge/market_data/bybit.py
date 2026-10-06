@@ -4,6 +4,7 @@ Public endpoints:
 
 * ``GET /v5/market/tickers?category=spot&symbol=BTCUSDT``
 * ``GET /v5/market/kline?category=spot&symbol=BTCUSDT&interval=60``
+* ``GET /v5/market/kline?category=spot&symbol=BTCUSDT&interval=1``
 
 Kline requests also carry explicit ``start``, ``end``, and ``limit`` values.
 No authentication headers, API keys, or trading endpoints are used.
@@ -44,6 +45,8 @@ TICKER_PATH = "/v5/market/tickers"
 KLINE_PATH = "/v5/market/kline"
 HOURLY_INTERVAL = "60"
 HOURLY_INTERVAL_MINUTES = 60
+MINUTE_INTERVAL = "1"
+MINUTE_INTERVAL_MINUTES = 1
 DEFAULT_HISTORY_HOURS = 168
 
 
@@ -189,7 +192,7 @@ class _BybitResponseParser:
             symbol=BTCUSDT_SYMBOL,
         )
 
-    def klines(self, payload: dict[str, Any]) -> _KlinePage:
+    def klines(self, payload: dict[str, Any], *, interval_minutes: int) -> _KlinePage:
         result = self.result(payload)
         self.validate_identity(result)
         if result.get("symbol") != BTCUSDT_SYMBOL:
@@ -199,19 +202,23 @@ class _BybitResponseParser:
         rows = result.get("list")
         if not isinstance(rows, list):
             raise InvalidResponseError("Bybit kline result list must be an array")
-        candles = tuple(self._candle(row, position) for position, row in enumerate(rows))
+        candles = tuple(
+            self._candle(row, position, interval_minutes=interval_minutes)
+            for position, row in enumerate(rows)
+        )
         return _KlinePage(candles, self.response_time(payload))
 
     @staticmethod
-    def _candle(row: Any, position: int) -> Candle:
+    def _candle(row: Any, position: int, *, interval_minutes: int) -> Candle:
         if not isinstance(row, list) or len(row) < 6:
             raise InvalidResponseError(
                 f"kline row {position} must contain timestamp, OHLC, and volume"
             )
         open_time = _milliseconds_to_datetime(row[0], f"kline row {position} timestamp")
-        if _datetime_to_milliseconds(open_time) % (60 * 60 * 1000) != 0:
+        interval_ms = interval_minutes * 60 * 1000
+        if _datetime_to_milliseconds(open_time) % interval_ms != 0:
             raise InvalidResponseError(
-                f"kline row {position} timestamp is not aligned to an hourly candle"
+                f"kline row {position} timestamp is not aligned to its candle interval"
             )
         open_price = _decimal(row[1], f"kline row {position} open")
         high = _decimal(row[2], f"kline row {position} high")
@@ -231,11 +238,12 @@ class _BybitResponseParser:
             exchange=BYBIT_EXCHANGE,
             market=SPOT_MARKET,
             symbol=BTCUSDT_SYMBOL,
+            interval_minutes=interval_minutes,
         )
 
 
 class BybitSpotAdapter:
-    """Retrieve BTCUSDT Spot ticker and complete hourly candle ranges."""
+    """Retrieve BTCUSDT Spot ticker and complete hourly or minute candle ranges."""
 
     def __init__(
         self,
@@ -269,8 +277,9 @@ class BybitSpotAdapter:
         start_utc: datetime | None = None,
         end_utc: datetime | None = None,
         lookback_hours: int = DEFAULT_HISTORY_HOURS,
+        interval_minutes: int = HOURLY_INTERVAL_MINUTES,
     ) -> CandleHistory:
-        """Return ordered complete hourly bars overlapping the requested range.
+        """Return ordered complete Spot bars overlapping the requested range.
 
         The method retrieves 168 hours by default but does not calculate a
         rolling high. An interval is complete only when every overlapping hourly
@@ -278,6 +287,8 @@ class BybitSpotAdapter:
         closed with ``INSUFFICIENT_HISTORY``.
         """
 
+        if interval_minutes not in {MINUTE_INTERVAL_MINUTES, HOURLY_INTERVAL_MINUTES}:
+            raise ValueError("interval_minutes must be 1 or 60")
         if (
             isinstance(lookback_hours, bool)
             or not isinstance(lookback_hours, int)
@@ -292,7 +303,12 @@ class BybitSpotAdapter:
         if requested_start >= requested_end:
             raise ValueError("start_utc must be earlier than end_utc")
 
-        interval_ms = HOURLY_INTERVAL_MINUTES * 60 * 1000
+        interval_ms = interval_minutes * 60 * 1000
+        interval = (
+            MINUTE_INTERVAL
+            if interval_minutes == MINUTE_INTERVAL_MINUTES
+            else HOURLY_INTERVAL
+        )
         requested_start_ms = _datetime_to_milliseconds(requested_start)
         requested_end_ms = _datetime_to_milliseconds(requested_end)
         first_required_ms = requested_start_ms - (requested_start_ms % interval_ms)
@@ -311,13 +327,13 @@ class BybitSpotAdapter:
                 {
                     "category": SPOT_MARKET,
                     "symbol": BTCUSDT_SYMBOL,
-                    "interval": HOURLY_INTERVAL,
+                    "interval": interval,
                     "start": first_required_ms,
                     "end": cursor_end_ms,
                     "limit": self.page_limit,
                 },
             )
-            page = self._parser.klines(payload)
+            page = self._parser.klines(payload, interval_minutes=interval_minutes)
             if not page.candles:
                 break
             page_timestamps = [
@@ -347,7 +363,7 @@ class BybitSpotAdapter:
                 missing[0], "missing candle timestamp"
             ).isoformat()
             raise InsufficientHistoryError(
-                "Bybit hourly history is incomplete: "
+                f"Bybit {interval_minutes}-minute history is incomplete: "
                 f"missing {len(missing)} of {len(expected)} candles; "
                 f"first missing open={first_missing}; requests={request_count}"
             )
@@ -362,10 +378,10 @@ class BybitSpotAdapter:
             coverage_end_utc=min(
                 requested_end,
                 ordered[-1].open_time_utc
-                + timedelta(minutes=HOURLY_INTERVAL_MINUTES),
+                + timedelta(minutes=interval_minutes),
             ),
             retrieved_at_utc=retrieved_at,
-            interval_minutes=HOURLY_INTERVAL_MINUTES,
+            interval_minutes=interval_minutes,
             source=BYBIT_SOURCE,
             exchange=BYBIT_EXCHANGE,
             market=SPOT_MARKET,
@@ -373,6 +389,20 @@ class BybitSpotAdapter:
             request_count=request_count,
             duplicate_count=duplicate_count,
             complete=True,
+        )
+
+    def fetch_minute_candles(
+        self,
+        *,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> CandleHistory:
+        """Return complete one-minute BTCUSDT Spot candles for a boundary span."""
+
+        return self.fetch_candles(
+            start_utc=start_utc,
+            end_utc=end_utc,
+            interval_minutes=MINUTE_INTERVAL_MINUTES,
         )
 
     def _request_json(

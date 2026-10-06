@@ -25,7 +25,16 @@ python -m pip install -e .
 
 Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`, or `calculate`. See [`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for contracts, calculation order, boundary behavior, and examples.
 
-Phase 3.3's production-oriented, read-only Bybit BTCUSDT Spot adapter is
-documented in [`docs/BYBIT_SPOT_ADAPTER.md`](docs/BYBIT_SPOT_ADAPTER.md). It has
-no alternate-exchange fallback and does not calculate a rolling high or submit
-orders.
+The production-oriented, read-only Bybit BTCUSDT Spot adapter and Phase 3.4
+rolling-window rules are documented in
+[`docs/BYBIT_SPOT_ADAPTER.md`](docs/BYBIT_SPOT_ADAPTER.md). It has no
+alternate-exchange fallback and never submits orders.
+
+Phase 3.4 adds fail-closed construction of a schema-valid `MarketSnapshot` from
+that normalized ticker and complete hourly history. The exact 168-hour boundary
+semantics and the deliberate non-hour-aligned limitation are documented in the
+same adapter guide. It does not change any V1 allocation rule.
+
+`uv.lock` is tracked. This is an application repository with a deterministic
+test/runtime environment, so the lockfile pins the declared dependency graph
+without changing dependency constraints in `pyproject.toml`.

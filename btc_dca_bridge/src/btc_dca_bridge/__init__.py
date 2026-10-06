@@ -3,6 +3,7 @@
 from .config import StrategyConfig, load_strategy_config
 from .engine import calculate_decision, calculate_drawdown
 from .ledger import executions_for_month, read_executions
+from .market_data.snapshot import build_market_snapshot
 from .models import MarketSnapshot, PortfolioState, PortfolioSummary, StrategyDecision
 from .portfolio import derive_portfolio
 
@@ -14,6 +15,7 @@ __all__ = [
     "StrategyDecision",
     "calculate_decision",
     "calculate_drawdown",
+    "build_market_snapshot",
     "derive_portfolio",
     "executions_for_month",
     "load_strategy_config",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -63,6 +63,13 @@ class Ticker:
 
 @dataclass(frozen=True)
 class Candle:
+    """A Bybit candle covering ``[open_time_utc, close_time_exclusive_utc)``.
+
+    Bybit identifies a kline by its start time.  Making the half-open interval
+    explicit prevents a candle high from being used when any part of the candle
+    falls outside a requested rolling window.
+    """
+
     open_time_utc: datetime
     open: Decimal
     high: Decimal
@@ -73,6 +80,11 @@ class Candle:
     exchange: str
     market: str
     symbol: str
+    interval_minutes: int = 60
+
+    @property
+    def close_time_exclusive_utc(self) -> datetime:
+        return self.open_time_utc + timedelta(minutes=self.interval_minutes)
 
     @property
     def identity(self) -> MarketIdentity:
@@ -90,6 +102,8 @@ class Candle:
             "exchange": self.exchange,
             "market": self.market,
             "symbol": self.symbol,
+            "interval_minutes": self.interval_minutes,
+            "close_time_exclusive_utc": _iso_utc(self.close_time_exclusive_utc),
         }
 
 

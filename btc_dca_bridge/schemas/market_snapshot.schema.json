@@ -17,6 +17,15 @@
     "window_start_utc": {"type": "string", "format": "date-time"},
     "window_end_utc": {"type": "string", "format": "date-time"},
     "fear_greed_index": {"type": "integer", "minimum": 0, "maximum": 100},
+    "market_data_metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation_resolution_seconds", "trade_level_exact"],
+      "properties": {
+        "observation_resolution_seconds": {"type": "integer", "enum": [60, 3600]},
+        "trade_level_exact": {"const": false}
+      }
+    },
     "validation": {
       "type": "object",
       "additionalProperties": false,

@@ -22,6 +22,8 @@ class MarketSnapshot:
     same_source_price_and_high: bool
     full_168h_coverage: bool
     fresh: bool
+    observation_resolution_seconds: int = 3600
+    trade_level_exact: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +41,10 @@ class MarketSnapshot:
                 "same_source_price_and_high": self.same_source_price_and_high,
                 "full_168h_coverage": self.full_168h_coverage,
                 "fresh": self.fresh,
+            },
+            "market_data_metadata": {
+                "observation_resolution_seconds": self.observation_resolution_seconds,
+                "trade_level_exact": self.trade_level_exact,
             },
         }
 
