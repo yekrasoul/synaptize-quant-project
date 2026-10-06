@@ -24,3 +24,8 @@ python -m pip install -e .
 ```
 
 Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`, or `calculate`. See [`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for contracts, calculation order, boundary behavior, and examples.
+
+Phase 3.3's production-oriented, read-only Bybit BTCUSDT Spot adapter is
+documented in [`docs/BYBIT_SPOT_ADAPTER.md`](docs/BYBIT_SPOT_ADAPTER.md). It has
+no alternate-exchange fallback and does not calculate a rolling high or submit
+orders.
