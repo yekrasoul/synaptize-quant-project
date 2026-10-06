@@ -24,10 +24,10 @@ Only confirmed executed purchases are recorded below. Later corrections/replacem
 | 18 Sep 2026 | $20 | 76,655 | Replaces 17–18 Sep daily buys. |
 | 23 Sep 2026 | $50 | 84,444 | Replaces no-purchase days 19–23 Sep. |
 | 24 Sep 2026 | $20 | 83,444 | Confirmed executed purchase. |
-| Late Sep 2026 — exact date unresolved | $30 | 82,895 | Chat 03 confirms the purchase after 24 Sep, but the exact date is not unambiguously available in current project context. |
+| 28 Sep 2026 | $30 | 82,895 | No purchases were executed on 25–27 Sep; this $30 purchase was executed on 28 Sep instead. |
 | 30 Sep 2026 | $20 | 83,900 | Replaces the intended 29 Sep purchase. |
 
-**September reconciled total from the confirmed numeric entries above: $200.**
+**September reconciled total from the confirmed numeric entries above: $220.**
 
 A separate Chat 03 message referring to **6 Sep 2026** is visible only in truncated form in the currently available project context; its replacement purchase amount and price are not recoverable with confidence here. It is therefore **not fabricated or added** to the table above. If that complete message is later available, this history should be amended and the September total recomputed.
 
