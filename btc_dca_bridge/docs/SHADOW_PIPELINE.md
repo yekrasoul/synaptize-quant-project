@@ -11,11 +11,23 @@ Bybit BTCUSDT Spot → exact TradingView BYBIT:BTCUSDT fallback
   → immutable completed-run manifest
 ```
 
-There is no live mode, order client, credential, execution-ledger write, scheduling, notification, or portfolio mutation. `ShadowRunResult` is the structured programmatic result intended for later Phase 4 consumers; console text is not an integration contract.
+There is no live mode, order client, exchange credential, execution-ledger
+write, or portfolio mutation. Phase 4 composes this API without changing it;
+see `PRODUCTION_SHADOW.md` for scheduling, retention, and Telegram delivery.
+`ShadowRunResult` is the structured programmatic result; console text is not an
+integration contract.
 
 ## Run identity and time
 
-The orchestrator receives one UTC run instant and generates or accepts one canonical `run_id`. The same ID is used for all component artifacts, their receipts, the completion manifest, and `ShadowRunResult`. Market capture and sentiment retrieval timestamps must equal that run context. A default run ID is deterministic from the injected timestamp; callers may provide a matching canonical ID for external correlation. The UTC run month selects confirmed reconciled executions from `ledger/executions.jsonl`; no duplicated monthly-spend state exists.
+The orchestrator receives one UTC acquisition instant and generates or accepts
+one canonical `run_id`. The same ID is used for all component artifacts, their
+receipts, the completion manifest, and `ShadowRunResult`. Market capture and
+sentiment retrieval timestamps must equal that acquisition context. A default
+run ID is deterministic from the injected timestamp. Phase 4 may additionally
+provide a distinct UTC logical identity instant for a deterministic scheduled
+slot while preserving the actual acquisition instant in artifacts. The UTC
+acquisition month selects confirmed reconciled executions from
+`ledger/executions.jsonl`; no duplicated monthly-spend state exists.
 
 `started_at_utc` and `completed_at_utc` both record the single canonical logical run instant. This is intentional for deterministic replay; operational elapsed-time telemetry is outside the canonical strategy artifact.
 

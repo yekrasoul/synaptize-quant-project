@@ -4,7 +4,10 @@
 
 This repository provides the auditable foundation for BTC Adaptive DCA V1: collect valid market data, produce a deterministic purchase recommendation, reconcile confirmed spot purchases, and notify an operator. It is a disciplined six-month accumulation workflow, not a price-prediction or trading system.
 
-Phase 1 establishes contracts, configuration, data ownership, and migration boundaries. It intentionally contains **no live-order integration**, no custody logic, no leverage, and no V2 indicator or rule changes.
+The implemented production-shadow scope establishes contracts, configuration,
+data ownership, immutable audit artifacts, scheduled read-only composition, and
+operator notification. It intentionally contains **no live-order integration**,
+no custody logic, no leverage, and no V2 indicator or rule changes.
 
 ## 2. Canonical sources of truth
 
@@ -16,6 +19,8 @@ Phase 1 establishes contracts, configuration, data ownership, and migration boun
 | Market snapshot | validated `MarketSnapshot` generated from Bybit BTC/USDT Spot | Prefer Bybit direct; use only TradingView exact `BYBIT:BTCUSDT` Spot when the complete direct path is unavailable. Price and 168h high always come from one source path. |
 | Sentiment snapshot | validated Alternative.me Crypto Fear & Greed observation | One independent public source; no substitute sentiment signal. |
 | Completed run state | immutable component artifacts plus schema-valid shadow-run manifest | A run is complete only when its final digest-verified manifest exists. Mutable `latest.json` state is prohibited. |
+| Production-shadow retention | GitHub Actions artifact named by `run_id` | Completed JSON artifacts and digest sidecars are retained together for 90 days; this is durable operational retention, not permanent archival storage. |
+| Operator notification | Telegram Bot API from the structured completed or failed run result | Plain-text delivery occurs after retention; it never creates execution evidence. |
 | Human-facing documentation | this document and other `docs/` files | Documents policy; it never stores operational state. |
 
 Crypto Fear & Greed is an independent, secondary sentiment input. It may adjust a V1 allocation only through the configured multiplier; derivatives, ETF, macro, funding, OI, and liquidations are contextual research only.

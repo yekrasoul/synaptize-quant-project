@@ -10,6 +10,7 @@ Start with [the project specification](docs/PROJECT_SPEC.md). It defines source 
 - [`schemas/`](schemas): versioned JSON contracts for runtime artifacts.
 - [`ledger/executions.jsonl`](ledger/executions.jsonl): reconciled execution facts; see [ledger rules](docs/LEDGER_RECONCILIATION.md).
 - [`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md): canonical read-only Phase 3 composition.
+- [`docs/PRODUCTION_SHADOW.md`](docs/PRODUCTION_SHADOW.md): Phase 4 schedule, retention, and Telegram operations.
 - [`docs/LEGACY_RETIREMENT.md`](docs/LEGACY_RETIREMENT.md): retired collector and mutable-output history.
 
 The legacy cross-exchange collector and mutable `latest.json` output have been
@@ -24,7 +25,8 @@ Alternative.me is the sole sentiment source. Calendar-month confirmed spend is
 derived from the reconciled execution ledger. The unchanged deterministic V1
 engine produces a recommendation, which is stored with immutable component
 artifacts and a completed-run manifest. It does not schedule work, notify
-users, submit orders, or mutate the execution ledger.
+users outside the dedicated Phase 4 Telegram adapter, submit orders, or mutate
+the execution ledger. See the production-shadow runbook for scheduled operation.
 
 Install the explicitly declared dependencies from this directory (preferably in a virtual environment):
 
