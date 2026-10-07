@@ -18,10 +18,10 @@ from typing import Any, Mapping, Protocol
 from .ledger import confirmed_executions, read_executions
 from .models import Execution
 from .schemas import validate_artifact
+from .config import ExecutionConfig, load_execution_config
 
 APPROVED_STRATEGY = "btc_adaptive_dca_v1"
 APPROVED_VERSION = "1.0.0"
-MONTHLY_CAP = Decimal("500")
 MIN_REMAINING = Decimal("10")
 CLIENT_ID_RE = re.compile(r"^dca-[a-f0-9]{32}$")
 
@@ -62,6 +62,7 @@ class OrderIntent:
 @dataclass(frozen=True)
 class SafetyValidationResult:
     schema_version: str
+    run_id: str
     status: str
     reasons: tuple[str, ...] = ()
     checked_at_utc: str = ""
@@ -69,7 +70,7 @@ class SafetyValidationResult:
     remaining_budget_recomputed_usd: Decimal = Decimal("0")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema_version": self.schema_version, "status": self.status,
+        return {"schema_version": self.schema_version, "run_id": self.run_id, "status": self.status,
                 "reasons": list(self.reasons), "checked_at_utc": self.checked_at_utc,
                 "monthly_spent_recomputed_usd": str(self.monthly_spent_recomputed_usd),
                 "remaining_budget_recomputed_usd": str(self.remaining_budget_recomputed_usd)}
@@ -120,7 +121,7 @@ def client_order_id(strategy_id: str, decision_id: str, run_id: str) -> str:
 
 
 def make_order_intent(decision: Mapping[str, Any], *, run_id: str, created_at_utc: str,
-                      monthly_spent_usd: Decimal, live_execution_requested: bool = False) -> OrderIntent:
+                      live_execution_requested: bool = False) -> OrderIntent:
     amount = Decimal(str(decision["final_purchase_usd"]))
     decision_id = str(decision["decision_id"])
     return OrderIntent("5.1.0", str(decision["strategy_id"]), str(decision["strategy_version"]),
@@ -151,6 +152,20 @@ class InstrumentRules:
             raise ExecutionSafetyError("order amount violates exchange minimum")
 
 
+class SubmissionState(Protocol):
+    def decision_confirmed(self, decision_id: str) -> bool: ...
+    def client_order_state(self, client_order_id: str) -> str: ...
+
+
+class LedgerSubmissionState:
+    def __init__(self, ledger_path):
+        self.executions = confirmed_executions(read_executions(ledger_path))
+    def decision_confirmed(self, decision_id: str) -> bool:
+        return any(getattr(e, "decision_id", None) == decision_id for e in self.executions)
+    def client_order_state(self, client_order_id: str) -> str:
+        return "confirmed" if any(getattr(e, "client_order_id", None) == client_order_id for e in self.executions) else "conclusively_absent"
+
+
 def recompute_monthly_spend(ledger_path, calendar_month: str) -> Decimal:
     executions = confirmed_executions(read_executions(ledger_path))
     return sum((e.executed_usd for e in executions if e.executed_at_utc[:7] == calendar_month), Decimal("0"))
@@ -161,7 +176,8 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
                               live_execution_enabled: bool = False,
                               explicit_live_approval: bool = False,
                               instrument_rules: InstrumentRules | None = None,
-                              previously_confirmed_decision_ids: set[str] | None = None) -> SafetyValidationResult:
+                              execution_config: ExecutionConfig | None = None,
+                              submission_state: SubmissionState | None = None) -> SafetyValidationResult:
     reasons: list[str] = []
     try: validate_spot_instrument(intent.exchange, intent.market_type, intent.symbol)
     except ExecutionSafetyError as exc: reasons.append(str(exc))
@@ -173,18 +189,38 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
     if not explicit_live_approval: reasons.append("explicit live approval is missing")
     if not intent.no_order_executed: reasons.append("intent has an invalid execution state")
     if intent.live_execution_enabled != live_execution_enabled: reasons.append("live guard does not match configuration")
-    if decision.get("final_purchase_usd") != int(intent.quote_amount_usdt): reasons.append("amount does not match approved Decision")
-    if previously_confirmed_decision_ids and intent.decision_id in previously_confirmed_decision_ids: reasons.append("Decision was previously executed")
+    try:
+        if Decimal(str(decision["final_purchase_usd"])) != intent.quote_amount_usdt: reasons.append("amount does not match approved Decision")
+    except Exception: reasons.append("Decision amount is invalid")
+    if execution_config is None:
+        try: execution_config = load_execution_config()
+        except Exception as exc: reasons.append(f"execution config unreadable: {exc}")
+    if execution_config is not None:
+        kill_switch = execution_config.kill_switch
+        live_execution_enabled = execution_config.live_execution_enabled
+        if (intent.exchange, intent.market_type, intent.symbol) != (execution_config.exchange, execution_config.market_type, execution_config.symbol):
+            reasons.append("intent market identity does not match execution config")
+    if intent.created_at_utc[:7] != calendar_month: reasons.append("requested calendar month does not match run context")
+    if submission_state is None:
+        try: submission_state = LedgerSubmissionState(ledger_path)
+        except Exception as exc: reasons.append(f"execution state unreadable: {exc}")
+    if submission_state is not None:
+        if submission_state.decision_confirmed(intent.decision_id): reasons.append("Decision was previously confirmed")
+        prior = submission_state.client_order_state(intent.client_order_id)
+        if prior == "confirmed": reasons.append("client_order_id was previously confirmed")
+        elif prior == "ambiguous": reasons.extend(("REJECT NEW SUBMISSION", "RECONCILIATION REQUIRED"))
     try:
         spent = recompute_monthly_spend(ledger_path, calendar_month)
     except Exception as exc: reasons.append(f"canonical ledger unreadable: {exc}"); spent = Decimal("0")
-    remaining = MONTHLY_CAP - spent
-    if spent + intent.quote_amount_usdt > MONTHLY_CAP: reasons.append("monthly cap would be exceeded")
+    cap = execution_config.monthly_cap_usd if execution_config else Decimal("0")
+    remaining = cap - spent
+    if spent + intent.quote_amount_usdt > cap: reasons.append("monthly cap would be exceeded")
     if remaining < MIN_REMAINING: reasons.append("remaining budget is below $10")
-    if instrument_rules:
+    if instrument_rules is None: reasons.append("instrument metadata is unavailable")
+    else:
         try: instrument_rules.validate_quote(intent.quote_amount_usdt)
         except ExecutionSafetyError as exc: reasons.append(str(exc))
-    return SafetyValidationResult("5.1.0", "rejected" if reasons else "approved", tuple(reasons), datetime.now(UTC).isoformat().replace("+00:00", "Z"), spent, remaining)
+    return SafetyValidationResult("5.1.0", intent.run_id, "rejected" if reasons else "approved", tuple(reasons), datetime.now(UTC).isoformat().replace("+00:00", "Z"), spent, remaining)
 
 
 def reconcile_fills(client_id: str, fills: list[Fill], *, ambiguous: bool = False) -> ReconciliationResult:

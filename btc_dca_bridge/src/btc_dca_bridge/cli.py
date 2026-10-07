@@ -7,10 +7,12 @@ import json
 import os
 import sys
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
-from .config import load_notification_config, load_operational_config, load_strategy_config
+from .config import load_notification_config, load_operational_config, load_strategy_config, load_execution_config
+from .artifacts import ArtifactStore, ArtifactType
 from .errors import BtcDcaError
 from .engine import calculate_decision
 from .ledger import read_executions
@@ -25,7 +27,7 @@ from .production import (
 )
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
-from .execution import make_order_intent, validate_execution_safety
+from .execution import InstrumentRules, make_order_intent, validate_execution_safety
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
@@ -98,6 +100,7 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--created-at", default="2026-01-01T00:00:00Z")
     plan.add_argument("--month", required=True)
     plan.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    plan.add_argument("--data-root", type=Path, default=DATA_PATH)
     return parser
 
 
@@ -309,11 +312,17 @@ def _summarize_shadow(args: argparse.Namespace) -> dict[str, object]:
 
 def _execution_plan(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
-    intent = make_order_intent(decision, run_id=args.run_id, created_at_utc=args.created_at,
-                               monthly_spent_usd=decision.get("monthly_spent_before_usd", 0))
-    validation = validate_execution_safety(intent, decision, ledger_path=args.ledger,
-                                            calendar_month=args.month)
+    config = load_execution_config()
+    intent = make_order_intent(decision, run_id=args.run_id, created_at_utc=args.created_at)
+    rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), True)
+    validation = validate_execution_safety(intent, decision, ledger_path=args.ledger, calendar_month=args.month,
+                                            kill_switch=config.kill_switch, live_execution_enabled=config.live_execution_enabled,
+                                            explicit_live_approval=not config.explicit_live_approval_required,
+                                            instrument_rules=rules, execution_config=config)
+    receipts = [ArtifactStore(args.data_root).persist(ArtifactType.ORDER_INTENT, intent, run_id=args.run_id),
+                ArtifactStore(args.data_root).persist(ArtifactType.SAFETY_VALIDATION, validation, run_id=args.run_id)]
     return {"order_intent": intent.to_dict(), "safety_validation": validation.to_dict(),
+            "artifact_receipts": [{"artifact_type": r.artifact_type.value, "path": str(r.path), "sha256": r.sha256} for r in receipts],
             "status": validation.status, "message": "NO ORDER EXECUTED"}
 
 
