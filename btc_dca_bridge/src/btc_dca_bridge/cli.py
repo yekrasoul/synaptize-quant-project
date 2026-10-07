@@ -34,6 +34,7 @@ from .canary import CanaryPreparer
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
+from .readiness import ProductionReadinessService, production_connectivity
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -150,6 +151,10 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--run-id", required=True); recover.add_argument("--canary-id", required=True); recover.add_argument("--approval-id", required=True)
     recover.add_argument("--manifest-sha", required=True); recover.add_argument("--approval-sha", required=True)
     recover.add_argument("--data-root", type=Path, default=DATA_PATH); recover.add_argument("--ledger", type=Path, default=LEDGER_PATH); recover.add_argument("--json", action="store_true")
+    readiness = subparsers.add_parser("production-readiness", help="read-only production activation readiness gate")
+    readiness.add_argument("--data-root", type=Path, default=DATA_PATH); readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH); readiness.add_argument("--json", action="store_true")
+    connectivity = subparsers.add_parser("production-connectivity", help="read-only authenticated Bybit connectivity check")
+    connectivity.add_argument("--json", action="store_true")
     return parser
 
 
@@ -529,6 +534,15 @@ def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], in
     return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
 
 
+def _production_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = ProductionReadinessService(data_root=args.data_root, ledger_path=args.ledger).evaluate()
+    return result, 0 if result["status"] != "NOT_READY" else 2
+
+
+def _production_connectivity() -> tuple[dict[str, object], int]:
+    return production_connectivity(), 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -559,6 +573,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _canary_execute(args)
         elif args.command == "reconcile-existing":
             result, exit_code = _reconcile_existing(args)
+        elif args.command == "production-readiness":
+            result, exit_code = _production_readiness(args)
+        elif args.command == "production-connectivity":
+            result, exit_code = _production_connectivity()
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
