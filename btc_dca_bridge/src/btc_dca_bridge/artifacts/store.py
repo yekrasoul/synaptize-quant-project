@@ -46,6 +46,7 @@ class ArtifactType(str, Enum):
     CANARY_MANIFEST = "canary_manifest"
     LIVE_APPROVAL = "live_approval"
     SUBMISSION_RECONCILIATION = "submission_reconciliation"
+    PRODUCTION_EVIDENCE = "production_evidence"
 
 
 _DIRECTORIES = {
@@ -60,6 +61,7 @@ _DIRECTORIES = {
     ArtifactType.CANARY_MANIFEST: "canary_manifests",
     ArtifactType.LIVE_APPROVAL: "live_approvals",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations",
+    ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -73,6 +75,7 @@ _SCHEMAS = {
     ArtifactType.CANARY_MANIFEST: "canary_manifest",
     ArtifactType.LIVE_APPROVAL: "live_approval",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliation",
+    ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -86,6 +89,7 @@ _TIMESTAMPS = {
     ArtifactType.CANARY_MANIFEST: "prepared_at_utc",
     ArtifactType.LIVE_APPROVAL: "approved_at_utc",
     ArtifactType.SUBMISSION_RECONCILIATION: "reconciled_at_utc",
+    ArtifactType.PRODUCTION_EVIDENCE: "created_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -170,6 +174,62 @@ class ArtifactStore:
         except OSError as exc:
             raise PersistenceIOError(f"cannot create artifact directory: {exc}") from exc
         return self._publish(kind, safe_run_id, payload, content, digest, final, digest_final)
+
+    def persist_production_evidence(self, artifact: Mapping[str, Any]) -> ArtifactReceipt:
+        """Persist one evidence bundle using its evidence ID as the filename."""
+        kind = ArtifactType.PRODUCTION_EVIDENCE
+        payload = self._payload(artifact)
+        evidence_id = payload.get("evidence_id")
+        if not isinstance(evidence_id, str) or not re.fullmatch(r"evidence-[a-f0-9]{32}", evidence_id):
+            raise InvalidArtifactPathError("evidence_id must be a canonical evidence identifier")
+        self._validate(kind, payload)
+        timestamp = _parse_timestamp(payload.get(_TIMESTAMPS[kind]), _TIMESTAMPS[kind])
+        directory = self._directory(kind, timestamp)
+        final = directory / f"{evidence_id}.json"
+        digest_final = directory / f"{evidence_id}.json.sha256"
+        content = _canonical_bytes(payload)
+        digest = hashlib.sha256(content).hexdigest()
+        if final.exists() or digest_final.exists():
+            raise ArtifactAlreadyExistsError(f"artifact already exists for {kind.value}/{evidence_id}")
+        directory.mkdir(parents=True, exist_ok=True)
+        return self._publish(kind, evidence_id, payload, content, digest, final, digest_final)
+
+    def read_production_evidence(self, evidence_id: str) -> dict[str, Any]:
+        if not isinstance(evidence_id, str) or not re.fullmatch(r"evidence-[a-f0-9]{32}", evidence_id):
+            raise InvalidArtifactPathError("evidence_id must be a canonical evidence identifier")
+        root = self.root / _DIRECTORIES[ArtifactType.PRODUCTION_EVIDENCE]
+        matches = sorted(root.glob(f"*/*/*/{evidence_id}.json"))
+        if not matches:
+            raise ArtifactNotFoundError(f"production evidence not found: {evidence_id}")
+        if len(matches) != 1:
+            raise ArtifactCorruptError("multiple production evidence artifacts match evidence_id")
+        path = matches[0]
+        try:
+            date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ArtifactCorruptError("production evidence directory date is invalid") from exc
+        digest_path = path.with_name(path.name + ".sha256")
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise ArtifactCorruptError("production evidence cannot be read") from exc
+        try:
+            expected = digest_path.read_text(encoding="ascii")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ArtifactCorruptError("production evidence digest sidecar is missing or unreadable") from exc
+        actual = hashlib.sha256(content).hexdigest()
+        if expected != f"{actual}\n":
+            raise ArtifactCorruptError("production evidence digest does not match canonical bytes")
+        try:
+            payload = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactCorruptError("production evidence is not valid UTF-8 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ArtifactCorruptError("production evidence root must be an object")
+        self._validate(ArtifactType.PRODUCTION_EVIDENCE, payload, corrupt=True)
+        if _canonical_bytes(payload) != content or self._directory(ArtifactType.PRODUCTION_EVIDENCE, _parse_timestamp(payload.get("created_at_utc"), "created_at_utc")) != path.parent:
+            raise ArtifactCorruptError("production evidence is not canonically stored")
+        return payload
 
     def read(self, artifact_type: ArtifactType | str, *, run_id: str, artifact_date_utc: datetime) -> dict[str, Any]:
         kind = _artifact_type(artifact_type)

@@ -12,6 +12,7 @@ import os
 import socket
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol
@@ -31,9 +32,10 @@ WALLET_BALANCE = "/v5/account/wallet-balance"
 ORDER_REALTIME = "/v5/order/realtime"
 ORDER_HISTORY = "/v5/order/history"
 EXECUTION_LIST = "/v5/execution/list"
+SPOT_BORROW_CHECK = "/v5/order/spot-borrow-check"
 INSTRUMENTS_INFO = "/v5/market/instruments-info"
 SERVER_TIME = "/v5/market/time"
-PRIVATE_GET_ALLOWLIST = frozenset({USER_QUERY_API, ACCOUNT_INFO, WALLET_BALANCE, ORDER_REALTIME, ORDER_HISTORY, EXECUTION_LIST})
+PRIVATE_GET_ALLOWLIST = frozenset({USER_QUERY_API, ACCOUNT_INFO, WALLET_BALANCE, ORDER_REALTIME, ORDER_HISTORY, EXECUTION_LIST, SPOT_BORROW_CHECK})
 PUBLIC_GET_ALLOWLIST = frozenset({INSTRUMENTS_INFO, SERVER_TIME})
 
 
@@ -291,6 +293,25 @@ class BybitPrivateReadClient:
                 values.append(WalletBalance(row["coin"], _decimal(row.get("walletBalance"), "walletBalance", nonnegative=True), _decimal(row.get("locked", "0"), "locked", nonnegative=True), _decimal(row.get("borrowAmount", "0"), "borrowAmount", nonnegative=True), _decimal(row.get("accruedInterest", "0"), "accruedInterest", nonnegative=True), _decimal(row.get("usdValue", "0"), "usdValue", nonnegative=True)))
             except KeyError as exc: raise MalformedBybitResponseError("wallet balance is incomplete") from exc
         return tuple(values)
+
+    def spot_quote_availability(self) -> SpotQuoteAvailability:
+        """Return Bybit's exact non-borrowed Spot quote-buy availability."""
+        result = self._read(SPOT_BORROW_CHECK, {"category": "spot", "symbol": "BTCUSDT", "side": "Buy"})
+        if result.get("symbol") != "BTCUSDT":
+            raise MalformedBybitResponseError("Spot quote availability response has the wrong or missing symbol")
+        if result.get("side") != "Buy":
+            raise MalformedBybitResponseError("Spot quote availability response has the wrong or missing side")
+        raw = result.get("spotMaxTradeAmount")
+        if raw is None:
+            raise MalformedBybitResponseError("Spot quote availability is missing spotMaxTradeAmount")
+        return SpotQuoteAvailability(
+            _decimal(raw, "spotMaxTradeAmount", nonnegative=True),
+            SPOT_BORROW_CHECK,
+            "spotMaxTradeAmount",
+            "UNIFIED",
+            True,
+            datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
 
     def instrument_rules(self) -> InstrumentRules:
         result = self._read(INSTRUMENTS_INFO, {"category": "spot", "symbol": "BTCUSDT"}, public=True)

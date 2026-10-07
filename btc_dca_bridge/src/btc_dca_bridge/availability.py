@@ -21,9 +21,9 @@ class SpotQuoteAvailabilityPolicy:
     future_tolerance: timedelta = timedelta(seconds=5)
 
 
-# Intentionally empty until an official Bybit source proves the exact Unified
-# Spot BTCUSDT quoteCoin Market Buy operation.  This is the production policy.
-APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES = frozenset()
+APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES = frozenset({
+    ("/v5/order/spot-borrow-check", "spotMaxTradeAmount"),
+})
 PRODUCTION_AVAILABILITY_POLICY = SpotQuoteAvailabilityPolicy(
     approved_sources=APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES,
     supported_account_types=frozenset({"UNIFIED"}),

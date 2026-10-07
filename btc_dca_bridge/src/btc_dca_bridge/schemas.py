@@ -30,6 +30,7 @@ SCHEMA_FILES = {
     "order_submission": "order_submission.schema.json",
     "reconciliation_result": "reconciliation_result.schema.json",
     "submission_reconciliation": "submission_reconciliation.schema.json",
+    "production_evidence": "production_evidence.schema.json",
 }
 
 def validate_live_approval(artifact: dict[str, Any], schemas_path: Path = SCHEMAS_PATH) -> None:
