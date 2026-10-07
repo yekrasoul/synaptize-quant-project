@@ -127,6 +127,7 @@ class OperationsService:
         latest_reconciliation = self._latest(reconciliations, "reconciled_at_utc", run_id)
         manifest_data = manifest[0] if manifest else None
         link = manifest_data.get("client_order_id") if manifest_data else None
+        confirmed_for_identity = any(item.payload.get("decision_id") == (manifest_data or {}).get("decision_id") or (link is not None and item.payload.get("order_link_id") == link) for item in confirmed_executions(ledger))
         related = [item[0] for item in reconciliations if link and item[0].get("client_order_id") == link]
         partial_quote = sum((Decimal(str(fill["quote_value_usdt"])) for item in related if item.get("reconciliation_state") == "partial" for fill in item.get("fills", [])), Decimal("0"))
         state, reasons, allowed = "SAFE_IDLE", [], ["prepare"]
@@ -137,13 +138,16 @@ class OperationsService:
         if remaining < Decimal("10"):
             state, allowed = "MONTHLY_CAP_REACHED", ["inspect", "audit"]
             reasons.append("fresh confirmed calendar-month budget is below V1 minimum")
-        if attempt and (not outcome or outcome[0].get("outcome_category") != "confirmed_execution"):
+        if confirmed_for_identity:
+            state, allowed = "SAFE_IDLE", ["prepare", "inspect", "audit"]
+            reasons.append("authoritative execution is already recorded in the canonical ledger")
+        elif attempt and (not outcome or outcome[0].get("outcome_category") != "confirmed_execution"):
             state, allowed, reconciliation_required = "RECONCILIATION_REQUIRED", ["reconcile-existing", "inspect", "audit"], True
             reasons.append("prior submission attempt prohibits new submission")
-        if latest_reconciliation and latest_reconciliation[0].get("reconciliation_state") in {"active", "partial"}:
+        if not confirmed_for_identity and latest_reconciliation and latest_reconciliation[0].get("reconciliation_state") in {"active", "partial"}:
             state, allowed, reconciliation_required = "RECONCILIATION_REQUIRED", ["reconcile-existing", "inspect", "audit"], True
             reasons.append("authoritative order remains active or partially filled")
-        elif manifest_data:
+        elif manifest_data and not confirmed_for_identity:
             expires = datetime.fromisoformat(str(manifest_data["expires_at_utc"]).replace("Z", "+00:00"))
             if expires <= self.now().astimezone(UTC):
                 state, allowed = "BLOCKED", ["prepare", "inspect", "audit"]
@@ -167,12 +171,15 @@ class OperationsService:
         for kind, timestamp in ((ArtifactType.DECISION, "created_at_utc"), (ArtifactType.ORDER_INTENT, "created_at_utc"), (ArtifactType.CANARY_MANIFEST, "prepared_at_utc"), (ArtifactType.LIVE_APPROVAL, "approved_at_utc"), (ArtifactType.ORDER_SUBMISSION_ATTEMPT, "created_at_utc"), (ArtifactType.ORDER_SUBMISSION_OUTCOME, "completed_at_utc"), (ArtifactType.SUBMISSION_RECONCILIATION, "reconciled_at_utc")):
             items = [item for item in self._items(kind) if item[0].get("run_id") == run_id or item[2].stem == run_id]
             chain[kind.value] = [{"path": str(path), "schema_version": payload["schema_version"], "sha256": digest, "timestamp": payload.get(timestamp), "status": "valid"} for payload, digest, path in items]
-        decisions = [item for item in self._items(ArtifactType.DECISION) if item[0].get("run_id") == run_id]
+        decisions = [item for item in self._items(ArtifactType.DECISION) if item[0].get("run_id") == run_id or item[2].stem == run_id]
         decision_id = decisions[0][0].get("decision_id") if len(decisions) == 1 else None
         executions = [item.payload for item in read_executions(self.ledger_path) if decision_id and item.payload.get("decision_id") == decision_id]
         chain["execution"] = [{"execution_id": item.get("execution_id"), "status": item.get("status"), "ledger": "canonical"} for item in executions]
+        required = ("decision", "order_intent", "canary_manifest", "live_approval", "order_submission_attempt", "order_submission_outcome", "submission_reconciliation")
+        missing = [name for name in required if not chain[name]]
         identities = [entry for entries in chain.values() for entry in entries]
-        return {"run_id": run_id, "chain": chain, "status": "complete" if identities else "missing", "integrity": "valid" if identities else "missing", "identity_consistent": len(decisions) <= 1}
+        complete = bool(identities) and not missing and len(decisions) == 1
+        return {"run_id": run_id, "chain": chain, "missing_artifacts": missing, "status": "complete" if complete else "incomplete", "integrity": "valid" if complete else "missing_or_inconsistent", "identity_consistent": len(decisions) == 1}
 
     def record_event(self, *, action: str, result: str, reason: str, run_id: str | None, artifact_ids: Mapping[str, str | None]) -> Path:
         """Publish a digest-addressed immutable manual-operator audit event."""

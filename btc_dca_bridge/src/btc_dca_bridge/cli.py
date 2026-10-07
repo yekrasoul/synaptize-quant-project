@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Sequence
 
 from .config import load_notification_config, load_operational_config, load_strategy_config, load_execution_config
 from .artifacts import ArtifactStore, ArtifactType
-from .errors import BtcDcaError
+from .errors import ArtifactCorruptError, BtcDcaError
 from .engine import calculate_decision
 from .ledger import read_executions
 from .models import MarketSnapshot
@@ -28,11 +29,19 @@ from .production import (
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
-from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient
+from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
 from .canary import CanaryPreparer
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
+
+
+# These internal factories are deliberately not CLI options.  They provide a
+# narrow dependency seam for offline integration tests while production keeps
+# constructing only the reviewed Bybit clients below.
+_private_read_client_factory = BybitPrivateReadClient.from_environment
+_submission_transport_factory = SignedBybitSubmissionTransport
+_post_ack_reconciler_factory = BybitPostAckReconciler
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -442,14 +451,17 @@ def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
 def _ops(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     service = OperationsService(data_root=args.data_root, ledger_path=args.ledger)
     if args.command == "ops-status":
-        return service.snapshot(run_id=args.run_id).to_dict(), 0
+        snapshot = service.snapshot(run_id=args.run_id)
+        return snapshot.to_dict(), EXIT_RECONCILIATION if snapshot.reconciliation_required else (EXIT_BLOCKED if snapshot.state == "BLOCKED" else 0)
     if args.command == "ops-plan":
         snapshot = service.snapshot(run_id=args.run_id)
-        return {**snapshot.to_dict(), "current_state": snapshot.state, "allowed_next_action": snapshot.allowed_actions[0] if snapshot.allowed_actions else None, "message": "READ ONLY — NO ORDER SUBMITTED"}, EXIT_RECONCILIATION if snapshot.reconciliation_required else 0
+        exit_code = EXIT_RECONCILIATION if snapshot.reconciliation_required else (EXIT_BLOCKED if snapshot.state == "BLOCKED" else 0)
+        return {**snapshot.to_dict(), "current_state": snapshot.state, "allowed_next_action": snapshot.allowed_actions[0] if snapshot.allowed_actions else None, "message": "READ ONLY — NO ORDER SUBMITTED"}, exit_code
     if args.command == "ops-health":
         result = service.health()
-        return result, EXIT_CORRUPT if result["status"] == "CORRUPT" else (EXIT_RECONCILIATION if result["status"] == "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" else 0)
-    return service.audit_run(args.run_id), 0
+        return result, EXIT_CORRUPT if result["status"] == "CORRUPT" else (EXIT_RECONCILIATION if result["status"] == "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" else (EXIT_BLOCKED if result["status"] == "BLOCKED" else 0))
+    audit = service.audit_run(args.run_id)
+    return audit, 0 if audit["status"] == "complete" else EXIT_BLOCKED
 
 
 def _approval_from_dict(payload: dict[str, object]) -> LiveApproval:
@@ -490,12 +502,16 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     # guarded engine remains the sole future submission implementation.
     if not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented":
         return {"status": "blocked", "reason": "checked-in production defaults prohibit execution", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
-    client = BybitPrivateReadClient.from_environment()
+    # The persisted intent documents the fail-safe prepared mode.  The exact
+    # immutable identity is retained while the separately approved runtime
+    # gate supplies the only execution-mode transition.
+    intent = replace(intent, live_execution_enabled=True)
+    client = _private_read_client_factory()
     lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
     lock.acquire()
     try:
         engine = LiveOrderEngine(artifact_store=store)
-        result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=SignedBybitSubmissionTransport(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=BybitPostAckReconciler(client))
+        result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
     finally:
         lock.release()
     return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
@@ -503,11 +519,11 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
 
 def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     store, manifest, _, approval, manifest_sha, approval_sha, intent, _ = _load_exact_execution_artifacts(args)
-    client = BybitPrivateReadClient.from_environment()
+    client = _private_read_client_factory()
     lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
     lock.acquire()
     try:
-        result = LiveOrderEngine(artifact_store=store).reconcile_existing(intent, ledger_path=args.ledger, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, run_id=args.run_id, post_ack_reconciler=BybitPostAckReconciler(client))
+        result = LiveOrderEngine(artifact_store=store).reconcile_existing(intent, ledger_path=args.ledger, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
     finally:
         lock.release()
     return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
@@ -549,6 +565,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _portfolio(args)
         else:
             result = _validate(args)
+    except ArtifactCorruptError as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
+        return EXIT_CORRUPT
+    except PrivateBybitError as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
+        return 4
     except (BtcDcaError, ValueError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 2
