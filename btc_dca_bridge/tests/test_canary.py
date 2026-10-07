@@ -143,7 +143,7 @@ class CanaryPreparationTests(unittest.TestCase):
         client.quote_unit_limit_evidence = lambda: unavailable_quote_unit_limit(observed_at_utc="2026-10-07T12:00:00Z")
         result = self.prepare(client=client, data=self.root / "data-no-quote-limit")
         self.assertEqual(result.manifest.canary_status, "BLOCKED")
-        self.assertIn("quote-unit market-buy maximum", " ".join(result.manifest.reasons))
+        self.assertIn("External Bybit contract blocker", " ".join(result.manifest.reasons))
 
     def test_malformed_availability_and_account_context_fail_closed(self):
         malformed = FakeReadClient(balances=(

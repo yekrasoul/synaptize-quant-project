@@ -34,6 +34,7 @@ from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
+from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 from .readiness import ProductionReadinessService, production_connectivity
@@ -164,6 +165,10 @@ def _parser() -> argparse.ArgumentParser:
     verify_evidence.add_argument("evidence_id"); verify_evidence.add_argument("--data-root", type=Path, default=DATA_PATH); verify_evidence.add_argument("--ledger", type=Path, default=LEDGER_PATH); verify_evidence.add_argument("--json", action="store_true")
     preauth = subparsers.add_parser("preauthorization-status", help="read-only evidence and readiness preauthorization status")
     preauth.add_argument("--data-root", type=Path, default=DATA_PATH); preauth.add_argument("--ledger", type=Path, default=LEDGER_PATH); preauth.add_argument("--json", action="store_true")
+    blockers = subparsers.add_parser("production-blockers", help="read-only active production blockers")
+    blockers.add_argument("--json", action="store_true")
+    contract = subparsers.add_parser("contract-status", help="read-only implemented Bybit contract assumptions")
+    contract.add_argument("--json", action="store_true")
     return parser
 
 
@@ -586,6 +591,15 @@ def _preauthorization_status(args: argparse.Namespace) -> tuple[dict[str, object
     return result, 0 if result["status"] != "BLOCKED" else EXIT_BLOCKED
 
 
+def _production_blockers() -> tuple[dict[str, object], int]:
+    blockers = active_production_blockers()
+    return {"state": "PRODUCTION_BLOCKED_EXTERNAL_CONTRACT" if blockers else "NO_ACTIVE_EXTERNAL_BLOCKERS", "blockers": [item.to_dict() for item in blockers], "real_money_authorization": {"granted": False, "source": "none", "required": True, "status": "NOT_AUTHORIZED"}}, 0
+
+
+def _contract_status() -> tuple[dict[str, object], int]:
+    return contract_status(), 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -626,6 +640,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _verify_production_evidence(args)
         elif args.command == "preauthorization-status":
             result, exit_code = _preauthorization_status(args)
+        elif args.command == "production-blockers":
+            result, exit_code = _production_blockers()
+        elif args.command == "contract-status":
+            result, exit_code = _contract_status()
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":

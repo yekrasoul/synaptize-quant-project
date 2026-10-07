@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .artifacts import ArtifactStore, ArtifactType
 from . import availability
+from .blocked_production import QUOTE_LIMIT_BLOCKED_MESSAGE
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
 from .config import ExecutionConfig
 from .errors import ArtifactAlreadyExistsError
@@ -377,7 +378,7 @@ class LiveOrderEngine:
         try:
             maximum = validate_quote_unit_limit_evidence(client.quote_unit_limit_evidence(), now=(now_utc or datetime.now(UTC)), policy=quote_limit_policy)
         except Exception as exc:
-            raise LiveOrderSafetyError("authoritative quote-unit market-buy maximum is unavailable or untrusted") from exc
+            raise LiveOrderSafetyError(QUOTE_LIMIT_BLOCKED_MESSAGE) from exc
         if maximum < intent.quote_amount_usdt: raise LiveOrderSafetyError("authoritative quote-unit market-buy maximum is below exact amount")
         rules = client.instrument_rules()
         rules.validate_quote(intent.quote_amount_usdt)

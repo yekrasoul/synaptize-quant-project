@@ -21,6 +21,7 @@ from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
 from .live_order import SpotMarketBuyRequest
 from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
+from .blocked_production import QUOTE_LIMIT_BLOCKED_MESSAGE
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
 from .schemas import validate_artifact
 
@@ -258,7 +259,7 @@ class CanaryPreparer:
             if maximum < amount:
                 reasons.append("authoritative quote-unit market-buy maximum is below exact V1 amount")
         except Exception as exc:
-            reasons.append(f"authoritative quote-unit market-buy maximum is unavailable: {exc}")
+            reasons.append(f"{QUOTE_LIMIT_BLOCKED_MESSAGE} ({exc})")
         try:
             pre_state = self.client.submission_state(intent.client_order_id)
             if pre_state != "conclusively_absent": reasons.append("pre-submission reconciliation is not conclusively absent")

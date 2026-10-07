@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
+from .blocked_production import active_production_blockers
 from .config import load_execution_config, load_strategy_config
 from .errors import ArtifactCorruptError, ArtifactNotFoundError, LedgerValidationError
 from .ledger import confirmed_executions, executions_for_month, read_executions
@@ -348,5 +349,8 @@ class OperationsService:
             return {"status": "BLOCKED", "reason": str(exc)}
         if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
             return {"status": "BLOCKED", "reason": "unsafe execution configuration is enabled"}
+        blockers = active_production_blockers(now=self.now())
+        if blockers:
+            return {"status": "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY", "reason": blockers[0].evidence, "blockers": [item.to_dict() for item in blockers], "snapshot": snapshot.to_dict()}
         status = "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" if snapshot.reconciliation_required else "HEALTHY"
         return {"status": status, "snapshot": snapshot.to_dict()}
