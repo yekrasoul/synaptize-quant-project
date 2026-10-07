@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .config import load_execution_config, load_notification_config, load_strategy_config
+from . import availability
 from .ledger import read_executions
 from .operations import OperationLock, OperationLockError, OperationsService
 from .paths import DATA_PATH, LEDGER_PATH
-from .private_bybit import AccountInfo, BybitPrivateReadClient, CredentialClassification, MalformedBybitResponseError, PrivateBybitError, SpotQuoteAvailability
+from .private_bybit import AccountInfo, BybitPrivateReadClient, CredentialClassification, MalformedBybitResponseError, PrivateBybitError
 
 
 CHECK_STATUSES = {"PASS", "FAIL", "BLOCKED", "UNAVAILABLE", "NOT_APPLICABLE"}
@@ -88,7 +89,7 @@ def classify_production_account_mode(account: AccountInfo, *, now: datetime, max
 
 
 class ProductionReadinessService:
-    def __init__(self, *, data_root: Path = DATA_PATH, ledger_path: Path = LEDGER_PATH, now: Callable[[], datetime] | None = None, client_factory: Callable[[], Any] | None = None, repo_probe: Callable[[], Mapping[str, Any]] | None = None, server_time_probe: Callable[[], Any] | None = None, filesystem_probe: Callable[[], tuple[bool, str]] | None = None, lock_probe: Callable[[], tuple[bool, str]] | None = None, secret_scan_probe: Callable[[], Mapping[str, Any]] | None = None) -> None:
+    def __init__(self, *, data_root: Path = DATA_PATH, ledger_path: Path = LEDGER_PATH, now: Callable[[], datetime] | None = None, client_factory: Callable[[], Any] | None = None, repo_probe: Callable[[], Mapping[str, Any]] | None = None, server_time_probe: Callable[[], Any] | None = None, filesystem_probe: Callable[[], tuple[bool, str]] | None = None, lock_probe: Callable[[], tuple[bool, str]] | None = None, secret_scan_probe: Callable[[], Mapping[str, Any]] | None = None, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY) -> None:
         self.data_root, self.ledger_path = Path(data_root), Path(ledger_path)
         self.now = now or (lambda: datetime.now(UTC))
         self.client_factory = client_factory or BybitPrivateReadClient.from_environment
@@ -97,6 +98,7 @@ class ProductionReadinessService:
         self.filesystem_probe = filesystem_probe or self._filesystem_test
         self.lock_probe = lock_probe or self._lock_test
         self.secret_scan_probe = secret_scan_probe or self._secret_hygiene
+        self.availability_policy = availability_policy
 
     @staticmethod
     def _repo_status() -> Mapping[str, Any]:
@@ -227,8 +229,12 @@ class ProductionReadinessService:
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
             available = balances.get("USDT").available_for_spot_quote_buy if balances.get("USDT") else None
-            provenance_ok = isinstance(available, SpotQuoteAvailability) and available.authoritative and available.amount_usdt >= 0 and available.source_endpoint == "/v5/account/wallet-balance" and available.source_field in {"availableToWithdraw", "availableBalance"} and available.account_type == "UNIFIED"
-            add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS" if provenance_ok else "FAIL", True, "authoritative provenance present" if provenance_ok else "authoritative Spot quote-buy availability/provenance unavailable", "authoritative Spot quote-buy availability is proven" if provenance_ok else "wallet arithmetic or an unproven Decimal is not acceptable", "Implement or verify an official supported Bybit source for exact Spot quote-buy availability")
+            try:
+                availability.validate_spot_quote_availability(available, now=self.now(), policy=self.availability_policy)
+            except availability.AvailabilityValidationError as exc:
+                add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "FAIL", True, "authoritative provenance unavailable", str(exc), "Implement and officially verify an exact Spot quote-buy availability source")
+            else:
+                add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, "authoritative provenance validated", "authoritative Spot quote-buy availability is proven", "")
             rules = client.instrument_rules()
             v1_results: dict[str, str] = {}
             for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):

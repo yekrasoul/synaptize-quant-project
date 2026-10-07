@@ -31,6 +31,7 @@ from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
 from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
 from .canary import CanaryPreparer
+from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
@@ -424,7 +425,7 @@ def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
                 def unavailable(*unused_args, **unused_kwargs): raise RuntimeError(f"private read verification unavailable: {error_message}")
                 return unavailable
         client = UnavailableReadClient()
-    result = CanaryPreparer(artifact_store=ArtifactStore(args.data_root), client=client).prepare(
+    result = CanaryPreparer(artifact_store=ArtifactStore(args.data_root), client=client, availability_policy=PRODUCTION_AVAILABILITY_POLICY).prepare(
         decision, run_id=args.run_id, calendar_month=args.month, ledger_path=args.ledger
     )
     manifest = result.manifest.to_dict()
@@ -515,7 +516,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
     lock.acquire()
     try:
-        engine = LiveOrderEngine(artifact_store=store)
+        engine = LiveOrderEngine(artifact_store=store, availability_policy=PRODUCTION_AVAILABILITY_POLICY)
         result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
     finally:
         lock.release()

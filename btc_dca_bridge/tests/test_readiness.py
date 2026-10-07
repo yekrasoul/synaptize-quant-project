@@ -13,6 +13,7 @@ from btc_dca_bridge.config import ExecutionConfig
 from btc_dca_bridge.execution import InstrumentRules
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, SpotQuoteAvailability, WalletBalance
 from btc_dca_bridge.cli import main
+from btc_dca_bridge.availability import AvailabilityValidationError, SpotQuoteAvailabilityPolicy, validate_spot_quote_availability
 from btc_dca_bridge.readiness import ProductionReadinessService, ServerTimeMeasurement, classify_production_account_mode, measure_server_time, production_connectivity
 
 
@@ -41,7 +42,8 @@ class ReadinessTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         self.ledger = self.root / "ledger.jsonl"; self.ledger.write_text("")
         self.safe = ExecutionConfig("1.0.0", False, True, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "not_implemented")
-        self.common = dict(repo_probe=lambda: {"commit": "abc123", "dirty": False}, server_time_probe=lambda: ServerTimeMeasurement(0.1, 10), filesystem_probe=lambda: (True, "ok"), lock_probe=lambda: (True, "ok"), client_factory=lambda: FakeReadinessClient(), secret_scan_probe=lambda: {"scanner": "test", "scope": [], "status": "PASS", "finding_count": 0})
+        self.test_policy = SpotQuoteAvailabilityPolicy(frozenset({("/v5/account/wallet-balance", "availableBalance")}), frozenset({"UNIFIED"}))
+        self.common = dict(repo_probe=lambda: {"commit": "abc123", "dirty": False}, server_time_probe=lambda: ServerTimeMeasurement(0.1, 10), filesystem_probe=lambda: (True, "ok"), lock_probe=lambda: (True, "ok"), client_factory=lambda: FakeReadinessClient(), secret_scan_probe=lambda: {"scanner": "test", "scope": [], "status": "PASS", "finding_count": 0}, availability_policy=self.test_policy)
 
     def evaluate(self, **overrides):
         values = dict(self.common); values.update(overrides)
@@ -109,6 +111,33 @@ class ReadinessTests(unittest.TestCase):
         decimal_client.wallet_balances = lambda: (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
         result = self.evaluate(client_factory=lambda: decimal_client)
         self.assertIn("BYBIT_SPOT_AVAILABLE_BALANCE", {item["check_id"] for item in result["blockers"]})
+
+    def test_production_policy_has_no_approved_sources(self):
+        result = ProductionReadinessService(data_root=self.root / "data", ledger_path=self.ledger, now=lambda: datetime(2026, 10, 7, 12, tzinfo=UTC), **{key: value for key, value in self.common.items() if key != "availability_policy"}).evaluate()
+        self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_SPOT_AVAILABLE_BALANCE")["status"], "FAIL")
+
+    def test_shared_availability_validator_rejects_untrusted_values_and_accepts_only_injected_policy(self):
+        now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+        policy = SpotQuoteAvailabilityPolicy(frozenset({("/approved", "quoteAvailable")}), frozenset({"UNIFIED"}))
+        valid = SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "UNIFIED", True, "2026-10-07T11:59:30Z")
+        self.assertEqual(validate_spot_quote_availability(valid, now=now, policy=policy), Decimal("100"))
+        invalid = (
+            Decimal("100"), None,
+            SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "UNIFIED", False, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("100"), "/wrong", "quoteAvailable", "UNIFIED", True, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("100"), "/approved", "availableToWithdraw", "UNIFIED", True, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "OTHER", True, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "UNIFIED", True, "not-a-time"),
+            SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "UNIFIED", True, "2026-10-07T10:00:00Z"),
+            SpotQuoteAvailability(Decimal("100"), "/approved", "quoteAvailable", "UNIFIED", True, "2026-10-07T12:00:06Z"),
+            SpotQuoteAvailability(Decimal("-1"), "/approved", "quoteAvailable", "UNIFIED", True, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("NaN"), "/approved", "quoteAvailable", "UNIFIED", True, valid.observed_at_utc),
+            SpotQuoteAvailability(Decimal("Infinity"), "/approved", "quoteAvailable", "UNIFIED", True, valid.observed_at_utc),
+        )
+        for value in invalid:
+            with self.subTest(value=value):
+                with self.assertRaises(AvailabilityValidationError):
+                    validate_spot_quote_availability(value, now=now, policy=policy)
 
     def test_instrument_proof_covers_all_v1_amounts_and_requires_quote_upper_bound(self):
         result = self.evaluate()

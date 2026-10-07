@@ -14,12 +14,13 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Protocol
 
 from .artifacts import ArtifactStore, ArtifactType
+from . import availability
 from .config import ExecutionConfig, load_execution_config
 from .errors import ArtifactAlreadyExistsError
 from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
 from .live_order import SpotMarketBuyRequest
-from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance, spot_quote_amount
+from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
 from .schemas import validate_artifact
 
 CANARY_SCHEMA_VERSION = "5.4.0"
@@ -151,11 +152,13 @@ class CanaryPreparationResult:
 class CanaryPreparer:
     def __init__(self, *, artifact_store: ArtifactStore, client: ReadOnlyVerificationClient,
                  execution_config: ExecutionConfig | None = None,
-                 now: Callable[[], datetime] | None = None) -> None:
+                 now: Callable[[], datetime] | None = None,
+                 availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY) -> None:
         self.artifact_store = artifact_store
         self.client = client
         self.execution_config = execution_config or load_execution_config()
         self._now = now or (lambda: datetime.now(UTC))
+        self.availability_policy = availability_policy
 
     def prepare(self, decision: Mapping[str, Any], *, run_id: str, calendar_month: str, ledger_path) -> CanaryPreparationResult:
         now = self._now().astimezone(UTC)
@@ -230,16 +233,12 @@ class CanaryPreparer:
             if usdt is None or btc is None: reasons.append("BTC and USDT wallet balances are required")
             else:
                 if usdt.has_liability or btc.has_liability: reasons.append("wallet liability detected")
-                authoritative_available_usdt = spot_quote_amount(usdt.available_for_spot_quote_buy)
-                if authoritative_available_usdt is None:
-                    reasons.append("authoritative USDT availability for exact Spot quote buy is unavailable")
-                else:
-                    try:
-                        authoritative_available_usdt = _decimal(authoritative_available_usdt, "authoritative available USDT")
-                        availability_method = "explicit authoritative account-mode-specific Spot quote-buy availability"
-                        if authoritative_available_usdt < amount: reasons.append("authoritative available USDT is insufficient for exact V1 amount")
-                    except CanaryPreparationError:
-                        reasons.append("authoritative USDT availability is malformed")
+                try:
+                    authoritative_available_usdt = availability.validate_spot_quote_availability(usdt.available_for_spot_quote_buy, now=now, policy=self.availability_policy)
+                    availability_method = "validated authoritative account-mode-specific Spot quote-buy availability"
+                    if authoritative_available_usdt < amount: reasons.append("authoritative available USDT is insufficient for exact V1 amount")
+                except availability.AvailabilityValidationError as exc:
+                    reasons.append(f"authoritative USDT availability for exact Spot quote buy is unavailable or untrusted: {exc}")
         except Exception:
             reasons.append("wallet verification unavailable")
         try:

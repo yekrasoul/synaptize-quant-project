@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType, make_run_id
+from btc_dca_bridge.availability import SpotQuoteAvailabilityPolicy
 from btc_dca_bridge.canary import CanaryPreparer
 from btc_dca_bridge.cli import main
 from btc_dca_bridge.config import ExecutionConfig
@@ -22,14 +23,14 @@ from btc_dca_bridge.live_order import ConfirmedFill, ReconciliationEvidence
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.errors import ArtifactCorruptError
 from btc_dca_bridge.operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, EXIT_UNAVAILABLE, OperationLock, OperationLockError, OperationsService
-from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, PrivateApiUnavailableError, WalletBalance
+from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, PrivateApiUnavailableError, SpotQuoteAvailability, WalletBalance
 
 
 class FakeReader:
     def __init__(self):
         self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
         self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "fresh")
-        self.balances = (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
+        self.balances = (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), SpotQuoteAvailability(Decimal("100"), "/test/availability", "quoteAvailable", "TEST", True, datetime.now(UTC).isoformat().replace("+00:00", "Z"))), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
         self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"))
     def credential_info(self): return self.credential
     def account_info(self): return self.account
@@ -58,12 +59,13 @@ class CliOperationsTests(unittest.TestCase):
         self.recovery_run = make_run_id(self.now + timedelta(seconds=1), "cliops002")
         self.decision = {"schema_version": "1.0.0", "decision_id": "decision_cli_ops", "created_at_utc": self.now.isoformat().replace("+00:00", "Z"), "strategy_id": "btc_adaptive_dca_v1", "strategy_version": "1.0.0", "market_snapshot_id": "market_cli_ops", "drawdown_percent": -10, "fear_greed_index": 20, "base_allocation_usd": 25, "sentiment_multiplier": 1, "calculated_allocation_usd": 25, "monthly_spent_before_usd": 0, "remaining_budget_before_usd": 500, "final_purchase_usd": 25, "status": "approved"}
         self.reader = FakeReader()
+        self.availability_policy = SpotQuoteAvailabilityPolicy(frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1))
         disabled = ExecutionConfig("1.0.0", False, True, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "not_implemented")
         store = ArtifactStore(self.data)
         store.persist(ArtifactType.DECISION, self.decision, run_id=self.run_id)
         self.intent = make_order_intent(self.decision, run_id=self.run_id, created_at_utc=self.decision["created_at_utc"])
         store.persist(ArtifactType.ORDER_INTENT, self.intent, run_id=self.run_id)
-        self.manifest = CanaryPreparer(artifact_store=store, client=self.reader, execution_config=disabled, now=lambda: self.now).prepare(self.decision, run_id=self.run_id, calendar_month=self.now.strftime("%Y-%m"), ledger_path=self.ledger).manifest.to_dict()
+        self.manifest = CanaryPreparer(artifact_store=store, client=self.reader, execution_config=disabled, now=lambda: self.now, availability_policy=self.availability_policy).prepare(self.decision, run_id=self.run_id, calendar_month=self.now.strftime("%Y-%m"), ledger_path=self.ledger).manifest.to_dict()
         self.manifest_payload, self.manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=self.manifest["canary_id"])
         self.enabled = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
 
@@ -92,7 +94,7 @@ class CliOperationsTests(unittest.TestCase):
         partial = FakeReconciler(ReconciliationEvidence("partial", "order-cli", (fill_a,), self.intent.client_order_id))
         transport = FakeTransport(HttpResponse(200, {}, json.dumps({"retCode": 0, "result": {"orderId": "order-cli", "orderLinkId": self.intent.client_order_id}}).encode()))
         execute = self.exact_args("canary-execute") + ["--month", self.now.strftime("%Y-%m")]
-        with patch("btc_dca_bridge.cli.load_execution_config", return_value=self.enabled), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=self.reader), patch("btc_dca_bridge.cli._submission_transport_factory", return_value=transport), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=partial):
+        with patch("btc_dca_bridge.cli.load_execution_config", return_value=self.enabled), patch("btc_dca_bridge.cli.PRODUCTION_AVAILABILITY_POLICY", self.availability_policy), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=self.reader), patch("btc_dca_bridge.cli._submission_transport_factory", return_value=transport), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=partial):
             code, outcome, error = self.invoke(execute)
         self.assertIn("outcome_category", outcome, error)
         self.assertEqual((code, outcome["outcome_category"], len(transport.calls)), (EXIT_RECONCILIATION, "reconciliation_required", 1))

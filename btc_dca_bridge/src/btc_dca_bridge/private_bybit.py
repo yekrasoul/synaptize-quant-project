@@ -116,16 +116,10 @@ class WalletBalance:
     usd_value: Decimal
     # The current Unified wallet endpoint does not expose an authoritative
     # amount available for this exact Spot quote-buy operation.
-    available_for_spot_quote_buy: SpotQuoteAvailability | Decimal | None = None
+    available_for_spot_quote_buy: SpotQuoteAvailability | None = None
 
     @property
     def has_liability(self) -> bool: return self.borrow_amount > 0 or self.accrued_interest > 0
-
-
-def spot_quote_amount(value: SpotQuoteAvailability | Decimal | None) -> Decimal | None:
-    if isinstance(value, SpotQuoteAvailability):
-        return value.amount_usdt
-    return value
 
 
 @dataclass(frozen=True)
