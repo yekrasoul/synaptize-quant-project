@@ -16,7 +16,7 @@ concurrency:
 jobs:
   shadow:
     name: Read-only BTC DCA shadow
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30 # must match config/runtime.yaml; GitHub evaluates this before Python starts
     defaults:
       run:
@@ -26,7 +26,7 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Check out canonical repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Initialize runner runtime paths
         shell: bash
@@ -36,7 +36,7 @@ jobs:
           echo "RESULT_JSON=${RUNNER_TEMP}/production-result.json" >> "$GITHUB_ENV"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -59,7 +59,7 @@ jobs:
 
       - name: Resolve stable workflow identity
         id: workflow
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const run = await github.rest.actions.getWorkflowRun({
@@ -90,7 +90,7 @@ jobs:
 
       - name: Find retained completed run
         id: prior
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           result-encoding: string
           script: |
@@ -106,7 +106,7 @@ jobs:
       - name: Restore retained completed run
         id: restore
         if: steps.prior.outputs.artifact_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           artifact-ids: ${{ steps.prior.outputs.artifact_id }}
           path: btc_dca_bridge/data
@@ -127,7 +127,7 @@ jobs:
       - name: Retain completed immutable artifacts
         id: retention
         if: steps.shadow.outputs.status == 'completed'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: production-shadow-${{ steps.context.outputs.run_id }}
           path: btc_dca_bridge/data/
@@ -137,7 +137,7 @@ jobs:
 
       - name: Retain partial immutable evidence
         if: failure() && steps.shadow.outputs.status == 'failed'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: production-shadow-partial-${{ steps.context.outputs.run_id }}-${{ github.run_id }}
           path: btc_dca_bridge/data/
