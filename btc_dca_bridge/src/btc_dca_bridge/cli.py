@@ -36,6 +36,7 @@ from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTran
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 from .readiness import ProductionReadinessService, production_connectivity
+from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -156,6 +157,12 @@ def _parser() -> argparse.ArgumentParser:
     readiness.add_argument("--data-root", type=Path, default=DATA_PATH); readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH); readiness.add_argument("--json", action="store_true")
     connectivity = subparsers.add_parser("production-connectivity", help="read-only authenticated Bybit connectivity check")
     connectivity.add_argument("--json", action="store_true")
+    evidence = subparsers.add_parser("collect-production-evidence", help="collect immutable read-only production evidence")
+    evidence.add_argument("--data-root", type=Path, default=DATA_PATH); evidence.add_argument("--ledger", type=Path, default=LEDGER_PATH); evidence.add_argument("--json", action="store_true")
+    verify_evidence = subparsers.add_parser("verify-production-evidence", help="verify one immutable production evidence bundle")
+    verify_evidence.add_argument("evidence_id"); verify_evidence.add_argument("--data-root", type=Path, default=DATA_PATH); verify_evidence.add_argument("--ledger", type=Path, default=LEDGER_PATH); verify_evidence.add_argument("--json", action="store_true")
+    preauth = subparsers.add_parser("preauthorization-status", help="read-only evidence and readiness preauthorization status")
+    preauth.add_argument("--data-root", type=Path, default=DATA_PATH); preauth.add_argument("--ledger", type=Path, default=LEDGER_PATH); preauth.add_argument("--json", action="store_true")
     return parser
 
 
@@ -549,6 +556,34 @@ def _production_connectivity() -> tuple[dict[str, object], int]:
     return result, 0
 
 
+def _evidence_service(args: argparse.Namespace) -> ProductionEvidenceService:
+    return ProductionEvidenceService(data_root=args.data_root, ledger_path=args.ledger, client_factory=_private_read_client_factory)
+
+
+def _collect_production_evidence(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    bundle, receipt = _evidence_service(args).collect()
+    result = {"status": bundle["status"], "evidence_id": bundle["evidence_id"], "evidence_sha256": receipt.sha256, "path": str(receipt.path), "real_money_authorization": bundle["real_money_authorization"], "message": "READ ONLY — NO ORDER SUBMITTED"}
+    return result, 0 if bundle["status"] != "EVIDENCE_INCOMPLETE" else 4
+
+
+def _verify_production_evidence(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    service = _evidence_service(args)
+    current_fingerprint = None
+    try:
+        client = _private_read_client_factory()
+        current_fingerprint, _ = _account_fingerprint(client)
+    except Exception:
+        pass
+    result = service.verify(args.evidence_id, current_account_fingerprint=current_fingerprint)
+    code = 0 if result["status"] in {"VALID_NOT_READY", "VALID_READY_FOR_SEPARATE_AUTHORIZATION"} else (EXIT_CORRUPT if result["status"] == "CORRUPT" else EXIT_BLOCKED)
+    return result, code
+
+
+def _preauthorization_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = preauthorization_status(_evidence_service(args))
+    return result, 0 if result["status"] != "BLOCKED" else EXIT_BLOCKED
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -583,6 +618,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _production_readiness(args)
         elif args.command == "production-connectivity":
             result, exit_code = _production_connectivity()
+        elif args.command == "collect-production-evidence":
+            result, exit_code = _collect_production_evidence(args)
+        elif args.command == "verify-production-evidence":
+            result, exit_code = _verify_production_evidence(args)
+        elif args.command == "preauthorization-status":
+            result, exit_code = _preauthorization_status(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":

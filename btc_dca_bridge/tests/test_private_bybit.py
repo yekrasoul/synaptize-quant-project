@@ -8,7 +8,7 @@ from decimal import Decimal
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import (
     ACCOUNT_INFO, EXECUTION_LIST, INSTRUMENTS_INFO, ORDER_HISTORY, ORDER_REALTIME, SERVER_TIME,
-    WALLET_BALANCE, ApiCredentialInfo, AuthenticationError, BybitPostAckReconciler, BybitPrivateReadClient,
+    WALLET_BALANCE, SPOT_BORROW_CHECK, ApiCredentialInfo, AuthenticationError, BybitPostAckReconciler, BybitPrivateReadClient,
     CredentialClassification, ExecutionFill, MalformedBybitResponseError, OrderState, PermissionError, ReadOnlyOrder,
     canonical_query, signature,
 )
@@ -66,6 +66,13 @@ class PrivateBybitTests(unittest.TestCase):
         self.assertEqual(client.account_info().unified_margin_status, 6)
         balances = client.wallet_balances()
         self.assertEqual(balances[0].wallet_balance, Decimal("0.1")); self.assertTrue(balances[0].has_liability)
+
+    def test_spot_quote_availability_uses_authoritative_quote_field(self):
+        availability = self.client({SPOT_BORROW_CHECK: response({"symbol": "BTCUSDT", "side": "Buy", "spotMaxTradeAmount": "123.45"})}).spot_quote_availability()
+        self.assertEqual(availability.amount_usdt, Decimal("123.45"))
+        self.assertEqual((availability.source_endpoint, availability.source_field, availability.account_type), (SPOT_BORROW_CHECK, "spotMaxTradeAmount", "UNIFIED"))
+        with self.assertRaises(MalformedBybitResponseError):
+            self.client({SPOT_BORROW_CHECK: response({})}).spot_quote_availability()
 
     def test_instrument_adapter_uses_hardened_parser(self):
         rules = self.client({INSTRUMENTS_INFO: response(instrument_result())}).instrument_rules()

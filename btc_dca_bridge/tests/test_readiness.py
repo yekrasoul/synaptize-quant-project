@@ -30,6 +30,9 @@ class FakeReadinessClient:
         availability = None if self.availability is None else SpotQuoteAvailability(self.availability, "/v5/account/wallet-balance", "availableBalance", "UNIFIED", True, "2026-10-07T11:59:00Z")
         return (WalletBalance("USDT", Decimal("100"), Decimal("0"), amount, amount, Decimal("100"), availability), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
     def instrument_rules(self): return self.rules
+    def spot_quote_availability(self):
+        balances = self.wallet_balances()
+        return balances[0].available_for_spot_quote_buy
     def server_time_ms(self): return 1791374340000
     def lookup_order(self, client_order_id): return object()
     def order_realtime_probe(self, client_order_id): return ()
@@ -112,9 +115,11 @@ class ReadinessTests(unittest.TestCase):
         result = self.evaluate(client_factory=lambda: decimal_client)
         self.assertIn("BYBIT_SPOT_AVAILABLE_BALANCE", {item["check_id"] for item in result["blockers"]})
 
-    def test_production_policy_has_no_approved_sources(self):
+    def test_production_policy_approves_only_exact_official_source(self):
         result = ProductionReadinessService(data_root=self.root / "data", ledger_path=self.ledger, now=lambda: datetime(2026, 10, 7, 12, tzinfo=UTC), **{key: value for key, value in self.common.items() if key != "availability_policy"}).evaluate()
         self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_SPOT_AVAILABLE_BALANCE")["status"], "FAIL")
+        from btc_dca_bridge.availability import APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES
+        self.assertEqual(APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES, frozenset({("/v5/order/spot-borrow-check", "spotMaxTradeAmount")}))
 
     def test_shared_availability_validator_rejects_untrusted_values_and_accepts_only_injected_policy(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)

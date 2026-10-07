@@ -228,7 +228,7 @@ class ProductionReadinessService:
             balances = {row.coin: row for row in client.wallet_balances()}
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
-            available = balances.get("USDT").available_for_spot_quote_buy if balances.get("USDT") else None
+            available = client.spot_quote_availability() if hasattr(client, "spot_quote_availability") else None
             try:
                 availability.validate_spot_quote_availability(available, now=self.now(), policy=self.availability_policy)
             except availability.AvailabilityValidationError as exc:
@@ -285,7 +285,7 @@ class ProductionReadinessService:
 
 def production_connectivity(*, client_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     """Perform named GET-only reads, including harmless empty order probes."""
-    endpoints_required = ("credential_info", "account_info", "wallet_balance", "instrument_metadata", "server_time", "order_realtime", "order_history", "execution_list")
+    endpoints_required = ("credential_info", "account_info", "wallet_balance", "spot_quote_availability", "instrument_metadata", "server_time", "order_realtime", "order_history", "execution_list")
     try:
         client = (client_factory or BybitPrivateReadClient.from_environment)()
     except MalformedBybitResponseError as exc:
@@ -297,6 +297,7 @@ def production_connectivity(*, client_factory: Callable[[], Any] | None = None) 
         "credential_info": client.credential_info,
         "account_info": client.account_info,
         "wallet_balance": client.wallet_balances,
+        "spot_quote_availability": client.spot_quote_availability,
         "instrument_metadata": client.instrument_rules,
         "server_time": client.server_time_ms,
         "order_realtime": lambda: client.order_realtime_probe(probe_id),

@@ -39,6 +39,9 @@ class FakeReadClient:
     def account_info(self): self._call("account_info"); return self.account
     def wallet_balances(self): self._call("wallet_balances"); return self.balances
     def instrument_rules(self): self._call("instrument_rules"); return self.rules
+    def spot_quote_availability(self):
+        self._call("spot_quote_availability")
+        return next((balance.available_for_spot_quote_buy for balance in self.balances if balance.coin == "USDT"), None)
     def submission_state(self, client_order_id): self._call(f"submission_state:{client_order_id}"); return self.state
 
 
@@ -86,7 +89,7 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(manifest.pre_submission_state, "conclusively_absent")
         self.assertEqual(manifest.live_execution_enabled, False)
         self.assertEqual(manifest.kill_switch, True)
-        self.assertEqual(len(self.client.calls), 5)
+        self.assertEqual(len(self.client.calls), 6)
         self.assertTrue(result.artifact_receipt.path.exists())
         self.assertEqual(self.ledger.read_bytes(), b"")
         self.assertFalse((self.root / "data" / "order_submission_attempts").exists())

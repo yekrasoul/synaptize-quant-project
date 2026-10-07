@@ -31,6 +31,7 @@ class FakeReader:
     def account_info(self): return self.account
     def wallet_balances(self): return self.balances
     def instrument_rules(self): return self.rules
+    def spot_quote_availability(self): return self.balances[0].available_for_spot_quote_buy
     def get_rules(self, exchange, market_type, symbol): return self.rules
     def decision_state(self, decision_id): return "none"
     def client_order_state(self, client_order_id): return self.state

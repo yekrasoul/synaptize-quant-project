@@ -11,7 +11,8 @@ Verification date: 2026-10-07. Sources are the official Bybit V5 documentation.
 | `orderLinkId` | POST | client string | unique deterministic client identity | future approved live path only | `client_order_id` / reconciler | exact reconciliation anchor | Missing/mismatched identity blocks | [Place Order](https://bybit-exchange.github.io/docs/v5/order/create-order) |
 | `unifiedMarginStatus`, `marginMode`, `spotHedgingStatus`, `updatedTime` | GET | enum / UTC freshness | only Unified status `6`, `REGULAR_MARGIN`, `OFF`, fresh timestamp | Unified status 6 | `AccountInfo` / `classify_production_account_mode` | account compatibility | Unknown, stale, or contradictory values fail | [Account Info](https://bybit-exchange.github.io/docs/v5/account/account-info) |
 | wallet/liability fields | GET | account balances | BTC/USDT liabilities and interest absent | Unified | `wallet_balances` | wallet/liability gate | No `walletBalance - locked` arithmetic | [Wallet Balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance) |
-| Spot quote-buy availability provenance | GET | USDT | exact official source for Unified Spot BTCUSDT quoteCoin Market Buy | Unified status 6 only | `availability.py::validate_spot_quote_availability` / `SpotQuoteAvailability` | required buying-power proof | Plain Decimal, derived, deprecated, generic, stale, or unknown source fails | [Wallet Balance](https://bybit-exchange.github.io/docs/v5/account/wallet-balance) |
+| `/v5/order/spot-borrow-check`: `spotMaxTradeAmount` | GET | USDT quote amount | actual Spot quote amount available without borrowable amount | Unified Spot | `BybitPrivateReadClient.spot_quote_availability` | authoritative availability and connectivity | Missing/malformed/stale provenance blocks | [Spot Borrow Quota](https://bybit-exchange.github.io/docs/v5/order/spot-borrow-quota) |
+| Spot quote-buy availability provenance | GET | USDT | `spotMaxTradeAmount` is actual available quote amount for Spot trading without borrowable amount | Unified status 6 only | `BybitPrivateReadClient.spot_quote_availability` / `availability.py::validate_spot_quote_availability` | required buying-power proof | Plain Decimal, derived, deprecated, generic, stale, or unknown source fails | [Spot Borrow Quota](https://bybit-exchange.github.io/docs/v5/order/spot-borrow-quota) |
 | `lotSizeFilter.minOrderAmt` | GET | USDT | minimum quote amount | Spot | `InstrumentRules.quote_minimum` | validates `$10` floor | Missing/malformed minimum blocks | [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
 | `lotSizeFilter.maxMarketOrderQty` | GET | base coin quantity | maximum market quantity, not a USDT quote maximum | Spot | `InstrumentRules.max_market_order_qty` | informational only for quoteCoin readiness | Never compare directly to USDT amounts | [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
 | QuoteCoin market-buy upper bound | GET | USDT | no authoritative quote-unit upper-bound field is currently implemented | Spot | `InstrumentRules.market_buy_quote_maximum` remains `None` in production parser | proves `$10/$25/$50/$75/$100` only when supplied by an approved source | Upper bound unproven => `UNAVAILABLE` / `NOT_READY` | [Place Order](https://bybit-exchange.github.io/docs/v5/order/create-order), [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
@@ -22,10 +23,11 @@ Verification date: 2026-10-07. Sources are the official Bybit V5 documentation.
 
 ## Availability provenance policy
 
-Authoritative exact Spot quote-buy availability source currently implemented: **NONE**.
-The production policy in `availability.py` intentionally has an empty approved-source set,
-so the production Bybit adapter returns `available_for_spot_quote_buy=None` and readiness
-remains `NOT_READY` until an exact official source is implemented and reviewed.
+Authoritative exact Spot quote-buy availability source currently implemented:
+`GET /v5/order/spot-borrow-check`, field `spotMaxTradeAmount`. The official contract
+describes this as the actual quote amount available for Spot trading when borrowable
+amount is excluded. It is requested for `category=spot`, `symbol=BTCUSDT`, `side=Buy`
+and is passed through the shared provenance validator.
 
 `availableToWithdraw` is explicitly rejected because the official contract marks it
 deprecated for Unified accounts. A generic `availableBalance` is also rejected unless a
