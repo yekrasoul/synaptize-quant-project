@@ -1,0 +1,7 @@
+schema_version: 1.0.0
+live_execution_enabled: false
+kill_switch: true
+explicit_live_approval_required: true
+monthly_cap_usd: 500
+market: Bybit Spot BTCUSDT
+order_submission: not_implemented

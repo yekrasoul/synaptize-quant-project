@@ -1,0 +1,1 @@
+{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["schema_version","client_order_id","state","no_order_executed"],"properties":{"schema_version":{"const":"5.1.0"},"client_order_id":{"type":"string"},"state":{"enum":["not_implemented","ambiguous","reconciled"]},"no_order_executed":{"const":true}}}
