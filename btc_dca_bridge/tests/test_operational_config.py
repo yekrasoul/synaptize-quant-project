@@ -19,6 +19,7 @@ from btc_dca_bridge.shadow import _default_run_id
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = ROOT.parent
 
 
 class OperationalConfigTests(unittest.TestCase):
@@ -66,7 +67,7 @@ class OperationalConfigTests(unittest.TestCase):
         self.assertIn("scheduled", context.run_id)
 
     def test_workflow_matches_runtime_policy(self) -> None:
-        workflow = (ROOT / ".github" / "workflows" / "production-shadow.yml").read_text(encoding="utf-8")
+        workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "production-shadow.yml").read_text(encoding="utf-8")
         runtime = load_runtime_config()
         self.assertIn(f'cron: "{runtime.github_cron_utc}"', workflow)
         self.assertIn(f"timeout-minutes: {runtime.workflow_timeout_minutes}", workflow)
@@ -74,4 +75,3 @@ class OperationalConfigTests(unittest.TestCase):
         self.assertIn("partial_retention_days", workflow)
         self.assertNotIn("Binance", workflow)
         self.assertNotIn("KuCoin", workflow)
-

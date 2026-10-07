@@ -6,12 +6,16 @@ import yaml
 from btc_dca_bridge.config import load_persistence_config, load_runtime_config
 
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW_PATH = ROOT / ".github" / "workflows" / "production-shadow.yml"
+APP_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = APP_ROOT.parent
+WORKFLOW_PATH = REPOSITORY_ROOT / ".github" / "workflows" / "production-shadow.yml"
+NESTED_WORKFLOW_PATH = APP_ROOT / ".github" / "workflows" / "production-shadow.yml"
 
 
 class ProductionWorkflowTest(unittest.TestCase):
     def test_workflow_yaml_parses(self):
+        self.assertTrue(WORKFLOW_PATH.is_file())
+        self.assertFalse(NESTED_WORKFLOW_PATH.exists())
         payload = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
         self.assertIsInstance(payload, dict)
         self.assertIn("jobs", payload)
@@ -28,9 +32,11 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertIn("actions: read", workflow)
         self.assertNotIn("contents: write", workflow)
         self.assertIn("uv sync --frozen", workflow)
+        self.assertIn("working-directory: btc_dca_bridge", workflow)
         self.assertIn("python -m btc_dca_bridge production-shadow", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("actions/download-artifact@v4", workflow)
+        self.assertIn("path: btc_dca_bridge/data", workflow)
         self.assertIn("retention-days: ${{ steps.context.outputs.completed_retention_days }}", workflow)
         self.assertIn("partial_retention_days", workflow)
         self.assertEqual(persistence.completed_retention_days, 90)
