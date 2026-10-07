@@ -106,6 +106,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--submission-evidence", type=Path, help="read-only submission/reconciliation evidence JSONL")
     private = subparsers.add_parser("private-verify", help="read-only authenticated Bybit verification")
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
+    live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
+    live.add_argument("--decision-json", type=Path, required=True)
     return parser
 
 
@@ -355,6 +357,15 @@ def _private_verify(args: argparse.Namespace) -> dict[str, object]:
     return result
 
 
+def _live_submit(args: argparse.Namespace) -> dict[str, object]:
+    config = load_execution_config()
+    if not config.live_execution_enabled:
+        return {"status": "blocked", "reason": "LIVE EXECUTION DISABLED", "message": "NO ORDER SUBMITTED"}
+    if config.kill_switch:
+        return {"status": "blocked", "reason": "KILL SWITCH ACTIVE", "message": "NO ORDER SUBMITTED"}
+    return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -373,6 +384,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _execution_plan(args)
         elif args.command == "private-verify":
             result = _private_verify(args)
+        elif args.command == "live-submit":
+            result = _live_submit(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":

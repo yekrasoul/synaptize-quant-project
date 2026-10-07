@@ -245,7 +245,8 @@ def recompute_monthly_spend(ledger_path, calendar_month: str) -> Decimal:
 def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], *, ledger_path,
                               calendar_month: str, execution_config: ExecutionConfig | None = None,
                               instrument_provider: InstrumentMetadataProvider | None = None,
-                              submission_state: SubmissionState | None = None) -> SafetyValidationResult:
+                              submission_state: SubmissionState | None = None,
+                              live_approval_granted: bool = False) -> SafetyValidationResult:
     reasons: list[str] = []
     if execution_config is None:
         try: execution_config = load_execution_config()
@@ -254,7 +255,7 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
     if (intent.exchange, intent.market_type, intent.symbol) != (execution_config.exchange, execution_config.market_type, execution_config.symbol): reasons.append("intent market identity does not match execution config")
     if execution_config.kill_switch: reasons.append("kill switch is active")
     if not execution_config.live_execution_enabled: reasons.append("live execution is disabled")
-    if execution_config.explicit_live_approval_required: reasons.append("explicit live approval is missing")
+    if execution_config.explicit_live_approval_required and not live_approval_granted: reasons.append("explicit live approval is missing")
     try: validate_spot_instrument(intent.exchange, intent.market_type, intent.symbol)
     except ExecutionSafetyError as exc: reasons.append(str(exc))
     if intent.strategy_id != APPROVED_STRATEGY or intent.strategy_version != APPROVED_VERSION: reasons.append("strategy is not approved V1")
