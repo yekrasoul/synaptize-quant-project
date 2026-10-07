@@ -7,3 +7,4 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / "config" / "strategy_v1.yaml"
 LEDGER_PATH = PROJECT_ROOT / "ledger" / "executions.jsonl"
 SCHEMAS_PATH = PROJECT_ROOT / "schemas"
+DATA_PATH = PROJECT_ROOT / "data"

@@ -198,3 +198,53 @@ class SentimentRateLimitedError(SentimentError):
     """The public sentiment source rejected the request due to rate limits."""
 
     default_code = SentimentErrorCode.RATE_LIMITED
+
+
+class ArtifactErrorCode(str, Enum):
+    """Stable machine-readable failure categories for artifact persistence."""
+
+    ARTIFACT_ALREADY_EXISTS = "ARTIFACT_ALREADY_EXISTS"
+    ARTIFACT_NOT_FOUND = "ARTIFACT_NOT_FOUND"
+    ARTIFACT_INVALID = "ARTIFACT_INVALID"
+    ARTIFACT_CORRUPT = "ARTIFACT_CORRUPT"
+    PERSISTENCE_IO_ERROR = "PERSISTENCE_IO_ERROR"
+    INVALID_ARTIFACT_PATH = "INVALID_ARTIFACT_PATH"
+    SCHEMA_VALIDATION_FAILED = "SCHEMA_VALIDATION_FAILED"
+
+
+class ArtifactError(BtcDcaError):
+    """Base failure at the immutable artifact filesystem boundary."""
+
+    default_code = ArtifactErrorCode.ARTIFACT_INVALID
+
+    def __init__(self, message: str, *, code: ArtifactErrorCode | None = None) -> None:
+        self.code = code or self.default_code
+        super().__init__(f"{self.code.value}: {message}")
+
+
+class ArtifactAlreadyExistsError(ArtifactError):
+    default_code = ArtifactErrorCode.ARTIFACT_ALREADY_EXISTS
+
+
+class ArtifactNotFoundError(ArtifactError):
+    default_code = ArtifactErrorCode.ARTIFACT_NOT_FOUND
+
+
+class ArtifactInvalidError(ArtifactError):
+    default_code = ArtifactErrorCode.ARTIFACT_INVALID
+
+
+class ArtifactCorruptError(ArtifactError):
+    default_code = ArtifactErrorCode.ARTIFACT_CORRUPT
+
+
+class PersistenceIOError(ArtifactError):
+    default_code = ArtifactErrorCode.PERSISTENCE_IO_ERROR
+
+
+class InvalidArtifactPathError(ArtifactError):
+    default_code = ArtifactErrorCode.INVALID_ARTIFACT_PATH
+
+
+class ArtifactSchemaValidationError(ArtifactError):
+    default_code = ArtifactErrorCode.SCHEMA_VALIDATION_FAILED

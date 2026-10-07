@@ -1,5 +1,10 @@
 # Runtime data
 
-This directory is reserved for generated, non-canonical runtime artifacts such as immutable market snapshots and typed error reports. Runtime data must be validated against a contract before it is used for a decision.
+This directory is reserved for generated immutable runtime artifacts. `market/`,
+`sentiment/`, and `decisions/` payloads (and their SHA-256 sidecars) are
+runtime-generated and intentionally ignored by Git; this README and the
+contracts are committed. See `../docs/IMMUTABLE_ARTIFACTS.md` for the layout,
+atomic publication policy, and read-back rules. Runtime artifacts are not the
+canonical reconciled execution ledger.
 
 Do not place reconciled executions here; use `../ledger/executions.jsonl`.
