@@ -16,6 +16,8 @@ from btc_dca_bridge.errors import (
     PersistenceIOError,
 )
 from btc_dca_bridge.paths import LEDGER_PATH
+from btc_dca_bridge.execution import OrderIntent, SafetyValidationResult, client_order_id
+from decimal import Decimal
 
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
@@ -183,6 +185,18 @@ class ArtifactStoreTest(unittest.TestCase):
         self.store.persist("decision", decision(), run_id=RUN_ID)
         self.assertEqual(LEDGER_PATH.read_bytes(), before)
         self.assertFalse(hasattr(self.store, "calculate_decision"))
+
+    def test_execution_plan_evidence_is_immutable_and_not_execution(self):
+        intent = OrderIntent("5.1.0", "btc_adaptive_dca_v1", "1.0.0", RUN_ID, "decision_abc123", "intent_abc123", "2026-10-07T12:00:00Z", "Bybit", "spot", "BTCUSDT", "Buy", Decimal("10"), "recommendation_only", client_order_id("btc_adaptive_dca_v1", "decision_abc123", RUN_ID), Decimal("0"), Decimal("500"), "pending", False, False)
+        validation = SafetyValidationResult("5.1.0", RUN_ID, "rejected", ("kill switch is active",), "2026-10-07T12:00:01Z", Decimal("0"), Decimal("500"))
+        intent_receipt = self.store.persist(ArtifactType.ORDER_INTENT, intent, run_id=RUN_ID)
+        safety_receipt = self.store.persist(ArtifactType.SAFETY_VALIDATION, validation, run_id=RUN_ID)
+        self.assertEqual(hashlib.sha256(intent_receipt.path.read_bytes()).hexdigest(), intent_receipt.path.with_suffix(".json.sha256").read_text().strip())
+        self.assertEqual(hashlib.sha256(safety_receipt.path.read_bytes()).hexdigest(), safety_receipt.path.with_suffix(".json.sha256").read_text().strip())
+        with self.assertRaises(ArtifactAlreadyExistsError): self.store.persist(ArtifactType.ORDER_INTENT, intent, run_id=RUN_ID)
+        self.assertFalse(list((self.root / "executions").rglob("*")) if (self.root / "executions").exists() else [])
+        self.assertFalse(list((self.root / "fills").rglob("*")) if (self.root / "fills").exists() else [])
+        self.assertFalse(list((self.root / "order_submissions").rglob("*")) if (self.root / "order_submissions").exists() else [])
 
 
 if __name__ == "__main__":

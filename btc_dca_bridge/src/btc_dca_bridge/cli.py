@@ -27,7 +27,7 @@ from .production import (
 )
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
-from .execution import InstrumentRules, make_order_intent, validate_execution_safety
+from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, make_order_intent, validate_execution_safety
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
@@ -101,6 +101,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--month", required=True)
     plan.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     plan.add_argument("--data-root", type=Path, default=DATA_PATH)
+    plan.add_argument("--instrument-metadata", type=Path, help="validated read-only Bybit Spot instrument-info JSON")
+    plan.add_argument("--submission-evidence", type=Path, help="read-only submission/reconciliation evidence JSONL")
     return parser
 
 
@@ -314,11 +316,13 @@ def _execution_plan(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     config = load_execution_config()
     intent = make_order_intent(decision, run_id=args.run_id, created_at_utc=args.created_at)
-    rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), True)
+    instrument_provider = None
+    if args.instrument_metadata is not None:
+        instrument_provider = JsonInstrumentMetadataProvider(json.loads(args.instrument_metadata.read_text(encoding="utf-8")))
+    evidence = SubmissionEvidenceStore(args.submission_evidence) if args.submission_evidence else NoSubmissionEvidence()
     validation = validate_execution_safety(intent, decision, ledger_path=args.ledger, calendar_month=args.month,
-                                            kill_switch=config.kill_switch, live_execution_enabled=config.live_execution_enabled,
-                                            explicit_live_approval=not config.explicit_live_approval_required,
-                                            instrument_rules=rules, execution_config=config)
+                                            instrument_provider=instrument_provider, submission_state=evidence,
+                                            execution_config=config)
     receipts = [ArtifactStore(args.data_root).persist(ArtifactType.ORDER_INTENT, intent, run_id=args.run_id),
                 ArtifactStore(args.data_root).persist(ArtifactType.SAFETY_VALIDATION, validation, run_id=args.run_id)]
     return {"order_intent": intent.to_dict(), "safety_validation": validation.to_dict(),
