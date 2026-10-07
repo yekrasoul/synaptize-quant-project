@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Sequence
 
 from .config import load_notification_config, load_operational_config, load_strategy_config, load_execution_config
 from .artifacts import ArtifactStore, ArtifactType
-from .errors import BtcDcaError
+from .errors import ArtifactCorruptError, BtcDcaError
 from .engine import calculate_decision
 from .ledger import read_executions
 from .models import MarketSnapshot
@@ -27,10 +28,20 @@ from .production import (
 )
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
-from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, make_order_intent, validate_execution_safety
-from .private_bybit import BybitPrivateReadClient
+from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
+from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
 from .canary import CanaryPreparer
+from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
+from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
+
+
+# These internal factories are deliberately not CLI options.  They provide a
+# narrow dependency seam for offline integration tests while production keeps
+# constructing only the reviewed Bybit clients below.
+_private_read_client_factory = BybitPrivateReadClient.from_environment
+_submission_transport_factory = SignedBybitSubmissionTransport
+_post_ack_reconciler_factory = BybitPostAckReconciler
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -115,6 +126,30 @@ def _parser() -> argparse.ArgumentParser:
     canary.add_argument("--month", required=True)
     canary.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     canary.add_argument("--data-root", type=Path, default=DATA_PATH)
+    for name, help_text in (("ops-status", "read-only controlled operations state"), ("ops-plan", "read-only allowed-next-action preflight"), ("ops-health", "read-only operational integrity health")):
+        command = subparsers.add_parser(name, help=help_text)
+        command.add_argument("--data-root", type=Path, default=DATA_PATH)
+        command.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+        command.add_argument("--run-id")
+        command.add_argument("--json", action="store_true")
+    audit = subparsers.add_parser("audit-run", help="read-only immutable artifact-chain audit")
+    audit.add_argument("run_id")
+    audit.add_argument("--data-root", type=Path, default=DATA_PATH)
+    audit.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    audit.add_argument("--json", action="store_true")
+    approve = subparsers.add_parser("canary-approve", help="persist a precise five-minute manual approval")
+    approve.add_argument("--run-id", required=True); approve.add_argument("--canary-id", required=True)
+    approve.add_argument("--manifest-sha", required=True); approve.add_argument("--amount", required=True)
+    approve.add_argument("--client-order-id", required=True); approve.add_argument("--payload-fingerprint", required=True)
+    approve.add_argument("--data-root", type=Path, default=DATA_PATH); approve.add_argument("--json", action="store_true")
+    execute = subparsers.add_parser("canary-execute", help="one exact manual invocation of the guarded engine")
+    execute.add_argument("--run-id", required=True); execute.add_argument("--canary-id", required=True); execute.add_argument("--approval-id", required=True)
+    execute.add_argument("--manifest-sha", required=True); execute.add_argument("--approval-sha", required=True)
+    execute.add_argument("--data-root", type=Path, default=DATA_PATH); execute.add_argument("--ledger", type=Path, default=LEDGER_PATH); execute.add_argument("--month", required=True); execute.add_argument("--json", action="store_true")
+    recover = subparsers.add_parser("reconcile-existing", help="no-POST recovery of one exact prior identity")
+    recover.add_argument("--run-id", required=True); recover.add_argument("--canary-id", required=True); recover.add_argument("--approval-id", required=True)
+    recover.add_argument("--manifest-sha", required=True); recover.add_argument("--approval-sha", required=True)
+    recover.add_argument("--data-root", type=Path, default=DATA_PATH); recover.add_argument("--ledger", type=Path, default=LEDGER_PATH); recover.add_argument("--json", action="store_true")
     return parser
 
 
@@ -413,6 +448,87 @@ def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     return {"manifest": manifest, "artifact_receipt": {"path": str(result.artifact_receipt.path), "sha256": result.artifact_receipt.sha256}, "summary": summary}
 
 
+def _ops(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    service = OperationsService(data_root=args.data_root, ledger_path=args.ledger)
+    if args.command == "ops-status":
+        snapshot = service.snapshot(run_id=args.run_id)
+        return snapshot.to_dict(), EXIT_RECONCILIATION if snapshot.reconciliation_required else (EXIT_BLOCKED if snapshot.state == "BLOCKED" else 0)
+    if args.command == "ops-plan":
+        snapshot = service.snapshot(run_id=args.run_id)
+        exit_code = EXIT_RECONCILIATION if snapshot.reconciliation_required else (EXIT_BLOCKED if snapshot.state == "BLOCKED" else 0)
+        return {**snapshot.to_dict(), "current_state": snapshot.state, "allowed_next_action": snapshot.allowed_actions[0] if snapshot.allowed_actions else None, "message": "READ ONLY — NO ORDER SUBMITTED"}, exit_code
+    if args.command == "ops-health":
+        result = service.health()
+        return result, EXIT_CORRUPT if result["status"] == "CORRUPT" else (EXIT_RECONCILIATION if result["status"] == "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" else (EXIT_BLOCKED if result["status"] == "BLOCKED" else 0))
+    audit = service.audit_run(args.run_id)
+    return audit, 0 if audit["status"] == "complete" else EXIT_BLOCKED
+
+
+def _approval_from_dict(payload: dict[str, object]) -> LiveApproval:
+    return LiveApproval(str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["client_order_id"]), Decimal(str(payload["approved_amount_usdt"])), str(payload["approved_at_utc"]), str(payload["expires_at_utc"]), str(payload["approval_id"]), str(payload["canary_id"]), str(payload["manifest_sha256"]), str(payload["order_payload_fingerprint"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), str(payload["order_type"]), bool(payload["standing_authorization"]))
+
+
+def _intent_from_dict(payload: dict[str, object]) -> OrderIntent:
+    return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)))
+
+
+def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
+    store = ArtifactStore(args.data_root)
+    manifest, digest = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
+    if digest != args.manifest_sha or manifest["client_order_id"] != args.client_order_id or manifest["approved_amount_usdt"] != args.amount or manifest["order_payload_fingerprint"] != args.payload_fingerprint:
+        raise ValueError("approval inputs do not bind exactly to the persisted manifest")
+    approval = LiveApproval.for_manifest(manifest, digest, now_utc=datetime.now(UTC))
+    receipt = store.persist(ArtifactType.LIVE_APPROVAL, approval, run_id=args.run_id)
+    OperationsService(data_root=args.data_root, ledger_path=LEDGER_PATH).record_event(action="approval_created", result="persisted", reason="exact manifest-bound manual approval", run_id=args.run_id, artifact_ids={"canary_id": approval.canary_id, "approval_id": approval.approval_id, "client_order_id": approval.client_order_id})
+    return {"status": "approval_persisted", "approval_id": approval.approval_id, "approval_sha256": receipt.sha256, "summary": {"exchange": "Bybit", "market": "Spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "quote_amount_usdt": str(approval.approved_amount_usdt), "leverage": 0, "canary_id": approval.canary_id, "client_order_id": approval.client_order_id, "manifest_sha256": approval.manifest_sha256, "expires_at_utc": approval.expires_at_utc}}
+
+
+def _load_exact_execution_artifacts(args: argparse.Namespace) -> tuple[ArtifactStore, dict[str, object], dict[str, object], LiveApproval, str, str, OrderIntent, dict[str, object]]:
+    store = ArtifactStore(args.data_root)
+    manifest, manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
+    approval_payload, approval_sha = store.find_artifact(ArtifactType.LIVE_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
+    if manifest_sha != args.manifest_sha or approval_sha != args.approval_sha:
+        raise ValueError("supplied immutable digest does not match persisted artifact")
+    approval = _approval_from_dict(approval_payload)
+    intent_payload, _ = store.find_artifact(ArtifactType.ORDER_INTENT, identity_field="order_intent_id", identity_value=str(manifest["order_intent_id"]))
+    decision, _ = store.find_artifact(ArtifactType.DECISION, identity_field="decision_id", identity_value=str(manifest["decision_id"]))
+    return store, manifest, approval_payload, approval, manifest_sha, approval_sha, _intent_from_dict(intent_payload), decision
+
+
+def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    store, manifest, _, approval, manifest_sha, approval_sha, intent, decision = _load_exact_execution_artifacts(args)
+    config = load_execution_config()
+    # Checked-in config blocks before client/transport construction. The
+    # guarded engine remains the sole future submission implementation.
+    if not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented":
+        return {"status": "blocked", "reason": "checked-in production defaults prohibit execution", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
+    # The persisted intent documents the fail-safe prepared mode.  The exact
+    # immutable identity is retained while the separately approved runtime
+    # gate supplies the only execution-mode transition.
+    intent = replace(intent, live_execution_enabled=True)
+    client = _private_read_client_factory()
+    lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
+    lock.acquire()
+    try:
+        engine = LiveOrderEngine(artifact_store=store)
+        result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
+    finally:
+        lock.release()
+    return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
+
+
+def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    store, manifest, _, approval, manifest_sha, approval_sha, intent, _ = _load_exact_execution_artifacts(args)
+    client = _private_read_client_factory()
+    lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
+    lock.acquire()
+    try:
+        result = LiveOrderEngine(artifact_store=store).reconcile_existing(intent, ledger_path=args.ledger, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
+    finally:
+        lock.release()
+    return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -435,12 +551,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _live_submit(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
+        elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:
+            result, exit_code = _ops(args)
+        elif args.command == "canary-approve":
+            result = _canary_approve(args)
+        elif args.command == "canary-execute":
+            result, exit_code = _canary_execute(args)
+        elif args.command == "reconcile-existing":
+            result, exit_code = _reconcile_existing(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
             result = _portfolio(args)
         else:
             result = _validate(args)
+    except ArtifactCorruptError as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
+        return EXIT_CORRUPT
+    except PrivateBybitError as exc:
+        print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
+        return 4
     except (BtcDcaError, ValueError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 2
