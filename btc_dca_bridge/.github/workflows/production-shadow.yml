@@ -1,0 +1,166 @@
+name: Production shadow
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-shadow
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    name: Read-only BTC DCA shadow
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # must match config/runtime.yaml; GitHub evaluates this before Python starts
+    env:
+      CONTEXT_JSON: ${{ runner.temp }}/production-context.json
+      RESULT_JSON: ${{ runner.temp }}/production-result.json
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Check out canonical repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Verify notification secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${TELEGRAM_BOT_TOKEN}" || -z "${TELEGRAM_CHAT_ID}" ]]; then
+            echo "Required Telegram repository secrets are unavailable." >&2
+            exit 1
+          fi
+
+      - name: Resolve stable workflow identity
+        id: workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = await github.rest.actions.getWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId
+            });
+            core.setOutput('created_at', run.data.created_at);
+            core.setOutput('started_at', run.data.run_started_at || run.data.created_at);
+
+      - name: Establish logical run context
+        id: context
+        shell: bash
+        env:
+          TRIGGER_TYPE: ${{ github.event_name == 'schedule' && 'scheduled' || 'manual' }}
+          PROCESS_STARTED_AT: ${{ steps.workflow.outputs.started_at }}
+          TRIGGER_CREATED_AT: ${{ steps.workflow.outputs.created_at }}
+          TRIGGER_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          uv run python -m btc_dca_bridge production-context \
+            --trigger "${TRIGGER_TYPE}" \
+            --process-started-at "${PROCESS_STARTED_AT}" \
+            --trigger-created-at "${TRIGGER_CREATED_AT}" \
+            --trigger-id "${TRIGGER_ID}" \
+            --output "${CONTEXT_JSON}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Find retained completed run
+        id: prior
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const name = `production-shadow-${{ steps.context.outputs.run_id }}`;
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const match = artifacts.find(a => a.name === name && !a.expired);
+            core.setOutput('artifact_id', match ? String(match.id) : '');
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+
+      - name: Restore retained completed run
+        id: restore
+        if: steps.prior.outputs.artifact_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ steps.prior.outputs.artifact_id }}
+          path: data
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.prior.outputs.run_id }}
+
+      - name: Run canonical production shadow
+        id: shadow
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python -m btc_dca_bridge production-shadow \
+            --context "${CONTEXT_JSON}" \
+            --result-json "${RESULT_JSON}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Retain completed immutable artifacts
+        id: retention
+        if: steps.shadow.outputs.status == 'completed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-shadow-${{ steps.context.outputs.run_id }}
+          path: data/
+          if-no-files-found: error
+          retention-days: ${{ steps.context.outputs.completed_retention_days }}
+          compression-level: 0
+
+      - name: Retain partial immutable evidence
+        if: failure() && steps.shadow.outputs.status == 'failed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-shadow-partial-${{ steps.context.outputs.run_id }}-${{ github.run_id }}
+          path: data/
+          if-no-files-found: ignore
+          retention-days: ${{ steps.context.outputs.partial_retention_days }}
+          compression-level: 0
+
+      - name: Send successful shadow notification
+        if: steps.shadow.outputs.status == 'completed' && steps.retention.outcome == 'success'
+        run: uv run python -m btc_dca_bridge notify-shadow --result-json "${RESULT_JSON}"
+
+      - name: Suppress duplicate completed notification
+        if: steps.shadow.outputs.status == 'already_completed'
+        run: uv run python -m btc_dca_bridge notify-shadow --result-json "${RESULT_JSON}"
+
+      - name: Send pipeline failure notification
+        if: failure() && steps.shadow.outputs.status == 'failed'
+        run: uv run python -m btc_dca_bridge notify-shadow --result-json "${RESULT_JSON}"
+
+      - name: Send retention failure notification
+        if: failure() && steps.shadow.outputs.status == 'completed' && steps.retention.outcome == 'failure'
+        run: >-
+          uv run python -m btc_dca_bridge notify-shadow
+          --result-json "${RESULT_JSON}"
+          --failure-stage RETENTION
+          --failure-category DURABLE_RETENTION_FAILED
+
+      - name: Write workflow summary
+        if: always() && steps.context.outcome == 'success'
+        run: >-
+          uv run python -m btc_dca_bridge summarize-shadow
+          --result-json "${RESULT_JSON}"
+          --summary-file "${GITHUB_STEP_SUMMARY}"
+          --retention-status "${{ steps.retention.outcome }}"

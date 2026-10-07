@@ -1,0 +1,6 @@
+config_version: "1.0.0"
+artifact_root: data
+completed_retention_days: 90
+partial_retention_days: 30
+digest_algorithm: sha256
+serialization_policy: json_utf8_sorted_compact_v1

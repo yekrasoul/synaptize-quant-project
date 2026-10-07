@@ -1,0 +1,91 @@
+# Canonical, immutable-by-default definition of BTC Adaptive DCA V1.
+# Any rule change requires a separately approved strategy version (for example V2).
+strategy:
+  id: btc_adaptive_dca_v1
+  version: 1.0.0
+  status: active
+  asset: BTC
+  quote_currency: USDT
+
+market_policy:
+  primary_exchange: Bybit
+  market_type: spot
+  symbol: BTCUSDT
+  price_source_requirement: Bybit BTC/USDT Spot only
+  prohibited_primary_sources:
+    - perpetual
+    - futures
+    - options
+    - index_price
+    - other_exchange
+  unavailable_data_action: no_decision
+  freshness_required: true
+  same_source_price_and_high_required: true
+
+capital_rules:
+  core_daily_usd: 10
+  minimum_purchase_usd: 10
+  monthly_cap_usd: 500
+  borrowing_allowed: false
+  leverage_allowed: false
+  unused_monthly_budget_carry_forward: false
+
+drawdown:
+  reference: rolling_high
+  window_hours: 168
+  formula: "(current_price_usdt - rolling_7d_high_usdt) / rolling_7d_high_usdt * 100"
+  band_resolution: first_matching_rule_in_list
+  base_purchase_bands:
+    - condition: drawdown_percent >= -5
+      purchase_usd: 10
+    - condition: drawdown_percent >= -10 and drawdown_percent < -5
+      purchase_usd: 25
+    - condition: drawdown_percent >= -15 and drawdown_percent < -10
+      purchase_usd: 50
+    - condition: drawdown_percent >= -25 and drawdown_percent < -15
+      purchase_usd: 75
+    - condition: drawdown_percent < -25
+      purchase_usd: 100
+
+sentiment:
+  source: Crypto Fear & Greed Index
+  role: secondary_adjustment_only
+  multiplier_bands:
+    - min_index: 0
+      max_index: 20
+      multiplier: 1.50
+    - min_index: 21
+      max_index: 35
+      multiplier: 1.30
+    - min_index: 36
+      max_index: 50
+      multiplier: 1.15
+    - min_index: 51
+      max_index: 65
+      multiplier: 1.00
+    - min_index: 66
+      max_index: 75
+      multiplier: 0.85
+    - min_index: 76
+      max_index: 90
+      multiplier: 0.70
+    - min_index: 91
+      max_index: 100
+      multiplier: 0.50
+
+calculation_policy:
+  rounding: nearest_whole_usd
+  rounding_tie_breaking: ROUND_HALF_UP
+  preserve_minimum_purchase_usd_after_sentiment: true
+  cap_application_order:
+    - calculate_base_purchase
+    - apply_sentiment_multiplier
+    - round_nearest_whole_usd
+    - enforce_minimum_purchase_usd
+    - enforce_remaining_calendar_month_budget
+  when_remaining_budget_below_minimum_usd: 0
+  when_calculated_allocation_exceeds_remaining_budget: floor_remaining_budget_to_whole_usd
+
+execution_policy:
+  mode: recommendation_only
+  live_order_submission: prohibited

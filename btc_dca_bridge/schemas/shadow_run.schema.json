@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/shadow_run/1.0.0",
+  "title": "ShadowRunManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "started_at_utc", "completed_at_utc", "mode", "status", "market_artifact", "sentiment_artifact", "decision_artifact", "market_snapshot_id", "sentiment_snapshot_id", "decision_id", "selected_market_source", "primary_market_source", "primary_failure_category", "fallback_attempted", "strategy_id", "strategy_version", "calendar_month", "monthly_spend_source", "monthly_spent_usd", "remaining_monthly_budget_usd", "final_purchase_usd", "no_order_executed"],
+  "$defs": {
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "path", "schema_version", "sha256", "byte_length"],
+      "properties": {
+        "artifact_type": {"enum": ["market", "sentiment", "decision"]},
+        "path": {"type": "string", "pattern": "^(market|sentiment|decisions)/[0-9]{4}/[0-9]{2}/[0-9]{2}/run_[A-Za-z0-9_-]+\\.json$"},
+        "schema_version": {"const": "1.0.0"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "byte_length": {"type": "integer", "minimum": 1}
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "run_id": {"type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$"},
+    "started_at_utc": {"type": "string", "format": "date-time"},
+    "completed_at_utc": {"type": "string", "format": "date-time"},
+    "mode": {"const": "shadow"},
+    "status": {"const": "completed"},
+    "market_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/receipt"},
+        {"properties": {"artifact_type": {"const": "market"}, "path": {"pattern": "^market/"}}}
+      ]
+    },
+    "sentiment_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/receipt"},
+        {"properties": {"artifact_type": {"const": "sentiment"}, "path": {"pattern": "^sentiment/"}}}
+      ]
+    },
+    "decision_artifact": {
+      "allOf": [
+        {"$ref": "#/$defs/receipt"},
+        {"properties": {"artifact_type": {"const": "decision"}, "path": {"pattern": "^decisions/"}}}
+      ]
+    },
+    "market_snapshot_id": {"type": "string", "pattern": "^market_[A-Za-z0-9_-]+$"},
+    "sentiment_snapshot_id": {"type": "string", "pattern": "^sentiment_[A-Za-z0-9_-]+$"},
+    "decision_id": {"type": "string", "pattern": "^decision_[A-Za-z0-9_-]+$"},
+    "selected_market_source": {"enum": ["bybit_api", "tradingview"]},
+    "primary_market_source": {"const": "bybit_api"},
+    "primary_failure_category": {"type": ["string", "null"]},
+    "fallback_attempted": {"type": "boolean"},
+    "strategy_id": {"const": "btc_adaptive_dca_v1"},
+    "strategy_version": {"const": "1.0.0"},
+    "calendar_month": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
+    "monthly_spend_source": {"const": "canonical_execution_ledger"},
+    "monthly_spent_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "remaining_monthly_budget_usd": {"type": "number", "minimum": 0, "maximum": 500},
+    "final_purchase_usd": {"type": "integer", "minimum": 0, "maximum": 500},
+    "no_order_executed": {"const": true}
+  }
+}

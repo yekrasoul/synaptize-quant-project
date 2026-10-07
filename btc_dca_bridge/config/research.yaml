@@ -1,0 +1,12 @@
+config_version: "1.0.0"
+flags:
+  rsi: false
+  moving_averages: false
+  drawdown_30d: false
+  volatility: false
+  funding: false
+  open_interest: false
+  liquidations: false
+  etf_flows: false
+  macro_liquidity: false
+  on_chain_metrics: false

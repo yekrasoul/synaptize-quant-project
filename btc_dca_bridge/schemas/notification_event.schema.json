@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/notification_event/1.0.0",
+  "title": "NotificationEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "created_at_utc", "event_type", "channel", "correlation_id", "delivery_status"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "event_id": {"type": "string", "pattern": "^notification_[A-Za-z0-9_-]+$"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "event_type": {"enum": ["decision_ready", "data_unavailable", "monthly_cap_reached", "execution_reconciled"]},
+    "channel": {"const": "telegram"},
+    "correlation_id": {"type": "string", "minLength": 1},
+    "delivery_status": {"enum": ["pending", "sent", "failed", "suppressed"]},
+    "payload": {"type": "object"}
+  }
+}

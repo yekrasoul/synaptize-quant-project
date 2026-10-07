@@ -1,49 +1,55 @@
-# BTC Adaptive DCA data bridge
+# BTC Adaptive DCA bridge
 
-This repository supports BTC Adaptive DCA V1 with machine-readable market-data collection and reconciled deployment history.
+This directory is the canonical, scalable foundation for BTC Adaptive DCA V1.
 
-## Market-data policy
+Start with [the project specification](docs/PROJECT_SPEC.md). It defines source ownership, component boundaries, failures, security, versioning, and the roles of the Chats, GitHub, Telegram, and Bybit.
 
-The collector may use a reliable BTC **spot** market source. Current price and rolling 7-day high must come from the **same** spot source in each run. Derivatives, mark prices, index prices, and mixed-exchange calculations are not valid inputs.
+## Canonical assets
 
-## Reconciled deployment history
+- [`config/strategy_v1.yaml`](config/strategy_v1.yaml): the single approved V1 rule definition.
+- [`schemas/`](schemas): versioned JSON contracts for runtime artifacts.
+- [`ledger/executions.jsonl`](ledger/executions.jsonl): reconciled execution facts; see [ledger rules](docs/LEDGER_RECONCILIATION.md).
+- [`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md): canonical read-only Phase 3 composition.
+- [`docs/PRODUCTION_SHADOW.md`](docs/PRODUCTION_SHADOW.md): Phase 4 schedule, retention, and Telegram operations.
+- [`docs/LEGACY_RETIREMENT.md`](docs/LEGACY_RETIREMENT.md): retired collector and mutable-output history.
 
-Source of truth for execution history: Project conversation **"Chat 03 — Portfolio & Budget Tracker"**.
+The legacy cross-exchange collector and mutable `latest.json` output have been
+removed. They are not compatibility entrypoints and must not be recreated or
+used as V1 inputs. No purchase history or monthly state is duplicated here.
 
-Only confirmed executed purchases are recorded below. Later corrections/replacements supersede earlier intended or daily purchases.
+## Canonical Phase 3 shadow pipeline
 
-### September 2026
+The production-capable read-only shadow path uses Bybit BTCUSDT Spot direct,
+then TradingView's exact `BYBIT:BTCUSDT` Spot view, and otherwise fails closed.
+Alternative.me is the sole sentiment source. Calendar-month confirmed spend is
+derived from the reconciled execution ledger. The unchanged deterministic V1
+engine produces a recommendation, which is stored with immutable component
+artifacts and a completed-run manifest. It does not schedule work, notify
+users outside the dedicated Phase 4 Telegram adapter, submit orders, or mutate
+the execution ledger. See the production-shadow runbook for scheduled operation.
 
-| Date | Executed USD | BTC reference price | Reconciliation note |
-|---|---:|---:|---|
-| 08 Sep 2026 | $20 | 79,395 | Confirmed executed purchase; no purchase on the originally referenced day. |
-| 10 Sep 2026 | $20 | 76,843 | Confirmed executed purchase. |
-| 12 Sep 2026 | $10 | 77,305 | Confirmed executed purchase. |
-| 15 Sep 2026 | $20 | 76,933 | Replaces no-purchase days 13–14 Sep. |
-| 16 Sep 2026 | $10 | 77,025 | Confirmed executed purchase. |
-| 18 Sep 2026 | $20 | 76,655 | Replaces 17–18 Sep daily buys. |
-| 23 Sep 2026 | $50 | 84,444 | Replaces no-purchase days 19–23 Sep. |
-| 24 Sep 2026 | $20 | 83,444 | Confirmed executed purchase. |
-| 28 Sep 2026 | $30 | 82,895 | No purchases were executed on 25–27 Sep; this $30 purchase was executed on 28 Sep instead. |
-| 30 Sep 2026 | $20 | 83,900 | Replaces the intended 29 Sep purchase. |
+Install the explicitly declared dependencies from this directory (preferably in a virtual environment):
 
-**September reconciled total from the confirmed numeric entries above: $220.**
+```console
+python -m pip install -e .
+```
 
-A separate Chat 03 message referring to **6 Sep 2026** is visible only in truncated form in the currently available project context; its replacement purchase amount and price are not recoverable with confidence here. It is therefore **not fabricated or added** to the table above. If that complete message is later available, this history should be amended and the September total recomputed.
+Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`,
+`calculate`, or `run --mode shadow`. See
+[`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for calculation rules and
+[`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md) for composition and failure
+semantics.
 
-### October 2026
+The production-oriented, read-only Bybit BTCUSDT Spot adapter and Phase 3.4
+rolling-window rules are documented in
+[`docs/BYBIT_SPOT_ADAPTER.md`](docs/BYBIT_SPOT_ADAPTER.md). It has no
+alternate-exchange fallback and never submits orders.
 
-| Date | Executed USD | BTC reference price | Reconciliation note |
-|---|---:|---:|---|
-| 05 Oct 2026 | $60 | 86,164 | Confirmed executed purchase. |
+Phase 3.4 adds fail-closed construction of a schema-valid `MarketSnapshot` from
+that normalized ticker and complete hourly history. The exact 168-hour boundary
+semantics and the deliberate non-hour-aligned limitation are documented in the
+same adapter guide. It does not change any V1 allocation rule.
 
-**October spent through 05 Oct 2026: $60.**  
-**October remaining against the $500 hard cap: $440.**
-
-## Reconciliation rules
-
-- Count only confirmed executed purchases.
-- Never count recommendations or scheduled outputs as purchases.
-- Later correction/replacement messages supersede earlier entries.
-- Do not double-count replaced purchases.
-- Preserve uncertainty explicitly rather than inventing missing dates, amounts, or prices.
+`uv.lock` is tracked. This is an application repository with a deterministic
+test/runtime environment, so the lockfile pins the declared dependency graph
+without changing dependency constraints in `pyproject.toml`.
