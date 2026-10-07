@@ -73,6 +73,9 @@ class PrivateBybitTests(unittest.TestCase):
         self.assertEqual((availability.source_endpoint, availability.source_field, availability.account_type), (SPOT_BORROW_CHECK, "spotMaxTradeAmount", "UNIFIED"))
         with self.assertRaises(MalformedBybitResponseError):
             self.client({SPOT_BORROW_CHECK: response({})}).spot_quote_availability()
+        for identity in ({"symbol": "ETHUSDT", "side": "Buy"}, {"symbol": "BTCUSDT", "side": "Sell"}, {"side": "Buy"}, {"symbol": "BTCUSDT"}):
+            with self.subTest(identity=identity), self.assertRaises(MalformedBybitResponseError):
+                self.client({SPOT_BORROW_CHECK: response({**identity, "spotMaxTradeAmount": "123.45"})}).spot_quote_availability()
 
     def test_instrument_adapter_uses_hardened_parser(self):
         rules = self.client({INSTRUMENTS_INFO: response(instrument_result())}).instrument_rules()

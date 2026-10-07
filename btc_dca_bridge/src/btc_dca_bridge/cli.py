@@ -568,12 +568,13 @@ def _collect_production_evidence(args: argparse.Namespace) -> tuple[dict[str, ob
 
 def _verify_production_evidence(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     service = _evidence_service(args)
-    current_fingerprint = None
     try:
         client = _private_read_client_factory()
         current_fingerprint, _ = _account_fingerprint(client)
-    except Exception:
-        pass
+    except Exception as exc:
+        return {"status": "ACCOUNT_IDENTITY_UNAVAILABLE", "evidence_id": args.evidence_id, "reason": str(exc)}, 4
+    if current_fingerprint is None:
+        return {"status": "ACCOUNT_IDENTITY_UNAVAILABLE", "evidence_id": args.evidence_id, "reason": "current account identity could not be proven"}, 4
     result = service.verify(args.evidence_id, current_account_fingerprint=current_fingerprint)
     code = 0 if result["status"] in {"VALID_NOT_READY", "VALID_READY_FOR_SEPARATE_AUTHORIZATION"} else (EXIT_CORRUPT if result["status"] == "CORRUPT" else EXIT_BLOCKED)
     return result, code

@@ -144,6 +144,17 @@ class ReadinessTests(unittest.TestCase):
                 with self.assertRaises(AvailabilityValidationError):
                     validate_spot_quote_availability(value, now=now, policy=policy)
 
+    def test_readiness_requires_at_least_the_v1_minimum_availability(self):
+        class OfficialAvailabilityClient(FakeReadinessClient):
+            def spot_quote_availability(self):
+                return SpotQuoteAvailability(self.amount, "/v5/order/spot-borrow-check", "spotMaxTradeAmount", "UNIFIED", True, "2026-10-07T11:59:30Z")
+        for amount, expected in ((Decimal("0"), "FAIL"), (Decimal("9.99"), "FAIL"), (Decimal("10"), "PASS"), (Decimal("100"), "PASS")):
+            with self.subTest(amount=amount):
+                client = OfficialAvailabilityClient()
+                client.amount = amount
+                result = self.evaluate(client_factory=lambda client=client: client, availability_policy=SpotQuoteAvailabilityPolicy(frozenset({("/v5/order/spot-borrow-check", "spotMaxTradeAmount")}), frozenset({"UNIFIED"})))
+                self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_SPOT_AVAILABLE_BALANCE")["status"], expected)
+
     def test_instrument_proof_covers_all_v1_amounts_and_requires_quote_upper_bound(self):
         result = self.evaluate()
         instrument = next(item for item in result["checks"] if item["check_id"] == "BYBIT_INSTRUMENT")

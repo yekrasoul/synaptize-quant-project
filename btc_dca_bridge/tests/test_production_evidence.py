@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from btc_dca_bridge.artifacts import ArtifactStore
-from btc_dca_bridge.production_evidence import AUTHORIZATION, ProductionEvidenceService, preauthorization_status, sanitize_evidence
+from btc_dca_bridge.production_evidence import AUTHORIZATION, ProductionEvidenceService, preauthorization_status, sanitize_evidence, _account_fingerprint
 from btc_dca_bridge.cli import main
 
 
@@ -49,8 +49,42 @@ class ProductionEvidenceTests(unittest.TestCase):
         self.assertEqual(self.service.verify(bundle["evidence_id"])["status"], "VALID_NOT_READY")
 
     def test_sanitizer_removes_secret_material(self):
-        sanitized = sanitize_evidence({"api_key": "key", "api_secret": "secret", "headers": {"authorization": "Bearer x"}, "safe": "ok"})
+        sanitized = sanitize_evidence({"X-BAPI-API-KEY": "key", "X_BAPI_API_KEY": "key2", "X-BAPI-SIGN": "sig", "Authorization": "Bearer x", "Bearer": "x", "api_secret": "secret", "apiKey": "key3", "TELEGRAM_BOT_TOKEN": "tg", "headers": {"authorization": "Bearer x", "nested": {"X-BAPI-SIGN": "sig"}}, "safe": "ok"})
         self.assertEqual(sanitized, {"safe": "ok", "headers": {}})
+
+    def test_latest_uses_full_date_tree_and_creation_timestamp(self):
+        first, _ = self.service.collect()
+        self.now = datetime(2026, 10, 8, 12, tzinfo=UTC)
+        second, _ = self.service.collect()
+        latest = self.service.latest()
+        self.assertEqual(latest["evidence_id"], second["evidence_id"])
+        self.assertEqual(preauthorization_status(self.service)["evidence_id"], second["evidence_id"])
+        self.assertNotEqual(first["evidence_id"], second["evidence_id"])
+
+    def test_proven_account_identity_is_required_and_bound(self):
+        bundle, _ = self.service.collect()
+        fingerprint, status = _account_fingerprint(FakeClient())
+        self.assertEqual(status, "PROVEN")
+        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=fingerprint)["status"], "VALID_NOT_READY")
+        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint="b" * 64)["status"], "INVALID")
+        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=None)["status"], "VALID_NOT_READY")
+
+    def test_dynamic_ttl_boundaries_are_independent(self):
+        bundle, _ = self.service.collect()
+        self.now = datetime(2026, 10, 7, 12, 1, tzinfo=UTC)
+        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=_account_fingerprint(FakeClient())[0])["status"], "VALID_NOT_READY")
+        self.now = datetime(2026, 10, 7, 12, 1, 0, 1, tzinfo=UTC)
+        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=_account_fingerprint(FakeClient())[0])["status"], "STALE")
+
+    def test_unproven_account_identity_can_never_be_authorization_ready(self):
+        bundle, _ = self.service.collect()
+        path = self.root / "data" / "production_evidence" / "2026" / "10" / "07" / f"{bundle['evidence_id']}.json"
+        changed = dict(bundle, account_identity_status="ACCOUNT_IDENTITY_UNPROVEN", account_identity_fingerprint=None, status="EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION")
+        path.unlink()
+        (path.with_suffix(path.suffix + ".sha256")).unlink()
+        ArtifactStore(self.root / "data").persist_production_evidence(dict(changed, evidence_id="evidence-" + "b" * 32))
+        result = self.service.verify("evidence-" + "b" * 32)
+        self.assertEqual(result["status"], "VALID_NOT_READY")
 
     def test_cross_commit_host_and_expiry_invalidate(self):
         bundle, _ = self.service.collect()
@@ -83,7 +117,7 @@ class ProductionEvidenceTests(unittest.TestCase):
             def collect(self): return ({"status": "EVIDENCE_COMPLETE_NOT_READY", "evidence_id": "evidence-" + "a" * 32, "real_money_authorization": AUTHORIZATION}, Receipt())
             def verify(self, evidence_id, **kwargs): return {"status": "VALID_NOT_READY", "evidence_id": evidence_id}
         output = StringIO()
-        with patch("btc_dca_bridge.cli.ProductionEvidenceService", FakeService), redirect_stdout(output):
+        with patch("btc_dca_bridge.cli.ProductionEvidenceService", FakeService), patch("btc_dca_bridge.cli._private_read_client_factory", FakeClient), redirect_stdout(output):
             self.assertEqual(main(["collect-production-evidence", "--data-root", str(self.root / "data"), "--ledger", str(self.root / "ledger.jsonl"), "--json"]), 0)
             self.assertEqual(main(["verify-production-evidence", "evidence-" + "a" * 32, "--data-root", str(self.root / "data"), "--ledger", str(self.root / "ledger.jsonl"), "--json"]), 0)
         self.assertIn("EVIDENCE_COMPLETE_NOT_READY", output.getvalue())

@@ -18,16 +18,35 @@ EVIDENCE_TTL = timedelta(minutes=10)
 DYNAMIC_TTLS_SECONDS = {"wallet_availability_liabilities": 60, "clock": 60, "account_metadata": 300, "instrument_metadata": 600}
 EVIDENCE_STATES = {"EVIDENCE_COMPLETE_NOT_READY", "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "EVIDENCE_INCOMPLETE"}
 AUTHORIZATION = {"granted": False, "source": "none", "required": True, "status": "NOT_AUTHORIZED"}
-_SENSITIVE = {"secret", "api_key", "apikey", "api_secret", "authorization", "signature", "token", "bearer", "x-bapi-sign"}
+_SENSITIVE_KEYS = {"secret", "apikey", "apisecret", "authorization", "signature", "bearer", "token", "xbapiapikey", "xbapisign", "telegrambottoken"}
+_SENSITIVE_CONTAINERS = {"headers", "requestheaders", "authheaders"}
+
+
+def _normalized_key(key: str) -> str:
+    return "".join(character for character in key.lower() if character.isalnum())
 
 
 def sanitize_evidence(value: Any, *, key: str = "") -> Any:
     """Remove secret-bearing keys recursively before persistence."""
-    lowered = key.lower()
-    if lowered in _SENSITIVE:
+    normalized = _normalized_key(key)
+    if normalized in _SENSITIVE_KEYS:
         return None
+    if normalized in _SENSITIVE_CONTAINERS:
+        return {}
     if isinstance(value, Mapping):
-        return {str(k): sanitize_evidence(v, key=str(k)) for k, v in value.items() if str(k).lower() not in _SENSITIVE}
+        sanitized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            child_key = str(raw_key)
+            child_normalized = _normalized_key(child_key)
+            if child_normalized in _SENSITIVE_KEYS:
+                continue
+            if child_normalized in _SENSITIVE_CONTAINERS:
+                sanitized[child_key] = {}
+                continue
+            child = sanitize_evidence(raw_value, key=child_key)
+            if child is not None:
+                sanitized[child_key] = child
+        return sanitized
     if isinstance(value, (list, tuple)):
         return [sanitize_evidence(item) for item in value]
     return value
@@ -75,6 +94,15 @@ class ProductionEvidenceService:
         created = _utc(self.now())
         readiness = self._readiness()
         connectivity = dict(self.connectivity_probe() if self.connectivity_probe else production_connectivity(client_factory=self.client_factory))
+        connectivity["endpoints"] = [
+            {
+                **dict(endpoint),
+                "reason": endpoint.get("reason", "GET read completed"),
+                "observed_at_utc": endpoint.get("observed_at_utc", created.isoformat().replace("+00:00", "Z")),
+                "response_contract_valid": endpoint.get("response_contract_valid", endpoint.get("status") == "PASS"),
+            }
+            for endpoint in connectivity.get("endpoints", [])
+        ]
         repo = dict(self.repo_probe())
         client = None
         if self.client_factory is not None:
@@ -113,6 +141,12 @@ class ProductionEvidenceService:
             "operator_lock_result": sanitize_evidence(_check(checks, "OPERATOR_LOCK")),
             "real_money_authorization": dict(AUTHORIZATION), "status": status, "host_binding": "host-bound",
             "evidence_ttl_seconds": int(EVIDENCE_TTL.total_seconds()), "dynamic_ttls_seconds": DYNAMIC_TTLS_SECONDS,
+            "wallet_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "availability_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "liability_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "clock_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "account_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "instrument_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
         }
         bundle = sanitize_evidence(bundle)
         receipt = ArtifactStore(self.data_root).persist_production_evidence(bundle)
@@ -135,24 +169,51 @@ class ProductionEvidenceService:
             return {"status": "EXPIRED" if expires <= now else "INVALID", "evidence_id": evidence_id, "reason": "evidence TTL is not currently valid"}
         if expires - created > EVIDENCE_TTL or bundle.get("real_money_authorization") != AUTHORIZATION:
             return {"status": "INVALID", "evidence_id": evidence_id, "reason": "evidence TTL or authorization boundary is invalid"}
+        dynamic_fields = {
+            "wallet_observed_at_utc": DYNAMIC_TTLS_SECONDS["wallet_availability_liabilities"],
+            "availability_observed_at_utc": DYNAMIC_TTLS_SECONDS["wallet_availability_liabilities"],
+            "liability_observed_at_utc": DYNAMIC_TTLS_SECONDS["wallet_availability_liabilities"],
+            "clock_observed_at_utc": DYNAMIC_TTLS_SECONDS["clock"],
+            "account_observed_at_utc": DYNAMIC_TTLS_SECONDS["account_metadata"],
+            "instrument_observed_at_utc": DYNAMIC_TTLS_SECONDS["instrument_metadata"],
+        }
+        for field, ttl_seconds in dynamic_fields.items():
+            try:
+                observed = datetime.fromisoformat(str(bundle[field]).replace("Z", "+00:00")).astimezone(UTC)
+            except (KeyError, TypeError, ValueError) as exc:
+                return {"status": "INVALID", "evidence_id": evidence_id, "reason": f"invalid {field}: {exc}"}
+            age = (now - observed).total_seconds()
+            if age < 0:
+                return {"status": "INVALID", "evidence_id": evidence_id, "reason": f"{field} is future-dated"}
+            if age > ttl_seconds:
+                return {"status": "STALE", "evidence_id": evidence_id, "reason": f"{field} is older than {ttl_seconds}s"}
         commit = current_commit or self.repo_probe().get("commit")
         hostname = current_hostname or socket.gethostname()
         if bundle.get("repository_commit") != commit:
             return {"status": "INVALID_FOR_CURRENT_BUILD", "evidence_id": evidence_id, "reason": "repository commit changed after collection"}
         if bundle.get("host_binding") == "host-bound" and bundle.get("hostname") != hostname:
             return {"status": "INVALID", "evidence_id": evidence_id, "reason": "host-bound evidence belongs to another host"}
-        if bundle.get("account_identity_status") == "PROVEN" and current_account_fingerprint is not None and bundle.get("account_identity_fingerprint") != current_account_fingerprint:
-            return {"status": "INVALID", "evidence_id": evidence_id, "reason": "account identity fingerprint mismatch"}
-        ready = bundle.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION"
+        if bundle.get("account_identity_status") == "PROVEN":
+            if current_account_fingerprint is None and self.client_factory is not None:
+                try:
+                    current_account_fingerprint, _ = _account_fingerprint(self.client_factory())
+                except Exception:
+                    current_account_fingerprint = None
+            if current_account_fingerprint is None:
+                return {"status": "INVALID", "evidence_id": evidence_id, "reason": "ACCOUNT_IDENTITY_UNAVAILABLE: current fingerprint is required"}
+            if bundle.get("account_identity_fingerprint") != current_account_fingerprint:
+                return {"status": "INVALID", "evidence_id": evidence_id, "reason": "account identity fingerprint mismatch"}
+        ready = bundle.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" and bundle.get("account_identity_status") == "PROVEN"
         return {"status": "VALID_READY_FOR_SEPARATE_AUTHORIZATION" if ready else "VALID_NOT_READY", "evidence_id": evidence_id, "expires_at_utc": bundle["expires_at_utc"], "real_money_authorization": dict(AUTHORIZATION)}
 
     def latest(self) -> dict[str, Any] | None:
         root = self.data_root / "production_evidence"
-        paths = sorted(root.glob("*/*/*.json"))
+        paths = sorted(path for path in root.glob("*/*/*/*.json") if path.suffix == ".json")
         if not paths:
             return None
-        evidence_id = paths[-1].stem
-        return ArtifactStore(self.data_root).read_production_evidence(evidence_id)
+        store = ArtifactStore(self.data_root)
+        bundles = [store.read_production_evidence(path.stem) for path in paths]
+        return max(bundles, key=lambda bundle: (datetime.fromisoformat(str(bundle["created_at_utc"]).replace("Z", "+00:00")).astimezone(UTC), str(bundle["evidence_id"])))
 
 
 def preauthorization_status(service: ProductionEvidenceService) -> dict[str, Any]:

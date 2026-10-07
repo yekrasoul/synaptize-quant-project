@@ -297,6 +297,10 @@ class BybitPrivateReadClient:
     def spot_quote_availability(self) -> SpotQuoteAvailability:
         """Return Bybit's exact non-borrowed Spot quote-buy availability."""
         result = self._read(SPOT_BORROW_CHECK, {"category": "spot", "symbol": "BTCUSDT", "side": "Buy"})
+        if result.get("symbol") != "BTCUSDT":
+            raise MalformedBybitResponseError("Spot quote availability response has the wrong or missing symbol")
+        if result.get("side") != "Buy":
+            raise MalformedBybitResponseError("Spot quote availability response has the wrong or missing side")
         raw = result.get("spotMaxTradeAmount")
         if raw is None:
             raise MalformedBybitResponseError("Spot quote availability is missing spotMaxTradeAmount")

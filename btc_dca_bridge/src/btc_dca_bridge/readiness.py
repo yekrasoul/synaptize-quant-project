@@ -230,11 +230,15 @@ class ProductionReadinessService:
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
             available = client.spot_quote_availability() if hasattr(client, "spot_quote_availability") else None
             try:
-                availability.validate_spot_quote_availability(available, now=self.now(), policy=self.availability_policy)
+                available_amount = availability.validate_spot_quote_availability(available, now=self.now(), policy=self.availability_policy)
+                if available_amount < Decimal("10"):
+                    raise availability.AvailabilityValidationError(
+                        f"authoritative Spot quote availability {available_amount} is below the V1 minimum of 10 USDT"
+                    )
             except availability.AvailabilityValidationError as exc:
                 add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "FAIL", True, "authoritative provenance unavailable", str(exc), "Implement and officially verify an exact Spot quote-buy availability source")
             else:
-                add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, "authoritative provenance validated", "authoritative Spot quote-buy availability is proven", "")
+                add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, f"authoritative_amount_usdt={available_amount}; minimum_v1_usdt=10", "authoritative Spot quote-buy availability is proven and meets the V1 minimum", "")
             rules = client.instrument_rules()
             v1_results: dict[str, str] = {}
             for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
@@ -285,13 +289,16 @@ class ProductionReadinessService:
 
 def production_connectivity(*, client_factory: Callable[[], Any] | None = None) -> dict[str, Any]:
     """Perform named GET-only reads, including harmless empty order probes."""
+    observed_at = lambda: datetime.now(UTC).isoformat().replace("+00:00", "Z")
     endpoints_required = ("credential_info", "account_info", "wallet_balance", "spot_quote_availability", "instrument_metadata", "server_time", "order_realtime", "order_history", "execution_list")
     try:
         client = (client_factory or BybitPrivateReadClient.from_environment)()
     except MalformedBybitResponseError as exc:
-        return {"status": "READS_FAILED", "read_only": True, "endpoints": [{"endpoint": name, "status": "FAIL", "reason": str(exc), "read_only": True} for name in endpoints_required], "probe_order_link_id": "dca-readiness-probe-00000000000000000000000000000000", "message": "NO ORDER SUBMITTED"}
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        return {"status": "READS_FAILED", "read_only": True, "endpoints": [{"endpoint": name, "status": "FAIL", "reason": str(exc), "read_only": True, "observed_at_utc": timestamp, "response_contract_valid": False} for name in endpoints_required], "probe_order_link_id": "dca-readiness-probe-00000000000000000000000000000000", "message": "NO ORDER SUBMITTED"}
     except Exception as exc:
-        return {"status": "READS_UNAVAILABLE", "read_only": True, "endpoints": [{"endpoint": name, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True} for name in endpoints_required], "probe_order_link_id": "dca-readiness-probe-00000000000000000000000000000000", "message": "NO ORDER SUBMITTED"}
+        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        return {"status": "READS_UNAVAILABLE", "read_only": True, "endpoints": [{"endpoint": name, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True, "observed_at_utc": timestamp, "response_contract_valid": False} for name in endpoints_required], "probe_order_link_id": "dca-readiness-probe-00000000000000000000000000000000", "message": "NO ORDER SUBMITTED"}
     probe_id = "dca-readiness-probe-00000000000000000000000000000000"
     calls = {
         "credential_info": client.credential_info,
@@ -309,13 +316,13 @@ def production_connectivity(*, client_factory: Callable[[], Any] | None = None) 
         try:
             operation()
         except MalformedBybitResponseError as exc:
-            endpoints.append({"endpoint": endpoint, "status": "FAIL", "reason": str(exc), "read_only": True})
+            endpoints.append({"endpoint": endpoint, "status": "FAIL", "reason": str(exc), "read_only": True, "observed_at_utc": observed_at(), "response_contract_valid": False})
         except PrivateBybitError as exc:
-            endpoints.append({"endpoint": endpoint, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True})
+            endpoints.append({"endpoint": endpoint, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True, "observed_at_utc": observed_at(), "response_contract_valid": False})
         except Exception as exc:
-            endpoints.append({"endpoint": endpoint, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True})
+            endpoints.append({"endpoint": endpoint, "status": "UNAVAILABLE", "reason": str(exc), "read_only": True, "observed_at_utc": observed_at(), "response_contract_valid": False})
         else:
-            endpoints.append({"endpoint": endpoint, "status": "PASS", "reason": "GET read succeeded; empty/not-found is acceptable for probe identity", "read_only": True})
+            endpoints.append({"endpoint": endpoint, "status": "PASS", "reason": "GET read succeeded; empty/not-found is acceptable for probe identity", "read_only": True, "observed_at_utc": observed_at(), "response_contract_valid": True})
     statuses = {item["status"] for item in endpoints}
     status = "READS_FAILED" if "FAIL" in statuses else ("READS_UNAVAILABLE" if "UNAVAILABLE" in statuses else "READS_OK")
     return {"status": status, "read_only": True, "endpoints": endpoints, "probe_order_link_id": probe_id, "message": "NO ORDER SUBMITTED"}
