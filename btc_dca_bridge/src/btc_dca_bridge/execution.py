@@ -271,9 +271,8 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
         if timestamp.strftime("%Y-%m") != calendar_month: reasons.append("requested calendar month does not match run context")
     except (TypeError, ValueError): reasons.append("run context timestamp is invalid")
     if submission_state is None:
-        try: submission_state = LedgerSubmissionState(ledger_path)
-        except Exception as exc: reasons.append(f"execution state unreadable: {exc}")
-    if submission_state is not None:
+        reasons.append("submission evidence unavailable")
+    else:
         for label, state in (("Decision", submission_state.decision_state(intent.decision_id)), ("client_order_id", submission_state.client_order_state(intent.client_order_id))):
             if state == "confirmed": reasons.append(f"{label} was previously confirmed")
             elif state == "ambiguous": reasons.extend(("REJECT NEW SUBMISSION", "RECONCILIATION REQUIRED"))

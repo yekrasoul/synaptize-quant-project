@@ -69,6 +69,15 @@ class ExecutionFoundationTests(unittest.TestCase):
         result = validate_execution_safety(self.intent, self.decision, ledger_path=self.ledger, calendar_month="2026-10", instrument_provider=self.provider, submission_state=NoSubmissionEvidence())
         self.assertNotIn("previously confirmed", " ".join(result.reasons))
 
+    def test_missing_submission_evidence_has_stable_rejection_reason(self):
+        result = validate_execution_safety(self.intent, self.decision, ledger_path=self.ledger, calendar_month="2026-10", instrument_provider=self.provider, submission_state=None)
+        self.assertEqual(result.status, "rejected")
+        self.assertIn("submission evidence unavailable", result.reasons)
+        text = " ".join(result.reasons)
+        self.assertNotIn("NameError", text)
+        self.assertNotIn("LedgerSubmissionState", text)
+        self.assertNotIn("name 'LedgerSubmissionState'", text)
+
     def test_instrument_identity_and_documented_spot_guards(self):
         for exchange, market, symbol in (("Other", "spot", "BTCUSDT"), ("Bybit", "spot", "ETHUSDT"), ("Bybit", "linear", "BTCUSDT")):
             with self.assertRaises(ValueError): self.provider.get_rules(exchange, market, symbol)
