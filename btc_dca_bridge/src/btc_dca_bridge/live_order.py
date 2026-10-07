@@ -22,7 +22,7 @@ from .config import ExecutionConfig
 from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
 from .market_data.http import HttpResponse
-from .private_bybit import ApiCredentialInfo, CredentialClassification, PrivateBybitError
+from .private_bybit import ApiCredentialInfo, CredentialClassification
 
 ORDER_CREATE_PATH = "/v5/order/create"
 RECV_WINDOW = "5000"
@@ -98,7 +98,7 @@ class SubmissionOutcome:
     order_id: str | None
     returned_order_link_id: str | None
     reconciliation_state: str
-    no_order_executed: bool = True
+    ledger_not_mutated: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema_version": "5.3.0", **self.__dict__}
@@ -112,6 +112,11 @@ class SubmissionResult:
 
 class SubmissionTransport(Protocol):
     def submit_spot_market_buy(self, request: SpotMarketBuyRequest) -> HttpResponse: ...
+
+
+class PostAckReconciler(Protocol):
+    """Fresh Phase 5.2 read-back performed after the POST response."""
+    def reconcile_after_ack(self, client_order_id: str) -> str: ...
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -158,7 +163,7 @@ class LiveOrderEngine:
     def _outcome(self, intent: OrderIntent, run_id: str, state: str, *, code: int | None = None, msg: str | None = None, order_id: str | None = None, returned_link: str | None = None, reconciliation: str = "not_applicable") -> SubmissionOutcome:
         return SubmissionOutcome(run_id, intent.decision_id, intent.order_intent_id, intent.client_order_id, state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), code, msg, order_id, returned_link, reconciliation)
 
-    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval | None, credential_info: ApiCredentialInfo, instrument_provider, submission_state: SubmissionState | None, transport: SubmissionTransport, run_id: str) -> SubmissionResult:
+    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval | None, credential_info: ApiCredentialInfo, instrument_provider, submission_state: SubmissionState | None, transport: SubmissionTransport, run_id: str, post_ack_reconciler: PostAckReconciler | None = None) -> SubmissionResult:
         if not execution_config.live_execution_enabled: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="LIVE EXECUTION DISABLED"))
         if execution_config.kill_switch: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="KILL SWITCH ACTIVE"))
         if execution_config.order_submission not in {"implemented_disabled", "implemented"}: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="ORDER SUBMISSION MODE DISABLED"))
@@ -188,11 +193,11 @@ class LiveOrderEngine:
             outcome = self._outcome(intent, run_id, "ambiguous", msg="submission outcome is ambiguous")
             self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_OUTCOME, outcome, run_id=run_id)
             raise
-        outcome = self._parse_response(intent, run_id, response, submission_state)
+        outcome = self._parse_response(intent, run_id, response, post_ack_reconciler)
         self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_OUTCOME, outcome, run_id=run_id)
         return SubmissionResult(attempt, outcome)
 
-    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, submission_state: SubmissionState) -> SubmissionOutcome:
+    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler | None) -> SubmissionOutcome:
         if response.status >= 500: return self._outcome(intent, run_id, "ambiguous", msg="server response may have followed submission")
         if response.status >= 400: return self._outcome(intent, run_id, "rejected_by_exchange", msg="HTTP response rejected submission")
         try: body = json.loads(response.body.decode())
@@ -204,6 +209,13 @@ class LiveOrderEngine:
             return self._outcome(intent, run_id, state, code=code if isinstance(code, int) else None, msg=str(msg) if msg is not None else None)
         if not isinstance(result, dict) or not isinstance(result.get("orderId"), str) or result.get("orderLinkId") != intent.client_order_id:
             return self._outcome(intent, run_id, "ambiguous", code=code if isinstance(code, int) else None, msg="acknowledgement identity is contradictory", order_id=result.get("orderId") if isinstance(result, dict) else None, returned_link=result.get("orderLinkId") if isinstance(result, dict) else None)
-        reconciliation = submission_state.client_order_state(intent.client_order_id)
-        if reconciliation not in {"confirmed", "ambiguous", "conclusively_absent", "none"}: reconciliation = "ambiguous"
+        # Never reuse pre-submit absence after an ACK. The ACK crosses an
+        # evidence boundary, so read back through a separate fresh reconciler.
+        reconciliation = "ambiguous"
+        if post_ack_reconciler is not None:
+            try:
+                fresh_state = post_ack_reconciler.reconcile_after_ack(intent.client_order_id)
+                reconciliation = "confirmed" if fresh_state == "confirmed" else "ambiguous"
+            except Exception:
+                reconciliation = "ambiguous"
         return self._outcome(intent, run_id, "acknowledged", code=code, msg=str(msg) if msg is not None else None, order_id=result["orderId"], returned_link=result["orderLinkId"], reconciliation=reconciliation)

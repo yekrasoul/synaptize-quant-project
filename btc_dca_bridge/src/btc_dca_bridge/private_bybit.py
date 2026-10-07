@@ -337,6 +337,13 @@ class BybitSubmissionEvidence(SubmissionState):
         return self.client.submission_state(client_order_id)
 
 
+class BybitPostAckReconciler:
+    """Fresh post-ACK read-back adapter; never reuses pre-submit evidence."""
+    def __init__(self, client: BybitPrivateReadClient): self.client = client
+    def reconcile_after_ack(self, client_order_id: str) -> str:
+        return self.client.submission_state(client_order_id)
+
+
 # Descriptive alias for callers that do not need to distinguish the transport
 # from the read-only client implementation.
 PrivateBybitClient = BybitPrivateReadClient

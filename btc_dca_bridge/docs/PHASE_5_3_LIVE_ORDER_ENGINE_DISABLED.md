@@ -42,10 +42,14 @@ never blindly retried. Timeout, transport failure after the request boundary,
 5xx, malformed acknowledgements, or identity mismatch are ambiguous and
 require read-only reconciliation by `orderLinkId`.
 
-An ACK is not a fill. ACKs, active orders, partial fills, and ambiguous
-responses never mutate the canonical ledger. Submission attempts and outcomes
-are immutable checksum-backed artifacts. Only a future explicit reconciliation
-operation could justify a confirmed execution record.
+An ACK is not a fill. After an ACK, the engine performs a new Phase 5.2
+read-back; it never reuses the pre-submit absence result. Active, partial,
+empty, contradictory, or failed read-backs remain ambiguous. A fresh confirmed
+fill is recorded as reconciliation evidence only; the outcome artifact uses
+`ledger_not_mutated: true` to state precisely that no canonical ledger write
+occurred. Submission attempts and outcomes are immutable checksum-backed
+artifacts. Only a future explicit reconciliation operation could justify a
+confirmed execution record.
 
 The `live-submit` CLI is a production safety stop and reports:
 

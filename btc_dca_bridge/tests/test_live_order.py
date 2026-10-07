@@ -34,6 +34,13 @@ class AmbiguousEvidence(AbsentEvidence):
     def client_order_state(self, client_order_id): return "ambiguous"
 
 
+class FreshPostAckReconciler:
+    def __init__(self, state): self.state, self.calls = state, []
+    def reconcile_after_ack(self, client_order_id):
+        self.calls.append(client_order_id)
+        return self.state
+
+
 class FakeSubmitTransport:
     def __init__(self, response=None, error=None): self.response, self.error, self.calls = response, error, []
     def submit_spot_market_buy(self, request):
@@ -60,8 +67,8 @@ class LiveOrderTests(unittest.TestCase):
     def ack(self, link=None):
         return HttpResponse(200, {}, json.dumps({"retCode": 0, "retMsg": "OK", "result": {"orderId": "order-1", "orderLinkId": link or self.intent.client_order_id}}).encode())
 
-    def submit(self, transport=None, evidence=None, approval=None):
-        return self.engine.submit(self.intent, self.decision, calendar_month="2026-10", ledger_path=self.ledger, execution_config=self.config, approval=approval or self.approval, credential_info=self.credential, instrument_provider=self.provider, submission_state=evidence or AbsentEvidence(), transport=transport or FakeSubmitTransport(self.ack()), run_id=self.run_id)
+    def submit(self, transport=None, evidence=None, approval=None, post_ack_reconciler=None):
+        return self.engine.submit(self.intent, self.decision, calendar_month="2026-10", ledger_path=self.ledger, execution_config=self.config, approval=approval or self.approval, credential_info=self.credential, instrument_provider=self.provider, submission_state=evidence or AbsentEvidence(), transport=transport or FakeSubmitTransport(self.ack()), run_id=self.run_id, post_ack_reconciler=post_ack_reconciler)
 
     def test_request_shape_is_narrow_quote_market_buy(self):
         payload = SpotMarketBuyRequest(Decimal("25"), "dca-" + "a" * 32).to_payload()
@@ -76,8 +83,13 @@ class LiveOrderTests(unittest.TestCase):
 
     def test_ack_is_not_fill_and_does_not_mutate_ledger(self):
         transport = FakeSubmitTransport(self.ack())
-        result = self.submit(transport=transport)
+        fresh = FreshPostAckReconciler("ambiguous")
+        result = self.submit(transport=transport, post_ack_reconciler=fresh)
         self.assertEqual(result.outcome.state, "acknowledged"); self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(result.outcome.reconciliation_state, "ambiguous")
+        self.assertTrue(result.outcome.ledger_not_mutated)
+        self.assertEqual(fresh.calls, [self.intent.client_order_id])
+        self.assertNotIn("no_order_executed", result.outcome.to_dict())
         self.assertEqual(self.ledger.read_text(), "")
         self.assertTrue(list((self.root / "data" / "order_submission_attempts").rglob("*.json")))
         self.assertTrue(list((self.root / "data" / "order_submission_outcomes").rglob("*.json")))
@@ -129,6 +141,28 @@ class LiveOrderTests(unittest.TestCase):
     def test_mismatched_ack_is_ambiguous_and_not_success(self):
         result = self.submit(transport=FakeSubmitTransport(self.ack("dca-other")))
         self.assertEqual(result.outcome.state, "ambiguous")
+
+    def test_post_ack_uses_fresh_evidence_not_pre_submit_absence(self):
+        for state, expected in (("active", "ambiguous"), ("partial", "ambiguous"), ("confirmed", "confirmed"), ("ambiguous", "ambiguous"), ("conclusively_absent", "ambiguous"), ("none", "ambiguous")):
+            with self.subTest(state=state):
+                self.engine = LiveOrderEngine(
+                    artifact_store=ArtifactStore(self.root / f"data-post-{state}"),
+                    now=lambda: datetime(2026, 10, 7, 12, 0, tzinfo=UTC),
+                )
+                fresh = FreshPostAckReconciler(state)
+                result = self.submit(
+                    transport=FakeSubmitTransport(self.ack()),
+                    evidence=AbsentEvidence(),
+                    post_ack_reconciler=fresh,
+                )
+                self.assertEqual(result.outcome.reconciliation_state, expected)
+                self.assertEqual(fresh.calls, [self.intent.client_order_id])
+
+    def test_post_ack_read_failure_is_ambiguous(self):
+        class FailingReconciler:
+            def reconcile_after_ack(self, client_order_id): raise TimeoutError("read failed")
+        result = self.submit(transport=FakeSubmitTransport(self.ack()), post_ack_reconciler=FailingReconciler())
+        self.assertEqual(result.outcome.reconciliation_state, "ambiguous")
 
     def test_exchange_and_malformed_responses_never_look_like_fills(self):
         for label, response, expected in (
