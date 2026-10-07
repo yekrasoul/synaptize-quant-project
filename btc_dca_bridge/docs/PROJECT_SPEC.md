@@ -14,9 +14,14 @@ Phase 1 establishes contracts, configuration, data ownership, and migration boun
 | Contract shapes | `schemas/*.schema.json` | Versioned JSON Schema contracts. |
 | Executed-purchase history | `ledger/executions.jsonl` | Reconciled facts only; monthly spend is derived. |
 | Market snapshot | validated `MarketSnapshot` generated from Bybit BTC/USDT Spot | Prefer Bybit direct; use only TradingView exact `BYBIT:BTCUSDT` Spot when the complete direct path is unavailable. Price and 168h high always come from one source path. |
+| Sentiment snapshot | validated Alternative.me Crypto Fear & Greed observation | One independent public source; no substitute sentiment signal. |
+| Completed run state | immutable component artifacts plus schema-valid shadow-run manifest | A run is complete only when its final digest-verified manifest exists. Mutable `latest.json` state is prohibited. |
 | Human-facing documentation | this document and other `docs/` files | Documents policy; it never stores operational state. |
 
 Crypto Fear & Greed is an independent, secondary sentiment input. It may adjust a V1 allocation only through the configured multiplier; derivatives, ETF, macro, funding, OI, and liquidations are contextual research only.
+
+The former standalone cross-exchange collector and mutable `latest.json` output
+were retired in Phase 3.9. They are not valid compatibility or recovery paths.
 
 ## 3. Component boundaries
 

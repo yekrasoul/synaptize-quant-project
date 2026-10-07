@@ -9,13 +9,22 @@ Start with [the project specification](docs/PROJECT_SPEC.md). It defines source 
 - [`config/strategy_v1.yaml`](config/strategy_v1.yaml): the single approved V1 rule definition.
 - [`schemas/`](schemas): versioned JSON contracts for runtime artifacts.
 - [`ledger/executions.jsonl`](ledger/executions.jsonl): reconciled execution facts; see [ledger rules](docs/LEDGER_RECONCILIATION.md).
-- [`docs/MIGRATION_PLAN.md`](docs/MIGRATION_PLAN.md): controlled path from the current collector and workflow.
+- [`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md): canonical read-only Phase 3 composition.
+- [`docs/LEGACY_RETIREMENT.md`](docs/LEGACY_RETIREMENT.md): retired collector and mutable-output history.
 
-`latest.json` and `collect_bybit_spot.py` are legacy collector artifacts pending the migration plan. In particular, the current collector’s cross-exchange fallback is not compliant with V1’s Bybit-only primary market rule and must not be used to create a V1 decision. No purchase history or monthly state is duplicated in this README.
+The legacy cross-exchange collector and mutable `latest.json` output have been
+removed. They are not compatibility entrypoints and must not be recreated or
+used as V1 inputs. No purchase history or monthly state is duplicated here.
 
-## Offline core through Phase 3.1
+## Canonical Phase 3 shadow pipeline
 
-Phase 2 adds a deterministic decision engine, read-only ledger validation, derived portfolio state, and an offline JSON CLI. Phase 3.1 ratifies `ROUND_HALF_UP` for exact nearest-dollar ties and evolves emitted `PortfolioState` artifacts from 1.0.0 to the additive 1.1.0 shape while retaining 1.0.0 validation compatibility. It still does not retrieve live sources, schedule work, notify users, or execute orders.
+The production-capable read-only shadow path uses Bybit BTCUSDT Spot direct,
+then TradingView's exact `BYBIT:BTCUSDT` Spot view, and otherwise fails closed.
+Alternative.me is the sole sentiment source. Calendar-month confirmed spend is
+derived from the reconciled execution ledger. The unchanged deterministic V1
+engine produces a recommendation, which is stored with immutable component
+artifacts and a completed-run manifest. It does not schedule work, notify
+users, submit orders, or mutate the execution ledger.
 
 Install the explicitly declared dependencies from this directory (preferably in a virtual environment):
 
@@ -23,7 +32,11 @@ Install the explicitly declared dependencies from this directory (preferably in 
 python -m pip install -e .
 ```
 
-Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`, or `calculate`. See [`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for contracts, calculation order, boundary behavior, and examples.
+Then use `python -m btc_dca_bridge validate`, `portfolio --month YYYY-MM`,
+`calculate`, or `run --mode shadow`. See
+[`docs/DECISION_ENGINE.md`](docs/DECISION_ENGINE.md) for calculation rules and
+[`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md) for composition and failure
+semantics.
 
 The production-oriented, read-only Bybit BTCUSDT Spot adapter and Phase 3.4
 rolling-window rules are documented in
