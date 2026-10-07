@@ -22,6 +22,10 @@ SCHEMA_FILES = {
     "portfolio_state_1_0": "portfolio_state_v1_0.schema.json",
     "sentiment_snapshot": "sentiment_snapshot.schema.json",
     "shadow_run": "shadow_run.schema.json",
+    "order_intent": "order_intent.schema.json",
+    "safety_validation": "safety_validation.schema.json",
+    "order_submission": "order_submission.schema.json",
+    "reconciliation_result": "reconciliation_result.schema.json",
 }
 
 

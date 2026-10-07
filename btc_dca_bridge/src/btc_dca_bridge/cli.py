@@ -25,6 +25,7 @@ from .production import (
 )
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
+from .execution import make_order_intent, validate_execution_safety
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
@@ -91,6 +92,12 @@ def _parser() -> argparse.ArgumentParser:
     summary.add_argument("--result-json", type=Path, required=True)
     summary.add_argument("--summary-file", type=Path, required=True)
     summary.add_argument("--retention-status", required=True)
+    plan = subparsers.add_parser("execution-plan", help="plan and validate an order intent; never submits")
+    plan.add_argument("--decision-json", type=Path, required=True)
+    plan.add_argument("--run-id", required=True)
+    plan.add_argument("--created-at", default="2026-01-01T00:00:00Z")
+    plan.add_argument("--month", required=True)
+    plan.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     return parser
 
 
@@ -300,6 +307,16 @@ def _summarize_shadow(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "written", "run_id": outcome.get("run_id")}
 
 
+def _execution_plan(args: argparse.Namespace) -> dict[str, object]:
+    decision = read_json_object(args.decision_json)
+    intent = make_order_intent(decision, run_id=args.run_id, created_at_utc=args.created_at,
+                               monthly_spent_usd=decision.get("monthly_spent_before_usd", 0))
+    validation = validate_execution_safety(intent, decision, ledger_path=args.ledger,
+                                            calendar_month=args.month)
+    return {"order_intent": intent.to_dict(), "safety_validation": validation.to_dict(),
+            "status": validation.status, "message": "NO ORDER EXECUTED"}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -314,6 +331,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _notify_shadow(args)
         elif args.command == "summarize-shadow":
             result = _summarize_shadow(args)
+        elif args.command == "execution-plan":
+            result = _execution_plan(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
