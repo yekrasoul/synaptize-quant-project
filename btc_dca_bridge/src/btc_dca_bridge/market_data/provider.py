@@ -40,9 +40,13 @@ class BybitSnapshotSource:
 
     source = BYBIT_SOURCE
 
-    def __init__(self, adapter: BybitSpotAdapter, *, clock=None) -> None:
+    def __init__(
+        self, adapter: BybitSpotAdapter, *, clock=None,
+        max_input_age: timedelta = DEFAULT_MAX_INPUT_AGE,
+    ) -> None:
         self.adapter = adapter
         self._clock = clock or (lambda: datetime.now(UTC))
+        self.max_input_age = max_input_age
 
     def get_market_snapshot(self, *, captured_at_utc: datetime | None = None) -> MarketSnapshot:
         ticker = self.adapter.fetch_ticker()
@@ -81,6 +85,7 @@ class BybitSnapshotSource:
             start_boundary_history=start_boundary,
             end_boundary_history=end_boundary,
             captured_at_utc=captured_at_utc or self._clock(),
+            max_input_age=self.max_input_age,
         )
 
 
@@ -89,9 +94,15 @@ class TradingViewSnapshotSource:
 
     source = TRADINGVIEW_SOURCE
 
-    def __init__(self, adapter: TradingViewBybitSpotAdapter, *, clock=None) -> None:
+    def __init__(
+        self, adapter: TradingViewBybitSpotAdapter, *, clock=None,
+        max_input_age: timedelta = DEFAULT_MAX_INPUT_AGE,
+        max_observation_age: timedelta = TRADINGVIEW_MAX_OBSERVATION_AGE,
+    ) -> None:
         self.adapter = adapter
         self._clock = clock or (lambda: datetime.now(UTC))
+        self.max_input_age = max_input_age
+        self.max_observation_age = max_observation_age
 
     def get_market_snapshot(self, *, captured_at_utc: datetime | None = None) -> MarketSnapshot:
         ticker, history = self.adapter.fetch_inputs()
@@ -99,8 +110,8 @@ class TradingViewSnapshotSource:
             ticker,
             history,
             captured_at_utc=captured_at_utc or self._clock(),
-            max_input_age=DEFAULT_MAX_INPUT_AGE,
-            max_observation_age=TRADINGVIEW_MAX_OBSERVATION_AGE,
+            max_input_age=self.max_input_age,
+            max_observation_age=self.max_observation_age,
         )
 
 

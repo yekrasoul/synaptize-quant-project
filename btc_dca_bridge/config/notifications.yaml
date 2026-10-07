@@ -1,0 +1,12 @@
+config_version: "1.0.0"
+telegram_enabled: true
+plain_text: true
+suppress_duplicate_success: true
+failure_notifications_enabled: true
+bot_token_env_var: TELEGRAM_BOT_TOKEN
+chat_id_env_var: TELEGRAM_CHAT_ID
+http:
+  connect_timeout_seconds: 3
+  read_timeout_seconds: 10
+  retry_attempts: 3
+  backoff_seconds: 0.5

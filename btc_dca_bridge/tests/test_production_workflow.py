@@ -3,6 +3,8 @@ from pathlib import Path
 
 import yaml
 
+from btc_dca_bridge.config import load_persistence_config, load_runtime_config
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "production-shadow.yml"
@@ -17,7 +19,9 @@ class ProductionWorkflowTest(unittest.TestCase):
     def test_workflow_is_canonical_frozen_least_privilege_and_durable(self):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         lowered = workflow.lower()
-        self.assertIn('cron: "0 11 * * *"', workflow)
+        runtime = load_runtime_config()
+        persistence = load_persistence_config()
+        self.assertIn(f'cron: "{runtime.github_cron_utc}"', workflow)
         self.assertIn("workflow_dispatch", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertIn("contents: read", workflow)
@@ -27,7 +31,9 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertIn("python -m btc_dca_bridge production-shadow", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("actions/download-artifact@v4", workflow)
-        self.assertIn("retention-days: 90", workflow)
+        self.assertIn("retention-days: ${{ steps.context.outputs.completed_retention_days }}", workflow)
+        self.assertIn("partial_retention_days", workflow)
+        self.assertEqual(persistence.completed_retention_days, 90)
         self.assertIn("TELEGRAM_BOT_TOKEN", workflow)
         self.assertIn("TELEGRAM_CHAT_ID", workflow)
         for forbidden in (

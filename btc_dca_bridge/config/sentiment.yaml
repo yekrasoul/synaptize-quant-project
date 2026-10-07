@@ -1,0 +1,9 @@
+config_version: "1.0.0"
+provider: alternative_me_crypto_fear_greed
+index_name: "Crypto Fear & Greed Index"
+freshness_max_age_seconds: 129600
+http:
+  connect_timeout_seconds: 3
+  read_timeout_seconds: 10
+  retry_attempts: 3
+  backoff_seconds: 0.2

@@ -17,7 +17,7 @@ jobs:
   shadow:
     name: Read-only BTC DCA shadow
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 30 # must match config/runtime.yaml; GitHub evaluates this before Python starts
     env:
       CONTEXT_JSON: ${{ runner.temp }}/production-context.json
       RESULT_JSON: ${{ runner.temp }}/production-result.json
@@ -114,7 +114,6 @@ jobs:
           uv run python -m btc_dca_bridge production-shadow \
             --context "${CONTEXT_JSON}" \
             --result-json "${RESULT_JSON}" \
-            --data-root data \
             --github-output "${GITHUB_OUTPUT}"
 
       - name: Retain completed immutable artifacts
@@ -125,7 +124,7 @@ jobs:
           name: production-shadow-${{ steps.context.outputs.run_id }}
           path: data/
           if-no-files-found: error
-          retention-days: 90
+          retention-days: ${{ steps.context.outputs.completed_retention_days }}
           compression-level: 0
 
       - name: Retain partial immutable evidence
@@ -135,7 +134,7 @@ jobs:
           name: production-shadow-partial-${{ steps.context.outputs.run_id }}-${{ github.run_id }}
           path: data/
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: ${{ steps.context.outputs.partial_retention_days }}
           compression-level: 0
 
       - name: Send successful shadow notification

@@ -1,0 +1,10 @@
+config_version: "1.0.0"
+timezone: Europe/London
+intended_local_time: "12:00"
+github_cron_utc: "0 11 * * *"
+scheduled_utc_hour: 11
+scheduled_utc_minute: 0
+minute_alignment_required: true
+shadow_mode_enabled: true
+live_execution_enabled: false
+workflow_timeout_minutes: 30

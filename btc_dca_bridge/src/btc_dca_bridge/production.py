@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .artifacts import make_run_id
-from .config import load_strategy_config
+from .config import RuntimeConfig, load_operational_config, load_runtime_config, load_strategy_config
 from .errors import BtcDcaError, ShadowRunAlreadyCompletedError, ShadowRunError
 from .ledger import read_executions
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
@@ -21,7 +21,6 @@ from .schemas import validate_all_schemas
 from .shadow import ShadowPipeline, build_live_shadow_pipeline
 
 
-SCHEDULED_UTC_HOUR = 11
 TRIGGERS = {"scheduled", "manual"}
 
 
@@ -43,11 +42,17 @@ def iso_utc(value: datetime) -> str:
     return _utc(value, "timestamp").isoformat().replace("+00:00", "Z")
 
 
-def scheduled_slot(process_started_at_utc: datetime) -> datetime:
-    """Return the latest daily 11:00 UTC slot at process start."""
+def scheduled_slot(
+    process_started_at_utc: datetime, *, runtime_config: RuntimeConfig | None = None
+) -> datetime:
+    """Return the latest validated configured UTC slot at process start."""
     started = _utc(process_started_at_utc, "process_started_at_utc")
+    runtime = runtime_config or load_runtime_config()
     candidate = started.replace(
-        hour=SCHEDULED_UTC_HOUR, minute=0, second=0, microsecond=0
+        hour=runtime.scheduled_utc_hour,
+        minute=runtime.scheduled_utc_minute,
+        second=0,
+        microsecond=0,
     )
     return candidate if candidate <= started else candidate - timedelta(days=1)
 
@@ -59,10 +64,11 @@ def acquisition_minute(now_utc: datetime) -> datetime:
     return aligned if now == aligned else aligned + timedelta(minutes=1)
 
 
-def scheduled_run_id(slot_utc: datetime) -> str:
+def scheduled_run_id(slot_utc: datetime, *, runtime_config: RuntimeConfig | None = None) -> str:
     slot = _utc(slot_utc, "scheduled slot")
-    if slot.second or slot.microsecond or slot.minute:
-        raise ValueError("scheduled slot must be aligned to the configured whole hour")
+    runtime = runtime_config or load_runtime_config()
+    if slot.second or slot.microsecond or slot.minute != runtime.scheduled_utc_minute or slot.hour != runtime.scheduled_utc_hour:
+        raise ValueError("scheduled slot must be aligned to the configured UTC minute")
     digest = hashlib.sha256(f"scheduled|{iso_utc(slot)}".encode("utf-8")).hexdigest()[:12]
     return make_run_id(slot, f"scheduled_{digest}")
 
@@ -95,13 +101,15 @@ class ProductionRunContext:
         process_started_at_utc: datetime,
         trigger_id: str,
         trigger_created_at_utc: datetime | None = None,
+        runtime_config: RuntimeConfig | None = None,
     ) -> "ProductionRunContext":
         if trigger_type not in TRIGGERS:
             raise ValueError("trigger_type must be scheduled or manual")
         started = _utc(process_started_at_utc, "process_started_at_utc")
+        runtime = runtime_config or load_runtime_config()
         if trigger_type == "scheduled":
-            logical = scheduled_slot(started)
-            run_id = scheduled_run_id(logical)
+            logical = scheduled_slot(started, runtime_config=runtime)
+            run_id = scheduled_run_id(logical, runtime_config=runtime)
         else:
             created = _utc(
                 trigger_created_at_utc or started, "trigger_created_at_utc"
@@ -166,7 +174,7 @@ def run_production_shadow(
     *,
     config_path: Path = CONFIG_PATH,
     ledger_path: Path = LEDGER_PATH,
-    data_root: Path = DATA_PATH,
+    data_root: Path | None = None,
     pipeline_factory: PipelineFactory = build_live_shadow_pipeline,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     sleep: Callable[[float], None] = time.sleep,
@@ -185,6 +193,7 @@ def run_production_shadow(
     try:
         # Fail before public network acquisition if repository-owned inputs are invalid.
         validate_all_schemas()
+        load_operational_config()
         load_strategy_config(config_path)
         read_executions(ledger_path)
         if wait_seconds > 0:

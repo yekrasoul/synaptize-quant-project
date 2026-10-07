@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 
-from .config import load_strategy_config
+from .config import load_notification_config, load_operational_config, load_strategy_config
 from .errors import BtcDcaError
 from .engine import calculate_decision
 from .ledger import read_executions
@@ -25,7 +25,7 @@ from .production import (
 )
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
-from .notifications import TelegramNotifier, format_failure_message, format_success_message
+from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--run-at", help="injected RFC 3339 UTC run time")
     run.add_argument("--config", type=Path, default=CONFIG_PATH)
     run.add_argument("--ledger", type=Path, default=LEDGER_PATH)
-    run.add_argument("--data-root", type=Path, default=DATA_PATH)
+    run.add_argument("--data-root", type=Path, help="explicit local artifact root (tests/developer use)")
 
     production_context = subparsers.add_parser(
         "production-context", help="derive deterministic production-shadow identity"
@@ -75,7 +75,7 @@ def _parser() -> argparse.ArgumentParser:
     production.add_argument("--result-json", type=Path, required=True)
     production.add_argument("--config", type=Path, default=CONFIG_PATH)
     production.add_argument("--ledger", type=Path, default=LEDGER_PATH)
-    production.add_argument("--data-root", type=Path, default=DATA_PATH)
+    production.add_argument("--data-root", type=Path, help="explicit local artifact root (tests/developer use)")
     production.add_argument("--github-output", type=Path)
 
     notify = subparsers.add_parser(
@@ -176,6 +176,7 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _production_context(args: argparse.Namespace) -> dict[str, object]:
+    operational = load_operational_config()
     context = ProductionRunContext.create(
         trigger_type=args.trigger,
         process_started_at_utc=_run_time(args.process_started_at),
@@ -184,13 +185,15 @@ def _production_context(args: argparse.Namespace) -> dict[str, object]:
             _run_time(args.trigger_created_at) if args.trigger_created_at else None
         ),
     )
-    payload = context.to_dict()
+    payload = {**context.to_dict(), "runtime_config_version": operational.runtime.config_version}
     write_json_object(args.output, payload)
     if args.github_output is not None:
         with args.github_output.open("a", encoding="utf-8") as handle:
             handle.write(f"run_id={context.run_id}\n")
             handle.write(f"logical_run_at_utc={context.logical_run_at_utc}\n")
             handle.write(f"trigger_type={context.trigger_type}\n")
+            handle.write(f"completed_retention_days={operational.persistence.completed_retention_days}\n")
+            handle.write(f"partial_retention_days={operational.persistence.partial_retention_days}\n")
     return payload
 
 
@@ -212,7 +215,8 @@ def _production_shadow(args: argparse.Namespace) -> tuple[dict[str, object], int
 
 def _notify_shadow(args: argparse.Namespace) -> dict[str, object]:
     outcome = read_json_object(args.result_json)
-    if outcome.get("status") == "already_completed" and not args.failure_category:
+    config = load_notification_config()
+    if outcome.get("status") == "already_completed" and not args.failure_category and config.suppress_duplicate_success:
         outcome["notification_status"] = "suppressed"
         outcome["duplicate_notification_suppressed"] = True
         write_json_object(args.result_json, outcome)
@@ -227,10 +231,23 @@ def _notify_shadow(args: argparse.Namespace) -> dict[str, object]:
         message = format_success_message(outcome)
     else:
         raise ValueError("structured production result has unsupported status")
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not config.telegram_enabled:
+        outcome["notification_status"] = "disabled"
+        write_json_object(args.result_json, outcome)
+        return outcome
+    token = os.environ.get(config.bot_token_env_var, "")
+    chat_id = os.environ.get(config.chat_id_env_var, "")
     try:
-        delivery = TelegramNotifier(token, chat_id).send(message)
+        delivery = TelegramNotifier(
+            token,
+            chat_id,
+            transport=TelegramTransport(
+                connect_timeout_seconds=config.http.connect_timeout_seconds,
+                read_timeout_seconds=config.http.read_timeout_seconds,
+                max_attempts=config.http.retry_attempts,
+                backoff_seconds=config.http.backoff_seconds,
+            ),
+        ).send(message)
     except (BtcDcaError, ValueError):
         outcome["notification_status"] = "failed"
         write_json_object(args.result_json, outcome)

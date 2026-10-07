@@ -7,11 +7,16 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
 from .errors import ConfigurationError
-from .paths import CONFIG_PATH
+from .paths import (
+    CONFIG_PATH, MARKET_DATA_CONFIG_PATH, NOTIFICATIONS_CONFIG_PATH,
+    PERSISTENCE_CONFIG_PATH, RESEARCH_CONFIG_PATH, RUNTIME_CONFIG_PATH,
+    SENTIMENT_CONFIG_PATH,
+)
 
 
 EXPECTED_STRATEGY_ID = "btc_adaptive_dca_v1"
@@ -248,3 +253,231 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         tuple(sentiment_bands),
         ROUND_HALF_UP,
     )
+
+
+# Operational configuration is deliberately separate from the V1 strategy
+# contract above.  These models are restrictive: changing a source identity
+# requires an adapter and an explicit data-source change, not just YAML edits.
+OPERATIONAL_CONFIG_VERSION = "1.0.0"
+
+
+@dataclass(frozen=True)
+class HttpPolicy:
+    connect_timeout_seconds: float
+    read_timeout_seconds: float
+    retry_attempts: int
+    backoff_seconds: float
+
+
+@dataclass(frozen=True)
+class MarketDataConfig:
+    config_version: str
+    exchange: str
+    market_type: str
+    symbol: str
+    primary_provider: str
+    fallback_providers: tuple[str, ...]
+    tradingview_external_symbol: str
+    freshness_max_age_seconds: int
+    tradingview_observation_max_age_seconds: int
+    tradingview_timeout_seconds: float
+    candle_page_limit: int
+    candle_max_pages: int
+    http: HttpPolicy
+
+
+@dataclass(frozen=True)
+class SentimentConfig:
+    config_version: str
+    provider: str
+    index_name: str
+    freshness_max_age_seconds: int
+    http: HttpPolicy
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    config_version: str
+    timezone: str
+    intended_local_time: str
+    github_cron_utc: str
+    scheduled_utc_hour: int
+    scheduled_utc_minute: int
+    minute_alignment_required: bool
+    shadow_mode_enabled: bool
+    live_execution_enabled: bool
+    workflow_timeout_minutes: int
+
+
+@dataclass(frozen=True)
+class NotificationConfig:
+    config_version: str
+    telegram_enabled: bool
+    plain_text: bool
+    suppress_duplicate_success: bool
+    failure_notifications_enabled: bool
+    bot_token_env_var: str
+    chat_id_env_var: str
+    http: HttpPolicy
+
+
+@dataclass(frozen=True)
+class PersistenceConfig:
+    config_version: str
+    artifact_root: str
+    completed_retention_days: int
+    partial_retention_days: int
+    digest_algorithm: str
+    serialization_policy: str
+
+
+@dataclass(frozen=True)
+class ResearchConfig:
+    config_version: str
+    flags: dict[str, bool]
+
+
+@dataclass(frozen=True)
+class OperationalConfig:
+    market_data: MarketDataConfig
+    sentiment: SentimentConfig
+    runtime: RuntimeConfig
+    notifications: NotificationConfig
+    persistence: PersistenceConfig
+    research: ResearchConfig
+
+
+def _operational_yaml(path: Path, label: str) -> dict[str, Any]:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigurationError(f"cannot load {label} config {path}: {exc}") from exc
+    return _mapping(raw, label)
+
+
+def _version(root: dict[str, Any], label: str) -> None:
+    if root.get("config_version") != OPERATIONAL_CONFIG_VERSION:
+        raise ConfigurationError(f"{label}.config_version must be {OPERATIONAL_CONFIG_VERSION}")
+
+
+def _positive_number(value: Any, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigurationError(f"{label} must be a positive number")
+    return float(value)
+
+
+def _positive_int(value: Any, label: str, *, maximum: int | None = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigurationError(f"{label} must be a positive integer")
+    if maximum is not None and value > maximum:
+        raise ConfigurationError(f"{label} must not exceed {maximum}")
+    return value
+
+
+def _http_policy(root: dict[str, Any], label: str) -> HttpPolicy:
+    raw = _mapping(root.get("http"), f"{label}.http")
+    allowed = {"connect_timeout_seconds", "read_timeout_seconds", "retry_attempts", "backoff_seconds"}
+    if set(raw) != allowed:
+        raise ConfigurationError(f"{label}.http has unsupported or missing fields")
+    backoff = raw["backoff_seconds"]
+    if isinstance(backoff, bool) or not isinstance(backoff, (int, float)) or backoff < 0:
+        raise ConfigurationError(f"{label}.http.backoff_seconds must be non-negative")
+    return HttpPolicy(
+        _positive_number(raw["connect_timeout_seconds"], f"{label}.http.connect_timeout_seconds"),
+        _positive_number(raw["read_timeout_seconds"], f"{label}.http.read_timeout_seconds"),
+        _positive_int(raw["retry_attempts"], f"{label}.http.retry_attempts", maximum=5),
+        float(backoff),
+    )
+
+
+def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataConfig:
+    root = _operational_yaml(path, "market_data")
+    _version(root, "market_data")
+    required = {"config_version", "exchange", "market_type", "symbol", "primary_provider", "fallback_providers", "tradingview_external_symbol", "freshness_max_age_seconds", "tradingview_observation_max_age_seconds", "tradingview_timeout_seconds", "candle_page_limit", "candle_max_pages", "http"}
+    if set(root) != required:
+        raise ConfigurationError("market_data has unsupported or missing fields")
+    if root["exchange"] != "Bybit" or root["market_type"] != "spot" or root["symbol"] != "BTCUSDT":
+        raise ConfigurationError("market data identity must remain Bybit BTCUSDT Spot")
+    if root["primary_provider"] != "bybit_api":
+        raise ConfigurationError("the canonical primary provider must be bybit_api")
+    fallbacks = root["fallback_providers"]
+    if fallbacks != ["tradingview"]:
+        raise ConfigurationError("the only approved fallback is tradingview")
+    if root["tradingview_external_symbol"] != "BYBIT:BTCUSDT" or ".P" in root["tradingview_external_symbol"]:
+        raise ConfigurationError("TradingView identity must be exact BYBIT:BTCUSDT Spot")
+    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("tradingview",), "BYBIT:BTCUSDT", _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["tradingview_observation_max_age_seconds"], "market_data.tradingview_observation_max_age_seconds"), _positive_number(root["tradingview_timeout_seconds"], "market_data.tradingview_timeout_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
+
+
+def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig:
+    root = _operational_yaml(path, "sentiment")
+    _version(root, "sentiment")
+    if set(root) != {"config_version", "provider", "index_name", "freshness_max_age_seconds", "http"}:
+        raise ConfigurationError("sentiment has unsupported or missing fields")
+    if root["provider"] != "alternative_me_crypto_fear_greed" or root["index_name"] != "Crypto Fear & Greed Index":
+        raise ConfigurationError("the canonical sentiment source must remain Alternative.me Fear & Greed")
+    return SentimentConfig(OPERATIONAL_CONFIG_VERSION, root["provider"], root["index_name"], _positive_int(root["freshness_max_age_seconds"], "sentiment.freshness_max_age_seconds"), _http_policy(root, "sentiment"))
+
+
+def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
+    root = _operational_yaml(path, "runtime")
+    _version(root, "runtime")
+    required = {"config_version", "timezone", "intended_local_time", "github_cron_utc", "scheduled_utc_hour", "scheduled_utc_minute", "minute_alignment_required", "shadow_mode_enabled", "live_execution_enabled", "workflow_timeout_minutes"}
+    if set(root) != required:
+        raise ConfigurationError("runtime has unsupported or missing fields")
+    try:
+        ZoneInfo(root["timezone"])
+    except (TypeError, ZoneInfoNotFoundError) as exc:
+        raise ConfigurationError("runtime.timezone must be a valid IANA timezone") from exc
+    if not isinstance(root["intended_local_time"], str) or not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", root["intended_local_time"]):
+        raise ConfigurationError("runtime.intended_local_time must be HH:MM")
+    hour = root["scheduled_utc_hour"]
+    minute = root["scheduled_utc_minute"]
+    if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23 or isinstance(minute, bool) or not isinstance(minute, int) or not 0 <= minute <= 59:
+        raise ConfigurationError("runtime scheduled UTC slot must be minute-aligned")
+    if root["github_cron_utc"] != f"{minute} {hour} * * *":
+        raise ConfigurationError("runtime.github_cron_utc must match the scheduled UTC slot")
+    if root["minute_alignment_required"] is not True or root["shadow_mode_enabled"] is not True or root["live_execution_enabled"] is not False:
+        raise ConfigurationError("Phase 4 runtime must be minute-aligned shadow-only with live execution disabled")
+    return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], hour, minute, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360))
+
+
+def load_notification_config(path: Path = NOTIFICATIONS_CONFIG_PATH) -> NotificationConfig:
+    root = _operational_yaml(path, "notifications")
+    _version(root, "notifications")
+    required = {"config_version", "telegram_enabled", "plain_text", "suppress_duplicate_success", "failure_notifications_enabled", "bot_token_env_var", "chat_id_env_var", "http"}
+    if set(root) != required:
+        raise ConfigurationError("notifications has unsupported or missing fields")
+    if any(key in root for key in ("bot_token", "chat_id", "token")):
+        raise ConfigurationError("notification secrets must not be embedded in YAML")
+    if root["telegram_enabled"] is not True or root["plain_text"] is not True or not all(isinstance(root[key], bool) for key in ("suppress_duplicate_success", "failure_notifications_enabled")):
+        raise ConfigurationError("notifications must use enabled plain-text Telegram policy")
+    for key in ("bot_token_env_var", "chat_id_env_var"):
+        if not isinstance(root[key], str) or not re.fullmatch(r"[A-Z][A-Z0-9_]*", root[key]):
+            raise ConfigurationError(f"notifications.{key} must name an environment variable")
+    return NotificationConfig(OPERATIONAL_CONFIG_VERSION, True, True, root["suppress_duplicate_success"], root["failure_notifications_enabled"], root["bot_token_env_var"], root["chat_id_env_var"], _http_policy(root, "notifications"))
+
+
+def load_persistence_config(path: Path = PERSISTENCE_CONFIG_PATH) -> PersistenceConfig:
+    root = _operational_yaml(path, "persistence")
+    _version(root, "persistence")
+    if set(root) != {"config_version", "artifact_root", "completed_retention_days", "partial_retention_days", "digest_algorithm", "serialization_policy"}:
+        raise ConfigurationError("persistence has unsupported or missing fields")
+    artifact_root = root["artifact_root"]
+    if not isinstance(artifact_root, str) or not artifact_root or Path(artifact_root).is_absolute() or any(part in {"", ".", ".."} for part in Path(artifact_root).parts):
+        raise ConfigurationError("persistence.artifact_root must be a safe relative path")
+    if root["digest_algorithm"] != "sha256" or root["serialization_policy"] != "json_utf8_sorted_compact_v1":
+        raise ConfigurationError("persistence digest and serialization policy are canonical")
+    return PersistenceConfig(OPERATIONAL_CONFIG_VERSION, artifact_root, _positive_int(root["completed_retention_days"], "persistence.completed_retention_days", maximum=400), _positive_int(root["partial_retention_days"], "persistence.partial_retention_days", maximum=400), "sha256", "json_utf8_sorted_compact_v1")
+
+
+def load_research_config(path: Path = RESEARCH_CONFIG_PATH) -> ResearchConfig:
+    root = _operational_yaml(path, "research")
+    _version(root, "research")
+    flags = _mapping(root.get("flags"), "research.flags")
+    if set(root) != {"config_version", "flags"} or not flags or not all(value is False for value in flags.values()):
+        raise ConfigurationError("research flags must exist and remain disabled in Phase 4")
+    return ResearchConfig(OPERATIONAL_CONFIG_VERSION, dict(flags))
+
+
+def load_operational_config() -> OperationalConfig:
+    return OperationalConfig(load_market_data_config(), load_sentiment_config(), load_runtime_config(), load_notification_config(), load_persistence_config(), load_research_config())

@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .artifacts import ArtifactReceipt, ArtifactStore, ArtifactType, make_run_id
-from .config import StrategyConfig, load_strategy_config
+from .config import (
+    MarketDataConfig, OperationalConfig, SentimentConfig, StrategyConfig,
+    load_market_data_config, load_operational_config, load_sentiment_config,
+    load_strategy_config,
+)
 from .engine import calculate_decision
 from .errors import (
     ArtifactError,
@@ -20,10 +24,11 @@ from .errors import (
 )
 from .ledger import read_executions
 from .market_data.bybit import BybitSpotAdapter
+from .market_data.http import PublicHttpTransport
 from .market_data.provider import BybitSnapshotSource, FallbackMarketDataProvider, TradingViewSnapshotSource
-from .market_data.tradingview import TradingViewBybitSpotAdapter
+from .market_data.tradingview import TradingViewBybitSpotAdapter, WebSocketTradingViewTransport
 from .models import Execution, MarketSnapshot, PortfolioState, StrategyDecision
-from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
+from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH, PROJECT_ROOT
 from .portfolio import derive_portfolio
 from .schemas import validate_artifact
 from .sentiment import AlternativeMeFearGreedAdapter, SentimentSnapshot
@@ -279,20 +284,64 @@ def build_live_shadow_pipeline(
     run_at_utc: datetime,
     config_path: Path = CONFIG_PATH,
     ledger_path: Path = LEDGER_PATH,
-    data_root: Path = DATA_PATH,
+    data_root: Path | None = None,
+    operational_config: OperationalConfig | None = None,
 ) -> ShadowPipeline:
     """Build the public-read-only pipeline; no credentials or order client exist."""
     run_at = _utc(run_at_utc)
     clock = lambda: run_at
-    primary = BybitSnapshotSource(BybitSpotAdapter(clock=clock), clock=clock)
-    fallback = TradingViewSnapshotSource(TradingViewBybitSpotAdapter(clock=clock), clock=clock)
+    operational = operational_config or load_operational_config()
+    market_config = operational.market_data
+    sentiment_config = operational.sentiment
+    market_transport = PublicHttpTransport(
+        "https://api.bybit.com",
+        connect_timeout_seconds=market_config.http.connect_timeout_seconds,
+        read_timeout_seconds=market_config.http.read_timeout_seconds,
+        max_attempts=market_config.http.retry_attempts,
+        backoff_seconds=market_config.http.backoff_seconds,
+    )
+    primary = BybitSnapshotSource(
+        BybitSpotAdapter(
+            transport=market_transport, clock=clock,
+            page_limit=market_config.candle_page_limit,
+            max_pages=market_config.candle_max_pages,
+        ),
+        clock=clock,
+        max_input_age=timedelta(seconds=market_config.freshness_max_age_seconds),
+    )
+    fallback = TradingViewSnapshotSource(
+        TradingViewBybitSpotAdapter(
+            transport=WebSocketTradingViewTransport(
+                timeout_seconds=market_config.tradingview_timeout_seconds
+            ),
+            clock=clock,
+        ),
+        clock=clock,
+        max_input_age=timedelta(seconds=market_config.freshness_max_age_seconds),
+        max_observation_age=timedelta(
+            seconds=market_config.tradingview_observation_max_age_seconds
+        ),
+    )
     market_provider = FallbackMarketDataProvider(primary, fallback, clock=clock)
-    sentiment_provider = AlternativeMeFearGreedAdapter(clock=clock)
+    sentiment_transport = PublicHttpTransport(
+        "https://api.alternative.me",
+        connect_timeout_seconds=sentiment_config.http.connect_timeout_seconds,
+        read_timeout_seconds=sentiment_config.http.read_timeout_seconds,
+        max_attempts=sentiment_config.http.retry_attempts,
+        backoff_seconds=sentiment_config.http.backoff_seconds,
+    )
+    sentiment_provider = AlternativeMeFearGreedAdapter(
+        transport=sentiment_transport,
+        clock=clock,
+        max_observation_age=timedelta(seconds=sentiment_config.freshness_max_age_seconds),
+    )
     return ShadowPipeline(
         market_provider=market_provider,
         sentiment_provider=sentiment_provider,
         strategy=load_strategy_config(config_path),
-        artifact_store=ArtifactStore(data_root),
+        artifact_store=ArtifactStore(
+            Path(data_root) if data_root is not None else PROJECT_ROOT / operational.persistence.artifact_root
+        ),
         ledger_path=ledger_path,
     )
 
