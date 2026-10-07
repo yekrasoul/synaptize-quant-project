@@ -29,6 +29,7 @@ from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, make_order_intent, validate_execution_safety
 from .private_bybit import BybitPrivateReadClient
+from .canary import CanaryPreparer
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
@@ -108,6 +109,12 @@ def _parser() -> argparse.ArgumentParser:
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
+    canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
+    canary.add_argument("--decision-json", type=Path, required=True)
+    canary.add_argument("--run-id", required=True)
+    canary.add_argument("--month", required=True)
+    canary.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    canary.add_argument("--data-root", type=Path, default=DATA_PATH)
     return parser
 
 
@@ -366,6 +373,46 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
 
 
+def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
+    decision = read_json_object(args.decision_json)
+    try:
+        client = BybitPrivateReadClient.from_environment()
+    except Exception as exc:
+        error_message = str(exc)
+        class UnavailableReadClient:
+            def __getattr__(self, name):
+                def unavailable(*unused_args, **unused_kwargs): raise RuntimeError(f"private read verification unavailable: {error_message}")
+                return unavailable
+        client = UnavailableReadClient()
+    result = CanaryPreparer(artifact_store=ArtifactStore(args.data_root), client=client).prepare(
+        decision, run_id=args.run_id, calendar_month=args.month, ledger_path=args.ledger
+    )
+    manifest = result.manifest.to_dict()
+    status_line = "CANARY READY FOR MANUAL APPROVAL" if manifest["canary_status"] == "READY_FOR_MANUAL_APPROVAL" else "CANARY BLOCKED"
+    balances = {"USDT": manifest["wallet_usdt"], "BTC": manifest["wallet_btc"]}
+    summary = "\n".join((
+        f"Decision ID: {manifest['decision_id']}",
+        f"Client order ID: {manifest['client_order_id']}",
+        f"BTC market: {manifest['exchange']} {manifest['market_type']} {manifest['symbol']}",
+        f"Order side: {manifest['side']}",
+        f"Order type: {manifest['order_type']}",
+        f"V1 amount: {manifest['approved_amount_usdt']}",
+        f"Monthly spent: {manifest['monthly_spent_usd']}",
+        f"Remaining monthly budget: {manifest['remaining_budget_usd']}",
+        f"USDT available: {balances['USDT']}",
+        f"BTC balance: {balances['BTC']}",
+        f"Liability detected: {manifest['liability_detected']}",
+        f"Credential classification: {manifest['credential_classification']}",
+        f"Pre-submission reconciliation: {manifest['pre_submission_state']}",
+        f"Manifest expiry: {manifest['expires_at_utc']}",
+        f"Payload SHA-256: {manifest['order_payload_fingerprint']}",
+        f"Canary status: {manifest['canary_status']}",
+        status_line,
+        "NO ORDER SUBMITTED",
+    ))
+    return {"manifest": manifest, "artifact_receipt": {"path": str(result.artifact_receipt.path), "sha256": result.artifact_receipt.sha256}, "summary": summary}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -386,6 +433,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _private_verify(args)
         elif args.command == "live-submit":
             result = _live_submit(args)
+        elif args.command == "canary-prepare":
+            result = _canary_prepare(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
@@ -397,6 +446,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.command == "run":
         print(format_shadow_output(result))
+    elif args.command == "canary-prepare":
+        print(result["summary"])
     else:
         print(json.dumps(result, indent=2, sort_keys=True))
     return exit_code
