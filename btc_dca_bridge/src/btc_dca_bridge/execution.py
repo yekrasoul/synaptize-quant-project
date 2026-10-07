@@ -145,15 +145,14 @@ class InstrumentRules:
     base_quantity_minimum: Decimal
     quantity_step: Decimal
     price_tick_size: Decimal
-    market_buy_allowed: bool
-    min_notional: Decimal | None = None
+    quote_precision: Decimal | None = None
+    max_market_order_qty: Decimal | None = None
+    max_limit_order_qty: Decimal | None = None
 
     def validate_quote(self, amount: Decimal) -> None:
         for value in (self.quote_minimum, self.base_quantity_minimum, self.quantity_step, self.price_tick_size):
             if not value.is_finite() or value <= 0: raise ExecutionSafetyError("instrument metadata is malformed")
-        if not isinstance(self.market_buy_allowed, bool) or not self.market_buy_allowed:
-            raise ExecutionSafetyError("market buys are not supported by instrument metadata")
-        if amount < self.quote_minimum or (self.min_notional is not None and amount < self.min_notional):
+        if amount < self.quote_minimum:
             raise ExecutionSafetyError("order amount violates exchange minimum")
 
 
@@ -174,18 +173,24 @@ def parse_bybit_spot_instrument_info(payload: Mapping[str, Any]) -> InstrumentRu
         entries = result["list"]
         if not isinstance(entries, list) or len(entries) != 1: raise KeyError
         row = entries[0]
-        if row.get("symbol") != "BTCUSDT" or row.get("baseCoin") != "BTC" or row.get("quoteCoin") != "USDT": raise KeyError
+        if (row.get("symbol"), row.get("baseCoin"), row.get("quoteCoin"), row.get("status")) != ("BTCUSDT", "BTC", "USDT", "Trading"): raise KeyError
         lot = row["lotSizeFilter"]
         price = row["priceFilter"]
-        market_buy = row["marketBuyAllowed"] if "marketBuyAllowed" in row else row["market_buy_allowed"]
-        minimum = lot.get("minOrderAmt", lot.get("min_order_amount"))
+        minimum = lot.get("minOrderAmt")
         if minimum is None: raise KeyError
-        if not isinstance(market_buy, bool): raise KeyError
+        # Bybit documents qtyStep as the quantity increment. basePrecision is
+        # the deterministic fallback only when qtyStep is absent; no numeric
+        # defaults are inferred. Optional documented maxima are parsed when
+        # present so malformed authoritative metadata fails closed.
+        quantity_step_value = lot.get("qtyStep") if "qtyStep" in lot else lot.get("basePrecision")
+        if quantity_step_value is None: raise KeyError
+        quote_precision = _metadata_decimal(lot["quotePrecision"], "quotePrecision") if "quotePrecision" in lot else None
+        max_market = _metadata_decimal(lot["maxMarketOrderQty"], "maxMarketOrderQty") if "maxMarketOrderQty" in lot else None
+        max_limit = _metadata_decimal(lot["maxLimitOrderQty"], "maxLimitOrderQty") if "maxLimitOrderQty" in lot else None
         return InstrumentRules(_metadata_decimal(minimum, "minOrderAmt"),
             _metadata_decimal(lot["minOrderQty"], "minOrderQty"),
-            _metadata_decimal(lot.get("qtyStep", lot.get("basePrecision")), "qtyStep"),
-            _metadata_decimal(price["tickSize"], "tickSize"), bool(market_buy),
-            _metadata_decimal(minimum, "minOrderAmt"))
+            _metadata_decimal(quantity_step_value, "qtyStep/basePrecision"),
+            _metadata_decimal(price["tickSize"], "tickSize"), quote_precision, max_market, max_limit)
     except (KeyError, TypeError, AttributeError) as exc:
         raise ExecutionSafetyError("authoritative Bybit Spot instrument metadata is missing or malformed") from exc
 

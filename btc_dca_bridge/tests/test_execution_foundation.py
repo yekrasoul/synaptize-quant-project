@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from contextlib import redirect_stdout
 from io import StringIO
 from decimal import Decimal
@@ -23,7 +24,7 @@ class ExecutionFoundationTests(unittest.TestCase):
             "decision_1", "intent_1", "2026-10-07T00:00:00Z", "Bybit", "spot", "BTCUSDT", "Buy",
             Decimal("10"), "recommendation_only", client_order_id("btc_adaptive_dca_v1", "decision_1", "run_1"),
             Decimal("0"), Decimal("500"), "pending", False, False)
-        self.metadata = {"retCode": 0, "result": {"category": "spot", "list": [{"symbol": "BTCUSDT", "baseCoin": "BTC", "quoteCoin": "USDT", "lotSizeFilter": {"minOrderAmt": "10", "minOrderQty": "0.00001", "qtyStep": "0.00001"}, "priceFilter": {"tickSize": "0.01"}, "marketBuyAllowed": True}]}}
+        self.metadata = {"retCode": 0, "result": {"category": "spot", "list": [{"symbol": "BTCUSDT", "baseCoin": "BTC", "quoteCoin": "USDT", "status": "Trading", "lotSizeFilter": {"minOrderAmt": "10", "minOrderQty": "0.00001", "basePrecision": "0.000001", "quotePrecision": "0.01", "qtyStep": "0.00001", "maxMarketOrderQty": "100", "maxLimitOrderQty": "50"}, "priceFilter": {"tickSize": "0.01"}}]}}
         self.provider = JsonInstrumentMetadataProvider(self.metadata)
 
     def test_market_rejects_derivatives_and_non_btc(self):
@@ -68,11 +69,14 @@ class ExecutionFoundationTests(unittest.TestCase):
         result = validate_execution_safety(self.intent, self.decision, ledger_path=self.ledger, calendar_month="2026-10", instrument_provider=self.provider, submission_state=NoSubmissionEvidence())
         self.assertNotIn("previously confirmed", " ".join(result.reasons))
 
-    def test_instrument_identity_and_market_buy_guards(self):
+    def test_instrument_identity_and_documented_spot_guards(self):
         for exchange, market, symbol in (("Other", "spot", "BTCUSDT"), ("Bybit", "spot", "ETHUSDT"), ("Bybit", "linear", "BTCUSDT")):
             with self.assertRaises(ValueError): self.provider.get_rules(exchange, market, symbol)
-        disabled = {**self.metadata, "result": {**self.metadata["result"], "list": [{**self.metadata["result"]["list"][0], "marketBuyAllowed": False}]}}
-        with self.assertRaises(ValueError): JsonInstrumentMetadataProvider(disabled).get_rules("Bybit", "spot", "BTCUSDT").validate_quote(Decimal("10"))
+        for field, value in (("status", "Settling"),):
+            bad = {**self.metadata, "result": {**self.metadata["result"], "list": [{**self.metadata["result"]["list"][0], field: value}]}}
+            with self.assertRaises(ValueError): parse_bybit_spot_instrument_info(bad)
+        self.provider.get_rules("Bybit", "spot", "BTCUSDT").validate_quote(Decimal("10"))
+        with self.assertRaises(ValueError): self.provider.get_rules("Bybit", "spot", "BTCUSDT").validate_quote(Decimal("9.99"))
 
     def test_execution_plan_persists_rejected_plan_and_never_orders(self):
         root = Path(tempfile.mkdtemp())
@@ -121,5 +125,23 @@ class ExecutionFoundationTests(unittest.TestCase):
     def test_instrument_parser_fail_closed(self):
         rules = parse_bybit_spot_instrument_info(self.metadata)
         self.assertEqual(rules.quote_minimum, Decimal("10"))
-        for bad in ({}, {**self.metadata, "result": {"category": "linear", "list": []}}, {**self.metadata, "result": {"category": "spot", "list": [{"symbol": "ETHUSDT"}]}}):
+        self.assertEqual(rules.quantity_step, Decimal("0.00001"))
+        no_market_flag = json.loads(json.dumps(self.metadata))
+        self.assertNotIn("marketBuyAllowed", no_market_flag["result"]["list"][0])
+        for bad in (
+            {},
+            {**self.metadata, "result": {"category": "linear", "list": []}},
+            {**self.metadata, "result": {"category": "spot", "list": [{"symbol": "ETHUSDT", "baseCoin": "ETH", "quoteCoin": "USDT", "status": "Trading"}]}},
+            {**self.metadata, "result": {"category": "spot", "list": [{**self.metadata["result"]["list"][0], "baseCoin": "ETH"}]}},
+            {**self.metadata, "result": {"category": "spot", "list": [{**self.metadata["result"]["list"][0], "quoteCoin": "BTC"}]}},
+            {**self.metadata, "result": {"category": "spot", "list": [{**self.metadata["result"]["list"][0], "lotSizeFilter": {**self.metadata["result"]["list"][0]["lotSizeFilter"], "minOrderAmt": None}}]}},
+            {**self.metadata, "result": {"category": "spot", "list": [{**self.metadata["result"]["list"][0], "lotSizeFilter": {k: v for k, v in self.metadata["result"]["list"][0]["lotSizeFilter"].items() if k not in ("qtyStep", "basePrecision")}}]}},
+            {**self.metadata, "result": {"category": "spot", "list": [{**self.metadata["result"]["list"][0], "priceFilter": {"tickSize": "bad"}}]}},
+        ):
             with self.assertRaises(ValueError): parse_bybit_spot_instrument_info(bad)
+
+    def test_qty_step_falls_back_to_base_precision_only(self):
+        row = self.metadata["result"]["list"][0]
+        fallback = json.loads(json.dumps(self.metadata))
+        fallback["result"]["list"][0]["lotSizeFilter"].pop("qtyStep")
+        self.assertEqual(parse_bybit_spot_instrument_info(fallback).quantity_step, Decimal("0.000001"))
