@@ -1,0 +1,208 @@
+import json
+import tempfile
+import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from btc_dca_bridge import cli
+from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType
+from btc_dca_bridge.errors import ArtifactAlreadyExistsError
+from btc_dca_bridge.blocked_production import QUOTE_LIMIT_BLOCKER_ID, contract_status
+from btc_dca_bridge.production_status import (
+    ProductionStatusService,
+    alert_class_for,
+    compare_status_snapshots,
+    format_production_status_alert,
+    validate_status_artifacts,
+)
+
+
+COMMIT = "a" * 40
+CHECK_IDS = (
+    "SECRET_HYGIENE", "BYBIT_CREDENTIAL_SCOPE", "BYBIT_ACCOUNT",
+    "BYBIT_LIABILITIES", "BYBIT_SPOT_AVAILABLE_BALANCE", "CLOCK_SKEW",
+    "PRODUCTION_CONNECTIVITY",
+)
+
+
+class MutableClock:
+    def __init__(self, instant):
+        self.instant = instant
+
+    def __call__(self):
+        return self.instant
+
+
+class FakeStatusService:
+    """Synthetic readiness/evidence/operations sources; no network clients."""
+    def __init__(self, root, ledger, clock, *, unresolved=False, health=None, readiness_status="NOT_READY", checks=None):
+        self.root, self.ledger, self.clock = root, ledger, clock
+        self.unresolved = unresolved
+        self.health_status = health or "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY"
+        self.readiness_status = readiness_status
+        self.checks = checks or {check: "PASS" for check in CHECK_IDS}
+        self.service = ProductionStatusService(
+            data_root=root,
+            ledger_path=ledger,
+            now=clock,
+            readiness_factory=lambda **_: SimpleNamespace(evaluate=self.readiness),
+            operations_factory=lambda **_: SimpleNamespace(health=self.health, snapshot=self.ops_snapshot),
+            evidence_service_factory=lambda **_: SimpleNamespace(latest=self.latest, verify=self.verify),
+            preauthorization_evaluator=lambda _: {"status": "BLOCKED"},
+            contract_provider=lambda **kwargs: contract_status(now=kwargs["now"]),
+            repo_probe=lambda: {"commit": COMMIT, "dirty": False},
+            hostname=lambda: "test-host",
+        )
+
+    def readiness(self):
+        return {
+            "status": self.readiness_status,
+            "checks": [
+                {"check_id": check, "status": status, "required": True, "evidence": "sanitized", "reason": "synthetic"}
+                for check, status in self.checks.items()
+            ],
+            "quote_unit_limit_evidence": {"conclusion": "NOT_EXPOSED", "authoritative": False, "maximum_quote_usdt": None},
+        }
+
+    def health(self):
+        return {"status": self.health_status}
+
+    def ops_snapshot(self):
+        return SimpleNamespace(reconciliation_required=self.unresolved)
+
+    def latest(self):
+        return {"evidence_id": "evidence-test", "account_identity_status": "PROVEN"}
+
+    def verify(self, _):
+        return {"status": "VALID_NOT_READY"}
+
+
+class ProductionStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "data"
+        self.ledger = Path(self.temp.name) / "executions.jsonl"
+        self.ledger.write_text("", encoding="utf-8")
+        self.clock = MutableClock(datetime(2026, 10, 7, 12, tzinfo=UTC))
+        self.fake = FakeStatusService(self.root, self.ledger, self.clock)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_current_production_state_is_healthy_but_external_blocked(self):
+        snapshot = self.fake.service.evaluate().to_dict()
+        self.assertEqual(snapshot["software_health"], "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY")
+        self.assertEqual(snapshot["production_readiness"], "NOT_READY")
+        self.assertEqual(snapshot["preauthorization_status"], "BLOCKED")
+        self.assertEqual(snapshot["blocker_ids"], [QUOTE_LIMIT_BLOCKER_ID])
+        self.assertEqual(snapshot["quote_unit_limit_status"], "NOT_EXPOSED")
+        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(snapshot["real_money_authorization"], {"granted": False, "source": "none", "required": True, "status": "NOT_AUTHORIZED"})
+
+    def test_snapshot_persists_immutably_and_history_is_ordered(self):
+        first = self.fake.service.collect()
+        first_path = Path(first["snapshot_path"])
+        self.assertTrue(first_path.exists())
+        self.assertTrue(first_path.with_suffix(first_path.suffix + ".sha256").exists())
+        original = first_path.read_bytes()
+        with self.assertRaises(ArtifactAlreadyExistsError):
+            ArtifactStore(self.root).persist(ArtifactType.PRODUCTION_STATUS, first["snapshot"], run_id=first["snapshot"]["snapshot_id"])
+        self.assertEqual(first_path.read_bytes(), original)
+        self.clock.instant += timedelta(seconds=1)
+        second = self.fake.service.collect()
+        rows = self.fake.service.history(limit=10)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["snapshot_id"], second["snapshot"]["snapshot_id"])
+        self.assertEqual(rows[1]["snapshot_id"], first["snapshot"]["snapshot_id"])
+        self.assertEqual(second["diff"]["classification"], "NO_MATERIAL_CHANGE")
+        self.assertFalse(second["alert"]["created"])
+        self.assertEqual(validate_status_artifacts(self.root)["status"], "valid")
+
+    def test_status_diff_classifications(self):
+        baseline = self.fake.service.evaluate().to_dict()
+        self.assertEqual(compare_status_snapshots(baseline, dict(baseline)).classification, "NO_MATERIAL_CHANGE")
+        external = dict(baseline, blocker_ids=[])
+        self.assertEqual(compare_status_snapshots(baseline, external).classification, "EXTERNAL_DEPENDENCY_CHANGE")
+        secret_failure = dict(baseline, secret_hygiene_status="FAIL")
+        self.assertEqual(compare_status_snapshots(baseline, secret_failure).classification, "SAFETY_REGRESSION")
+        identity_mismatch = dict(baseline, account_identity_status="MISMATCH")
+        self.assertEqual(compare_status_snapshots(baseline, identity_mismatch).classification, "SAFETY_REGRESSION")
+        unresolved = dict(baseline, unresolved_operations=True, overall_operator_state="RECONCILIATION_REQUIRED")
+        self.assertEqual(compare_status_snapshots(baseline, unresolved).classification, "SAFETY_REGRESSION")
+        recovered = dict(unresolved, unresolved_operations=False, overall_operator_state="EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(compare_status_snapshots(unresolved, recovered).classification, "RECOVERY_PROGRESS")
+        budget = dict(baseline, monthly_spent_usdt="10", remaining_monthly_budget_usdt="490")
+        self.assertEqual(compare_status_snapshots(baseline, budget).classification, "INFO_CHANGE")
+
+    def test_health_precedence_and_attention_states(self):
+        unresolved_fake = FakeStatusService(self.root / "unresolved", self.ledger, self.clock, unresolved=True)
+        self.assertEqual(unresolved_fake.service.evaluate().overall_operator_state, "RECONCILIATION_REQUIRED")
+        corrupt = FakeStatusService(self.root / "corrupt", self.ledger, self.clock, health="CORRUPT")
+        self.assertEqual(corrupt.service.evaluate().overall_operator_state, "CORRUPT")
+        unsafe_checks = {check: "PASS" for check in CHECK_IDS}
+        unsafe = FakeStatusService(self.root / "unsafe", self.ledger, self.clock, checks=unsafe_checks)
+        with patch("btc_dca_bridge.production_status.load_execution_config", return_value=SimpleNamespace(live_execution_enabled=True, kill_switch=False, order_submission="implemented")):
+            self.assertEqual(unsafe.service.evaluate().overall_operator_state, "ACTION_REQUIRED")
+        stale_checks = {check: "PASS" for check in CHECK_IDS}
+        stale_checks["CLOCK_SKEW"] = "UNAVAILABLE"
+        stale = FakeStatusService(self.root / "stale", self.ledger, self.clock, checks=stale_checks)
+        self.assertEqual(stale.service.evaluate().overall_operator_state, "ACTION_REQUIRED")
+
+    def test_external_blocker_and_capability_change_never_authorize(self):
+        baseline = self.fake.service.evaluate().to_dict()
+        caps = dict(baseline["contract_capabilities"])
+        caps["quote_unit_maximum_supported"] = True
+        changed = dict(baseline, contract_capabilities=caps)
+        self.assertEqual(compare_status_snapshots(baseline, changed).classification, "EXTERNAL_DEPENDENCY_CHANGE")
+        self.assertEqual(changed["real_money_authorization"]["granted"], False)
+        self.assertEqual(changed["production_readiness"], "NOT_READY")
+        self.assertEqual(len(baseline["blocker_ids"]), 1)
+
+    def test_alert_policy_deduplicates_material_change_and_formats_no_secrets(self):
+        self.fake.service.collect()
+        self.clock.instant += timedelta(seconds=1)
+        changed_fake = FakeStatusService(self.root, self.ledger, self.clock, readiness_status="NOT_READY")
+        changed_fake.checks = dict(changed_fake.checks, CLOCK_SKEW="UNAVAILABLE")
+        changed = changed_fake.service.collect()
+        self.assertTrue(changed["alert"]["created"])
+        self.assertEqual(changed["alert"]["alert_class"], "WARNING")
+        message = changed["alert"]["message"]
+        self.assertIn("BTC DCA PRODUCTION STATUS", message)
+        self.assertIn("Authorization: NOT_AUTHORIZED", message)
+        self.assertNotIn("api_secret", message.lower())
+        self.clock.instant += timedelta(seconds=1)
+        repeated = changed_fake.service.collect()
+        self.assertEqual(repeated["diff"]["classification"], "NO_MATERIAL_CHANGE")
+        self.assertFalse(repeated["alert"]["created"])
+        self.assertEqual(alert_class_for("SAFETY_REGRESSION"), "CRITICAL")
+        self.assertIn("Observe only", format_production_status_alert(repeated["snapshot"], compare_status_snapshots(changed["snapshot"], repeated["snapshot"])))
+
+    def test_status_cli_commands_have_no_execution_side_effects(self):
+        ledger_before = self.ledger.read_bytes()
+        transport_calls = []
+        attempt_root = self.root / "order_submission_attempts"
+        approval_root = self.root / "live_approvals"
+        outputs = []
+        with patch.object(cli, "_production_status_service_factory", side_effect=lambda **kw: FakeStatusService(kw["data_root"], kw.get("ledger_path", self.ledger), self.clock).service), patch.object(cli, "_submission_transport_factory", side_effect=lambda *args: transport_calls.append(args)):
+            for argv in (
+                ["production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"],
+                ["collect-production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"],
+                ["production-status-history", "--data-root", str(self.root), "--json"],
+            ):
+                stream = __import__("io").StringIO()
+                with patch("sys.stdout", stream):
+                    self.assertEqual(cli.main(argv), 0)
+                outputs.append(json.loads(stream.getvalue()))
+        self.assertEqual(transport_calls, [])
+        self.assertEqual(self.ledger.read_bytes(), ledger_before)
+        self.assertFalse(attempt_root.exists())
+        self.assertFalse(approval_root.exists())
+        self.assertEqual(outputs[0]["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(outputs[1]["snapshot"]["production_readiness"], "NOT_READY")
+        self.assertEqual(outputs[2]["count"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

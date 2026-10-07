@@ -47,6 +47,8 @@ class ArtifactType(str, Enum):
     LIVE_APPROVAL = "live_approval"
     SUBMISSION_RECONCILIATION = "submission_reconciliation"
     PRODUCTION_EVIDENCE = "production_evidence"
+    PRODUCTION_STATUS = "production_status"
+    PRODUCTION_STATUS_ALERT = "production_status_alert"
 
 
 _DIRECTORIES = {
@@ -62,6 +64,8 @@ _DIRECTORIES = {
     ArtifactType.LIVE_APPROVAL: "live_approvals",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
+    ArtifactType.PRODUCTION_STATUS: "production_status",
+    ArtifactType.PRODUCTION_STATUS_ALERT: "production_status_alerts",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -76,6 +80,8 @@ _SCHEMAS = {
     ArtifactType.LIVE_APPROVAL: "live_approval",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliation",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
+    ArtifactType.PRODUCTION_STATUS: "production_status",
+    ArtifactType.PRODUCTION_STATUS_ALERT: "production_status_alert",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -90,6 +96,8 @@ _TIMESTAMPS = {
     ArtifactType.LIVE_APPROVAL: "approved_at_utc",
     ArtifactType.SUBMISSION_RECONCILIATION: "reconciled_at_utc",
     ArtifactType.PRODUCTION_EVIDENCE: "created_at_utc",
+    ArtifactType.PRODUCTION_STATUS: "captured_at_utc",
+    ArtifactType.PRODUCTION_STATUS_ALERT: "created_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 

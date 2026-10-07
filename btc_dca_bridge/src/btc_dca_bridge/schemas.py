@@ -31,6 +31,8 @@ SCHEMA_FILES = {
     "reconciliation_result": "reconciliation_result.schema.json",
     "submission_reconciliation": "submission_reconciliation.schema.json",
     "production_evidence": "production_evidence.schema.json",
+    "production_status": "production_status.schema.json",
+    "production_status_alert": "production_status_alert.schema.json",
 }
 
 
