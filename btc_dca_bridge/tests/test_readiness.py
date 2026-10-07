@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
@@ -15,6 +15,7 @@ from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, Credent
 from btc_dca_bridge.cli import main
 from btc_dca_bridge.availability import AvailabilityValidationError, SpotQuoteAvailabilityPolicy, validate_spot_quote_availability
 from btc_dca_bridge.readiness import ProductionReadinessService, ServerTimeMeasurement, classify_production_account_mode, measure_server_time, production_connectivity
+from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy
 
 
 class FakeReadinessClient:
@@ -22,7 +23,7 @@ class FakeReadinessClient:
         self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
         self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z")
         self.availability, self.liability = availability, liability
-        self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"), market_order_qty_unit="baseCoin", market_buy_quote_maximum=Decimal("8000000"))
+        self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"), market_order_qty_unit="quoteCoin", market_buy_quote_maximum=Decimal("8000000"))
     def credential_info(self): return self.credential
     def account_info(self): return self.account
     def wallet_balances(self):
@@ -33,6 +34,8 @@ class FakeReadinessClient:
     def spot_quote_availability(self):
         balances = self.wallet_balances()
         return balances[0].available_for_spot_quote_buy
+    def quote_unit_limit_evidence(self):
+        return QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", "/test/quote-limit", "maxQuote", "USDT", Decimal("100"), True, "2026-10-07T11:59:30Z", "CONFIRMED")
     def server_time_ms(self): return 1791374340000
     def lookup_order(self, client_order_id): return object()
     def order_realtime_probe(self, client_order_id): return ()
@@ -46,7 +49,7 @@ class ReadinessTests(unittest.TestCase):
         self.ledger = self.root / "ledger.jsonl"; self.ledger.write_text("")
         self.safe = ExecutionConfig("1.0.0", False, True, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "not_implemented")
         self.test_policy = SpotQuoteAvailabilityPolicy(frozenset({("/v5/account/wallet-balance", "availableBalance")}), frozenset({"UNIFIED"}))
-        self.common = dict(repo_probe=lambda: {"commit": "abc123", "dirty": False}, server_time_probe=lambda: ServerTimeMeasurement(0.1, 10), filesystem_probe=lambda: (True, "ok"), lock_probe=lambda: (True, "ok"), client_factory=lambda: FakeReadinessClient(), secret_scan_probe=lambda: {"scanner": "test", "scope": [], "status": "PASS", "finding_count": 0}, availability_policy=self.test_policy)
+        self.common = dict(repo_probe=lambda: {"commit": "abc123", "dirty": False}, server_time_probe=lambda: ServerTimeMeasurement(0.1, 10), filesystem_probe=lambda: (True, "ok"), lock_probe=lambda: (True, "ok"), client_factory=lambda: FakeReadinessClient(), secret_scan_probe=lambda: {"scanner": "test", "scope": [], "status": "PASS", "finding_count": 0}, availability_policy=self.test_policy, quote_limit_policy=QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(minutes=10)))
 
     def evaluate(self, **overrides):
         values = dict(self.common); values.update(overrides)
@@ -116,8 +119,9 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("BYBIT_SPOT_AVAILABLE_BALANCE", {item["check_id"] for item in result["blockers"]})
 
     def test_production_policy_approves_only_exact_official_source(self):
-        result = ProductionReadinessService(data_root=self.root / "data", ledger_path=self.ledger, now=lambda: datetime(2026, 10, 7, 12, tzinfo=UTC), **{key: value for key, value in self.common.items() if key != "availability_policy"}).evaluate()
+        result = ProductionReadinessService(data_root=self.root / "data", ledger_path=self.ledger, now=lambda: datetime(2026, 10, 7, 12, tzinfo=UTC), **{key: value for key, value in self.common.items() if key not in {"availability_policy", "quote_limit_policy"}}).evaluate()
         self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_SPOT_AVAILABLE_BALANCE")["status"], "FAIL")
+        self.assertEqual(result["quote_unit_limit_evidence"]["conclusion"], "CONFIRMED")
         from btc_dca_bridge.availability import APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES
         self.assertEqual(APPROVED_SPOT_QUOTE_AVAILABILITY_SOURCES, frozenset({("/v5/order/spot-borrow-check", "spotMaxTradeAmount")}))
 
@@ -164,7 +168,7 @@ class ReadinessTests(unittest.TestCase):
         no_upper = FakeReadinessClient()
         no_upper.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"))
         blocked = self.evaluate(client_factory=lambda: no_upper)
-        self.assertEqual(next(item for item in blocked["checks"] if item["check_id"] == "BYBIT_INSTRUMENT")["status"], "UNAVAILABLE")
+        self.assertEqual(next(item for item in blocked["checks"] if item["check_id"] == "BYBIT_INSTRUMENT")["status"], "PASS")
 
     def test_instrument_minimum_above_v1_floor_fails_closed(self):
         client = FakeReadinessClient()

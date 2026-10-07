@@ -17,6 +17,7 @@ from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
 from btc_dca_bridge.private_bybit import SpotQuoteAvailability
 from btc_dca_bridge.availability import SpotQuoteAvailabilityPolicy
+from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy, unavailable_quote_unit_limit
 from btc_dca_bridge.schemas import validate_artifact
 
 
@@ -32,6 +33,7 @@ class FakeReader:
     def wallet_balances(self): return self.balances
     def instrument_rules(self): return self.rules
     def spot_quote_availability(self): return self.balances[0].available_for_spot_quote_buy
+    def quote_unit_limit_evidence(self): return QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", "/test/quote-limit", "maxQuote", "USDT", Decimal("100"), True, "2026-10-07T12:00:00Z", "CONFIRMED")
     def get_rules(self, exchange, market_type, symbol): return self.rules
     def decision_state(self, decision_id): return "none"
     def client_order_state(self, client_order_id): return self.state
@@ -68,7 +70,8 @@ class LiveOrderHardeningTests(unittest.TestCase):
         self.approval = LiveApproval.for_manifest(self.manifest, self.manifest_sha, now_utc=self.now)
         self.approval_receipt = ArtifactStore(self.data).persist(ArtifactType.LIVE_APPROVAL, self.approval, run_id=self.run_id)
         self.availability_policy = SpotQuoteAvailabilityPolicy(frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1))
-        self.engine = LiveOrderEngine(artifact_store=ArtifactStore(self.data), now=lambda: self.now, availability_policy=self.availability_policy)
+        self.quote_limit_policy = QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(days=1))
+        self.engine = LiveOrderEngine(artifact_store=ArtifactStore(self.data), now=lambda: self.now, availability_policy=self.availability_policy, quote_limit_policy=self.quote_limit_policy)
         self.reader = FakeReader()
         self.ack = HttpResponse(200, {}, json.dumps({"retCode": 0, "retMsg": "OK", "result": {"orderId": "order-1", "orderLinkId": self.intent.client_order_id}}).encode())
         self.reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1"))
@@ -100,6 +103,15 @@ class LiveOrderHardeningTests(unittest.TestCase):
         with self.assertRaises(LiveOrderSafetyError):
             self.submit(transport=transport)
         self.assertEqual(transport.calls, [])
+
+    def test_missing_quote_unit_limit_blocks_before_attempt_and_post(self):
+        self.reader.quote_unit_limit_evidence = lambda: unavailable_quote_unit_limit(observed_at_utc="2026-10-07T12:00:00Z")
+        transport = FakeTransport(self.ack)
+        with self.assertRaises(LiveOrderSafetyError):
+            self.submit(transport=transport)
+        self.assertEqual(transport.calls, [])
+        attempts = list((self.data / "order_submission_attempts").rglob("*.json")) if (self.data / "order_submission_attempts").exists() else []
+        self.assertEqual(attempts, [])
 
     def test_unpersisted_tampered_or_wrong_hash_approval_blocks(self):
         self.approval = replace(self.approval, approval_id="approval-" + "b" * 32)

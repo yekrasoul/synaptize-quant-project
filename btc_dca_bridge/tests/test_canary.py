@@ -15,6 +15,7 @@ from btc_dca_bridge.config import ExecutionConfig
 from btc_dca_bridge.execution import InstrumentRules
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, SpotQuoteAvailability, WalletBalance
 from btc_dca_bridge.schemas import validate_artifact
+from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy, unavailable_quote_unit_limit
 from btc_dca_bridge.cli import main
 
 
@@ -42,6 +43,9 @@ class FakeReadClient:
     def spot_quote_availability(self):
         self._call("spot_quote_availability")
         return next((balance.available_for_spot_quote_buy for balance in self.balances if balance.coin == "USDT"), None)
+    def quote_unit_limit_evidence(self):
+        self._call("quote_unit_limit_evidence")
+        return QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", "/test/quote-limit", "maxQuote", "USDT", Decimal("100"), True, "2026-10-07T11:59:30Z", "CONFIRMED")
     def submission_state(self, client_order_id): self._call(f"submission_state:{client_order_id}"); return self.state
 
 
@@ -52,6 +56,7 @@ def config():
 TEST_AVAILABILITY_POLICY = SpotQuoteAvailabilityPolicy(
     frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1)
 )
+TEST_QUOTE_LIMIT_POLICY = QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(days=1))
 
 
 class CanaryPreparationTests(unittest.TestCase):
@@ -77,6 +82,7 @@ class CanaryPreparationTests(unittest.TestCase):
             execution_config=config(),
             now=lambda: self.now,
             availability_policy=TEST_AVAILABILITY_POLICY,
+            quote_limit_policy=TEST_QUOTE_LIMIT_POLICY,
         ).prepare(self.decision, run_id=self.run_id, calendar_month="2026-10", ledger_path=ledger or self.ledger)
 
     def test_happy_preparation_is_ready_and_never_has_post_transport(self):
@@ -89,7 +95,7 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(manifest.pre_submission_state, "conclusively_absent")
         self.assertEqual(manifest.live_execution_enabled, False)
         self.assertEqual(manifest.kill_switch, True)
-        self.assertEqual(len(self.client.calls), 6)
+        self.assertEqual(len(self.client.calls), 7)
         self.assertTrue(result.artifact_receipt.path.exists())
         self.assertEqual(self.ledger.read_bytes(), b"")
         self.assertFalse((self.root / "data" / "order_submission_attempts").exists())
@@ -131,6 +137,13 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertIn("authoritative USDT availability", " ".join(result.manifest.reasons))
         self.assertEqual(result.manifest.approved_amount_usdt, Decimal("25"))
         self.assertEqual(result.order_payload["qty"], "25")
+
+    def test_missing_quote_unit_limit_blocks_preparation(self):
+        client = FakeReadClient()
+        client.quote_unit_limit_evidence = lambda: unavailable_quote_unit_limit(observed_at_utc="2026-10-07T12:00:00Z")
+        result = self.prepare(client=client, data=self.root / "data-no-quote-limit")
+        self.assertEqual(result.manifest.canary_status, "BLOCKED")
+        self.assertIn("quote-unit market-buy maximum", " ".join(result.manifest.reasons))
 
     def test_malformed_availability_and_account_context_fail_closed(self):
         malformed = FakeReadClient(balances=(
@@ -232,7 +245,7 @@ class CanaryPreparationTests(unittest.TestCase):
             code = main(["canary-prepare", "--decision-json", str(decision_path), "--run-id", self.run_id,
                          "--month", "2026-10", "--ledger", str(self.ledger), "--data-root", str(self.root / "cli-data")])
         self.assertEqual(code, 0)
-        self.assertIn("CANARY READY FOR MANUAL APPROVAL", output.getvalue())
+        self.assertIn("CANARY BLOCKED", output.getvalue())
         self.assertTrue(output.getvalue().rstrip().endswith("NO ORDER SUBMITTED"))
         self.assertFalse(any(name.startswith("post") for name in self.client.calls))
 

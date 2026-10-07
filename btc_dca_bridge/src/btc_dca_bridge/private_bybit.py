@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 
 from .execution import InstrumentRules, SubmissionState, parse_bybit_spot_instrument_info
 from .market_data.http import HttpResponse
+from .quote_limits import QuoteUnitLimitEvidence, unavailable_quote_unit_limit
 
 BYBIT_BASE_URL = "https://api.bybit.com"
 API_KEY_ENV = "BYBIT_API_KEY"
@@ -316,6 +317,14 @@ class BybitPrivateReadClient:
     def instrument_rules(self) -> InstrumentRules:
         result = self._read(INSTRUMENTS_INFO, {"category": "spot", "symbol": "BTCUSDT"}, public=True)
         return parse_bybit_spot_instrument_info({"retCode": 0, "result": result})
+
+    def quote_unit_limit_evidence(self) -> QuoteUnitLimitEvidence:
+        """Report the documented absence of an authoritative quote ceiling.
+
+        Public lot-size metadata exposes a base-coin quantity, not a quote-USDT
+        ceiling.  This method deliberately performs no speculative conversion.
+        """
+        return unavailable_quote_unit_limit(observed_at_utc=datetime.now(UTC).isoformat().replace("+00:00", "Z"))
 
     def server_time_ms(self) -> int:
         """Read Bybit's public server clock; this method has no order path."""

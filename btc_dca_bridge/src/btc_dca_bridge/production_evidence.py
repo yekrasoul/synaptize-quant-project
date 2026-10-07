@@ -12,7 +12,9 @@ from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore
 from .errors import ArtifactCorruptError, ArtifactNotFoundError
+from .schemas import UnsupportedProductionEvidenceSchemaError
 from .readiness import ProductionReadinessService, production_connectivity
+from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitEvidence, QuoteUnitLimitValidationError, unavailable_quote_unit_limit, validate_quote_unit_limit_evidence
 
 EVIDENCE_TTL = timedelta(minutes=10)
 DYNAMIC_TTLS_SECONDS = {"wallet_availability_liabilities": 60, "clock": 60, "account_metadata": 300, "instrument_metadata": 600}
@@ -44,7 +46,7 @@ def sanitize_evidence(value: Any, *, key: str = "") -> Any:
                 sanitized[child_key] = {}
                 continue
             child = sanitize_evidence(raw_value, key=child_key)
-            if child is not None:
+            if child is not None or raw_value is None:
                 sanitized[child_key] = child
         return sanitized
     if isinstance(value, (list, tuple)):
@@ -115,12 +117,18 @@ class ProductionEvidenceService:
         incomplete_ids = {"BYBIT_READ_ACCESS", "CLOCK_SKEW", "PRODUCTION_CONNECTIVITY", "SECRET_HYGIENE", "FILESYSTEM_DURABILITY", "OPERATOR_LOCK"}
         required_unavailable = any(item.get("required") and item.get("status") == "UNAVAILABLE" and item.get("check_id") in incomplete_ids for item in checks)
         connectivity_complete = connectivity.get("status") == "READS_OK"
-        ready = readiness.get("status") == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and connectivity_complete and account_status == "PROVEN"
+        quote_limit_raw = QuoteUnitLimitEvidence.from_mapping(readiness.get("quote_unit_limit_evidence", unavailable_quote_unit_limit(observed_at_utc=created.isoformat().replace("+00:00", "Z"))))
+        try:
+            validate_quote_unit_limit_evidence(quote_limit_raw, now=created, policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
+            quote_limit_valid = True
+        except QuoteUnitLimitValidationError:
+            quote_limit_valid = False
+        ready = readiness.get("status") == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and connectivity_complete and account_status == "PROVEN" and quote_limit_valid
         status = "EVIDENCE_INCOMPLETE" if required_unavailable or not connectivity_complete else ("EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" if ready else "EVIDENCE_COMPLETE_NOT_READY")
         evidence_id = "evidence-" + hashlib.sha256(f"{repo.get('commit')}|{socket.gethostname()}|{created.isoformat()}".encode()).hexdigest()[:32]
         by_id = {item.get("check_id"): item for item in checks}
         bundle: dict[str, Any] = {
-            "schema_version": "5.7.0", "evidence_id": evidence_id,
+            "schema_version": "5.8.0", "evidence_id": evidence_id,
             "created_at_utc": created.isoformat().replace("+00:00", "Z"),
             "expires_at_utc": (created + EVIDENCE_TTL).isoformat().replace("+00:00", "Z"),
             "repository_commit": str(repo.get("commit", "")), "hostname": socket.gethostname(), "pid": __import__("os").getpid(),
@@ -134,6 +142,7 @@ class ProductionEvidenceService:
             "liability_result": sanitize_evidence(_check(checks, "BYBIT_LIABILITIES")),
             "instrument_result": sanitize_evidence(_check(checks, "BYBIT_INSTRUMENT")),
             "spot_availability_result": sanitize_evidence(_check(checks, "BYBIT_SPOT_AVAILABLE_BALANCE")),
+            "quote_unit_limit_result": sanitize_evidence(quote_limit_raw.to_dict()),
             "monthly_budget_result": sanitize_evidence(_check(checks, "MONTHLY_BUDGET")),
             "unresolved_operations_result": sanitize_evidence(_check(checks, "UNRESOLVED_OPERATIONS")),
             "secret_hygiene_result": sanitize_evidence(_check(checks, "SECRET_HYGIENE")),
@@ -157,6 +166,8 @@ class ProductionEvidenceService:
             bundle = ArtifactStore(self.data_root).read_production_evidence(evidence_id)
         except ArtifactCorruptError as exc:
             return {"status": "CORRUPT", "evidence_id": evidence_id, "reason": str(exc)}
+        except UnsupportedProductionEvidenceSchemaError as exc:
+            return {"status": "UNSUPPORTED_SCHEMA_VERSION", "evidence_id": evidence_id, "reason": str(exc)}
         except ArtifactNotFoundError as exc:
             return {"status": "INVALID", "evidence_id": evidence_id, "reason": str(exc)}
         now = _utc(self.now())
@@ -203,6 +214,14 @@ class ProductionEvidenceService:
                 return {"status": "INVALID", "evidence_id": evidence_id, "reason": "ACCOUNT_IDENTITY_UNAVAILABLE: current fingerprint is required"}
             if bundle.get("account_identity_fingerprint") != current_account_fingerprint:
                 return {"status": "INVALID", "evidence_id": evidence_id, "reason": "account identity fingerprint mismatch"}
+        if bundle.get("schema_version") == "5.7.0":
+            return {
+                "status": "VALID_NOT_READY",
+                "evidence_id": evidence_id,
+                "reason": "legacy evidence predates Phase 5.8 quote-unit-limit proof",
+                "expires_at_utc": bundle["expires_at_utc"],
+                "real_money_authorization": dict(AUTHORIZATION),
+            }
         ready = bundle.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" and bundle.get("account_identity_status") == "PROVEN"
         return {"status": "VALID_READY_FOR_SEPARATE_AUTHORIZATION" if ready else "VALID_NOT_READY", "evidence_id": evidence_id, "expires_at_utc": bundle["expires_at_utc"], "real_money_authorization": dict(AUTHORIZATION)}
 
@@ -225,5 +244,14 @@ def preauthorization_status(service: ProductionEvidenceService) -> dict[str, Any
         return {"status": "BLOCKED", "reason": verification.get("reason", verification["status"]), "evidence_id": latest["evidence_id"], "real_money_authorization": dict(AUTHORIZATION)}
     readiness = service._readiness()
     state = readiness.get("status")
+    quote_limit = QuoteUnitLimitEvidence.from_mapping(readiness.get("quote_unit_limit_evidence", unavailable_quote_unit_limit(observed_at_utc=service.now().astimezone(UTC).isoformat().replace("+00:00", "Z"))))
+    try:
+        validate_quote_unit_limit_evidence(quote_limit, now=service.now(), policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
+        quote_limit_status = "PASS"
+        quote_limit_reason = "authoritative quote-unit maximum is valid"
+    except QuoteUnitLimitValidationError as exc:
+        quote_limit_status = "UNAVAILABLE"
+        quote_limit_reason = str(exc)
+        state = "NOT_READY"
     mapped = "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" if state == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and verification["status"] == "VALID_READY_FOR_SEPARATE_AUTHORIZATION" else ("READY_FOR_OPERATOR_PREPARATION" if state == "READY_FOR_OPERATOR_PREPARATION" else "BLOCKED")
-    return {"status": mapped, "evidence_id": latest["evidence_id"], "readiness_status": state, "verification": verification, "real_money_authorization": dict(AUTHORIZATION)}
+    return {"status": mapped, "evidence_id": latest["evidence_id"], "readiness_status": state, "quote_unit_limit": {"status": quote_limit_status, "reason": quote_limit_reason, "evidence": quote_limit.to_dict() if hasattr(quote_limit, "to_dict") else quote_limit}, "verification": verification, "real_money_authorization": dict(AUTHORIZATION)}

@@ -81,6 +81,13 @@ class PrivateBybitTests(unittest.TestCase):
         rules = self.client({INSTRUMENTS_INFO: response(instrument_result())}).instrument_rules()
         self.assertEqual(rules.quote_minimum, Decimal("10"))
 
+    def test_production_quote_limit_provider_is_truthfully_not_exposed(self):
+        evidence = self.client({}).quote_unit_limit_evidence()
+        self.assertEqual(evidence.conclusion, "NOT_EXPOSED")
+        self.assertFalse(evidence.authoritative)
+        self.assertIsNone(evidence.maximum_quote_usdt)
+        self.assertEqual(evidence.unit, "baseCoin")
+
     def test_server_time_parser_is_get_only_and_strict(self):
         self.assertEqual(self.client({SERVER_TIME: response({"timeSecond": "1791374340"})}).server_time_ms(), 1791374340000)
         self.assertEqual(self.client({SERVER_TIME: response({"timeNano": "1791374340000000000"})}).server_time_ms(), 1791374340000)
