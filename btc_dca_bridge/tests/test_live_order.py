@@ -11,7 +11,7 @@ from pathlib import Path
 from btc_dca_bridge.artifacts import ArtifactStore
 from btc_dca_bridge.config import ExecutionConfig
 from btc_dca_bridge.execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, client_order_id, make_order_intent
-from btc_dca_bridge.live_order import AmbiguousSubmissionError, LiveApproval, LiveOrderEngine, LiveOrderSafetyError, SpotMarketBuyRequest
+from btc_dca_bridge.live_order import AmbiguousSubmissionError, ConfirmedFill, LiveApproval, LiveOrderEngine, LiveOrderSafetyError, ReconciliationEvidence, SpotMarketBuyRequest
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import ApiCredentialInfo, CredentialClassification
 from btc_dca_bridge.cli import main
@@ -93,6 +93,21 @@ class LiveOrderTests(unittest.TestCase):
         self.assertEqual(self.ledger.read_text(), "")
         self.assertTrue(list((self.root / "data" / "order_submission_attempts").rglob("*.json")))
         self.assertTrue(list((self.root / "data" / "order_submission_outcomes").rglob("*.json")))
+
+    def test_authoritative_fill_appends_actual_execution_once(self):
+        fill = ConfirmedFill("exec-1", "order-1", self.intent.client_order_id, Decimal("0.0002"), Decimal("24.98"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "USDT")
+        result = self.submit(transport=FakeSubmitTransport(self.ack()), post_ack_reconciler=type("R", (), {"reconcile_after_ack": lambda _, cid: ReconciliationEvidence("confirmed", "order-1", (fill,))})())
+        self.assertEqual(result.outcome.outcome_category, "confirmed_execution")
+        rows = self.ledger.read_text().splitlines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0])["executed_usd"], 24.98)
+        self.assertEqual(json.loads(rows[0])["btc_quantity"], 0.0002)
+
+    def test_live_approval_is_manifest_bound_and_short_lived(self):
+        manifest = {"canary_id": "canary-" + "a" * 32, "decision_id": self.intent.decision_id, "order_intent_id": self.intent.order_intent_id, "client_order_id": self.intent.client_order_id, "approved_amount_usdt": "25", "order_payload_fingerprint": "b" * 64}
+        approval = LiveApproval.for_manifest(manifest, "c" * 64, now_utc=datetime(2026, 10, 7, 12, 0, tzinfo=UTC))
+        self.assertEqual(approval.expires_at_utc, "2026-10-07T12:05:00Z")
+        with self.assertRaises(LiveOrderSafetyError): approval.validate(self.intent, now_utc=datetime(2026, 10, 7, 12, 6, tzinfo=UTC), manifest=manifest, manifest_sha256="c" * 64)
 
     def test_approval_binding_and_expiry_block_before_post(self):
         bad = replace(self.approval, approved_amount_usdt=Decimal("26"))

@@ -344,7 +344,20 @@ class BybitPostAckReconciler:
     """Fresh post-ACK read-back adapter; never reuses pre-submit evidence."""
     def __init__(self, client: BybitPrivateReadClient): self.client = client
     def reconcile_after_ack(self, client_order_id: str) -> str:
-        return self.client.submission_state(client_order_id)
+        # The execution engine accepts this richer object and only creates an
+        # Execution from its authoritative fill rows.  Keep the legacy string
+        # return for clients that do not expose fill details.
+        from .live_order import ConfirmedFill, ReconciliationEvidence
+        order = self.client.lookup_order(client_order_id)
+        fills = self.client.executions(client_order_id)
+        if order.order_id and any(fill.order_id != order.order_id for fill in fills):
+            return ReconciliationEvidence("ambiguous")
+        if order.state in {OrderState.ACTIVE, OrderState.PARTIALLY_FILLED, OrderState.AMBIGUOUS}:
+            return ReconciliationEvidence("ambiguous", order.order_id)
+        if order.state is not OrderState.FILLED or not fills:
+            return ReconciliationEvidence("ambiguous", order.order_id)
+        converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, "") for fill in fills)
+        return ReconciliationEvidence("confirmed", order.order_id, converted)
 
 
 # Descriptive alias for callers that do not need to distinguish the transport

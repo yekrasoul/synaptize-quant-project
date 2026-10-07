@@ -31,7 +31,7 @@ from ..errors import (
     SchemaValidationError,
 )
 from ..paths import DATA_PATH
-from ..schemas import validate_artifact
+from ..schemas import validate_artifact, validate_live_approval
 
 
 class ArtifactType(str, Enum):
@@ -44,6 +44,7 @@ class ArtifactType(str, Enum):
     ORDER_SUBMISSION_ATTEMPT = "order_submission_attempt"
     ORDER_SUBMISSION_OUTCOME = "order_submission_outcome"
     CANARY_MANIFEST = "canary_manifest"
+    LIVE_APPROVAL = "live_approval"
 
 
 _DIRECTORIES = {
@@ -56,6 +57,7 @@ _DIRECTORIES = {
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempts",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcomes",
     ArtifactType.CANARY_MANIFEST: "canary_manifests",
+    ArtifactType.LIVE_APPROVAL: "live_approvals",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -67,6 +69,7 @@ _SCHEMAS = {
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempt",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcome",
     ArtifactType.CANARY_MANIFEST: "canary_manifest",
+    ArtifactType.LIVE_APPROVAL: "live_approval",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -78,6 +81,7 @@ _TIMESTAMPS = {
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "created_at_utc",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "completed_at_utc",
     ArtifactType.CANARY_MANIFEST: "prepared_at_utc",
+    ArtifactType.LIVE_APPROVAL: "approved_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -247,7 +251,10 @@ class ArtifactStore:
 
     def _validate(self, kind: ArtifactType, payload: dict[str, Any], *, corrupt: bool = False) -> None:
         try:
-            validate_artifact(_SCHEMAS[kind], payload)
+            if kind is ArtifactType.LIVE_APPROVAL:
+                validate_live_approval(payload)
+            else:
+                validate_artifact(_SCHEMAS[kind], payload)
             if kind is ArtifactType.RUN:
                 self._validate_run_manifest_identity(payload)
         except (SchemaValidationError, ValueError) as exc:

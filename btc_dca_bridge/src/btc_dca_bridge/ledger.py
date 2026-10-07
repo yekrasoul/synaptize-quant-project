@@ -65,3 +65,20 @@ def executions_for_month(
         for execution in confirmed_executions(executions)
         if execution.executed_at_utc[:7] == calendar_month
     )
+
+
+def append_execution_once(path: Path, payload: dict) -> bool:
+    """Append one authoritative fill exactly once; never rewrite prior rows."""
+    validate_artifact("execution", payload)
+    execution_id = payload["execution_id"]
+    existing = read_executions(path) if path.exists() else ()
+    for execution in existing:
+        if execution.execution_id == execution_id:
+            if execution.payload != payload:
+                raise LedgerValidationError("execution identity already exists with different evidence")
+            return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+        handle.flush()
+    return True

@@ -20,9 +20,17 @@
       "additionalProperties": false,
       "required": ["source", "note"],
       "properties": {
-        "source": {"const": "Chat 03 — Portfolio & Budget Tracker"},
+      "source": {"type": "string", "minLength": 1},
         "note": {"type": "string", "minLength": 1}
       }
-    }
+    },
+    "decision_id": {"type": "string"},
+    "canary_id": {"type": "string"},
+    "approval_id": {"type": "string"},
+    "order_id": {"type": "string"},
+    "order_link_id": {"type": "string"},
+    "execution_id_bybit": {"type": "string"},
+    "fee": {"type": "number", "minimum": 0},
+    "fee_asset": {"type": "string"}
   }
 }
