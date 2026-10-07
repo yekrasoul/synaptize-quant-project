@@ -50,6 +50,13 @@ class PrivateBybitTests(unittest.TestCase):
         unsafe = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"Wallet": ["AccountTransfer"]}})}).credential_info()
         self.assertEqual(unsafe.classification, CredentialClassification.UNSAFE_PERMISSION_SCOPE)
 
+        for permission in (("ContractTrade", "Order"), ("ContractTrade", "Position"), ("Derivatives", "DerivativesTrade"), ("Wallet", "Withdraw"), ("Wallet", "SubMemberTransfer"), ("Wallet", "Borrow")):
+            group, action = permission
+            classified = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {group: [action]}})}).credential_info()
+            self.assertEqual(classified.classification, CredentialClassification.UNSAFE_PERMISSION_SCOPE, permission)
+        malformed = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"UnknownGroup": ["UnknownAction"]}})}).credential_info()
+        self.assertEqual(malformed.classification, CredentialClassification.INVALID)
+
     def test_account_and_wallet_parse_decimal_liabilities(self):
         client = self.client({
             "/v5/account/info": response({"unifiedMarginStatus": 6, "marginMode": "REGULAR_MARGIN", "spotHedgingStatus": "ON", "updatedTime": "1"}),
@@ -64,8 +71,8 @@ class PrivateBybitTests(unittest.TestCase):
         self.assertEqual(rules.quote_minimum, Decimal("10"))
 
     def test_order_states_and_execution_fills(self):
-        order = {"orderLinkId": "dca-abc", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}
-        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc"}
+        order = {"orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}
+        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
         client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
         self.assertEqual(client.lookup_order("dca-abc").state, OrderState.PARTIALLY_FILLED)
         self.assertEqual(client.executions("dca-abc")[0].exec_qty, Decimal("0.1"))
@@ -83,6 +90,27 @@ class PrivateBybitTests(unittest.TestCase):
         client = self.client({ORDER_REALTIME: response({"list": [active]}), ORDER_HISTORY: response({"list": [filled]}), EXECUTION_LIST: response({"list": []})})
         self.assertEqual(client.lookup_order("dca-x").state, OrderState.AMBIGUOUS)
         self.assertEqual(client.submission_state("dca-x"), "ambiguous")
+
+    def test_mismatched_order_identity_fails_closed_for_realtime_and_history(self):
+        bad = {"orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
+        realtime = self.client({ORDER_REALTIME: response({"list": [bad]}), ORDER_HISTORY: response({"list": []})})
+        with self.assertRaises(MalformedBybitResponseError): realtime.lookup_order("dca-requested")
+        history = self.client({ORDER_REALTIME: response({"list": []}), ORDER_HISTORY: response({"list": [bad]})})
+        with self.assertRaises(MalformedBybitResponseError): history.lookup_order("dca-requested")
+
+    def test_order_symbol_category_and_fill_identity_are_bound(self):
+        bad_order = {"orderLinkId": "dca-id", "category": "linear", "symbol": "BTCUSDT", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
+        with self.assertRaises(MalformedBybitResponseError): self.client({ORDER_REALTIME: response({"list": [bad_order]}), ORDER_HISTORY: response({"list": []})}).lookup_order("dca-id")
+        bad_fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT"}
+        client = self.client({EXECUTION_LIST: response({"list": [bad_fill]})})
+        with self.assertRaises(MalformedBybitResponseError): client.executions("dca-id")
+        self.assertEqual(client.submission_state("dca-id"), "ambiguous")
+
+    def test_conflicting_order_and_fill_ids_are_ambiguous(self):
+        order = {"orderLinkId": "dca-id", "orderId": "order-a", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
+        fill = {"execQty": "1", "execPrice": "10", "execValue": "10", "execFee": "0", "execTime": "1", "execId": "eid", "orderId": "order-b", "orderLinkId": "dca-id"}
+        client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
+        self.assertEqual(client.submission_state("dca-id"), "ambiguous")
 
     def test_allowlist_rejects_arbitrary_and_mutating_paths(self):
         client = self.client({})

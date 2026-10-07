@@ -133,6 +133,41 @@ class ReadTransport(Protocol):
     def get(self, path: str, params: Mapping[str, str], headers: Mapping[str, str]) -> HttpResponse: ...
 
 
+def _permission_token(value: str) -> str:
+    return "".join(character for character in value.lower() if character.isalnum())
+
+
+def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_value: Any) -> CredentialClassification:
+    """Classify structured Bybit permission groups with unsafe precedence."""
+    dangerous_groups = {"contracttrade", "derivatives", "derivativestrade", "position"}
+    dangerous_actions = {"accounttransfer", "submembertransfer", "withdrawal", "withdraw", "borrow", "repay"}
+    known_read = {"read", "spotread", "walletread", "accountread", "query"}
+    known_spot_trade = {"spottrade", "orderentry", "spotorder"}
+    has_trade = False
+    has_read = False
+    for raw_group, raw_actions in permissions.items():
+        group = _permission_token(raw_group)
+        actions = {_permission_token(action) for action in raw_actions}
+        if group in dangerous_groups:
+            return CredentialClassification.UNSAFE_PERMISSION_SCOPE
+        if group == "wallet":
+            if any(action in dangerous_actions or any(token in action for token in ("transfer", "withdraw", "borrow", "repay")) for action in actions):
+                return CredentialClassification.UNSAFE_PERMISSION_SCOPE
+            if not actions.issubset(known_read): return CredentialClassification.INVALID
+            has_read = True
+        elif group == "spot":
+            if not actions or not actions.issubset(known_read | known_spot_trade): return CredentialClassification.INVALID
+            has_trade |= bool(actions & known_spot_trade)
+            has_read |= bool(actions & known_read)
+        else:
+            return CredentialClassification.INVALID
+    is_read_only = read_only_value in (True, 1, "1")
+    if is_read_only and has_trade: return CredentialClassification.INVALID
+    if has_trade: return CredentialClassification.TRADE_CAPABLE
+    if is_read_only and has_read: return CredentialClassification.READ_ONLY
+    return CredentialClassification.INVALID
+
+
 def canonical_query(params: Mapping[str, str | int]) -> str:
     return urlencode(sorted((str(key), str(value)) for key, value in params.items()))
 
@@ -216,11 +251,7 @@ class BybitPrivateReadClient:
         if not isinstance(permissions_raw, dict): raise MalformedBybitResponseError("API permissions are missing")
         if any(not isinstance(value, list) for value in permissions_raw.values()): raise MalformedBybitResponseError("API permissions are malformed")
         permissions = {str(k): tuple(str(v) for v in value) for k, value in permissions_raw.items()}
-        flat = " ".join(f"{k} {' '.join(v)}" for k, v in permissions.items()).lower()
-        if any(token in flat for token in ("withdraw", "transfer", "borrow", "repay")): classification = CredentialClassification.UNSAFE_PERMISSION_SCOPE
-        elif result.get("readOnly") in (True, 1, "1"): classification = CredentialClassification.READ_ONLY
-        elif "spottrade" in flat or "orderentry" in flat: classification = CredentialClassification.TRADE_CAPABLE
-        else: classification = CredentialClassification.INVALID
+        classification = _classify_permissions(permissions, result.get("readOnly"))
         ips = result.get("ips", [])
         if not isinstance(ips, list): raise MalformedBybitResponseError("API IP restrictions are malformed")
         return ApiCredentialInfo(classification, result.get("readOnly") in (True, 1, "1"), permissions, result.get("id") or result.get("apiKeyId"), result.get("deadlineDate") or result.get("expiry"), tuple(str(v) for v in ips), result.get("type"))
@@ -248,7 +279,12 @@ class BybitPrivateReadClient:
         return parse_bybit_spot_instrument_info({"retCode": 0, "result": result})
 
     @staticmethod
-    def _order(row: Mapping[str, Any]) -> ReadOnlyOrder:
+    def _order(row: Mapping[str, Any], requested_client_order_id: str) -> ReadOnlyOrder:
+        if row.get("orderLinkId") != requested_client_order_id:
+            raise MalformedBybitResponseError("order evidence orderLinkId does not match requested client_order_id")
+        for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
+            if field in row and row[field] != expected:
+                raise MalformedBybitResponseError(f"order evidence {field} does not match approved Spot identity")
         status = str(row.get("orderStatus"))
         state = {"New": OrderState.ACTIVE, "Untriggered": OrderState.ACTIVE, "PartiallyFilled": OrderState.PARTIALLY_FILLED, "Filled": OrderState.FILLED, "Cancelled": OrderState.CANCELLED, "Rejected": OrderState.REJECTED}.get(status, OrderState.AMBIGUOUS)
         return ReadOnlyOrder(str(row.get("orderLinkId", "")), row.get("orderId"), state, status, _decimal(row.get("cumExecQty", "0"), "cumExecQty", nonnegative=True), _decimal(row.get("cumExecValue", "0"), "cumExecValue", nonnegative=True))
@@ -256,8 +292,8 @@ class BybitPrivateReadClient:
     def _orders(self, endpoint: str, client_order_id: str) -> tuple[ReadOnlyOrder, ...]:
         r = self._read(endpoint, {"category": "spot", "symbol": "BTCUSDT", "orderLinkId": client_order_id})
         rows = r.get("list")
-        if not isinstance(rows, list): raise MalformedBybitResponseError("order result is malformed")
-        return tuple(self._order(row) for row in rows if isinstance(row, dict))
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows): raise MalformedBybitResponseError("order result is malformed")
+        return tuple(self._order(row, client_order_id) for row in rows)
 
     def lookup_order(self, client_order_id: str) -> ReadOnlyOrder:
         rows = self._orders(ORDER_REALTIME, client_order_id) + self._orders(ORDER_HISTORY, client_order_id)
@@ -269,8 +305,12 @@ class BybitPrivateReadClient:
 
     def executions(self, client_order_id: str) -> tuple[ExecutionFill, ...]:
         rows = self._read(EXECUTION_LIST, {"category": "spot", "symbol": "BTCUSDT", "orderLinkId": client_order_id}).get("list")
-        if not isinstance(rows, list): raise MalformedBybitResponseError("execution result is malformed")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows): raise MalformedBybitResponseError("execution result is malformed")
         try:
+            for row in rows:
+                if row.get("orderLinkId") != client_order_id: raise MalformedBybitResponseError("execution evidence orderLinkId does not match requested client_order_id")
+                for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
+                    if field in row and row[field] != expected: raise MalformedBybitResponseError(f"execution evidence {field} does not match approved Spot identity")
             return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"])) for row in rows)
         except (KeyError, AttributeError, TypeError) as exc: raise MalformedBybitResponseError("execution fill is malformed") from exc
 
@@ -280,6 +320,8 @@ class BybitPrivateReadClient:
             fills = self.executions(client_order_id)
         except (PrivateBybitError, KeyError, TypeError, ValueError):
             return "ambiguous"
+        fill_order_ids = {fill.order_id for fill in fills if fill.order_id}
+        if order.order_id and fill_order_ids and (fill_order_ids != {order.order_id}): return "ambiguous"
         if fills or order.state is OrderState.FILLED: return "confirmed"
         if order.state in {OrderState.ACTIVE, OrderState.PARTIALLY_FILLED, OrderState.AMBIGUOUS}: return "ambiguous"
         if order.state in {OrderState.CANCELLED, OrderState.REJECTED, OrderState.NOT_FOUND}:
