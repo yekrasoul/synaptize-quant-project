@@ -28,6 +28,7 @@ from .production import (
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, make_order_intent, validate_execution_safety
+from .private_bybit import BybitPrivateReadClient
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 
 
@@ -103,6 +104,8 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--data-root", type=Path, default=DATA_PATH)
     plan.add_argument("--instrument-metadata", type=Path, help="validated read-only Bybit Spot instrument-info JSON")
     plan.add_argument("--submission-evidence", type=Path, help="read-only submission/reconciliation evidence JSONL")
+    private = subparsers.add_parser("private-verify", help="read-only authenticated Bybit verification")
+    private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     return parser
 
 
@@ -330,6 +333,28 @@ def _execution_plan(args: argparse.Namespace) -> dict[str, object]:
             "status": validation.status, "message": "NO ORDER EXECUTED"}
 
 
+def _private_verify(args: argparse.Namespace) -> dict[str, object]:
+    client = BybitPrivateReadClient.from_environment()
+    credential = client.credential_info()
+    account = client.account_info()
+    balances = client.wallet_balances()
+    rules = client.instrument_rules()
+    result: dict[str, object] = {
+        "read_only": True,
+        "credential": {"classification": credential.classification.value, "read_only": credential.read_only, "permissions": credential.permissions, "identity": credential.identity, "expiry": credential.expiry, "ip_restrictions": credential.ip_restrictions, "key_type": credential.key_type},
+        "account": {"unified_margin_status": account.unified_margin_status, "margin_mode": account.margin_mode, "spot_hedging_status": account.spot_hedging_status, "updated_time": account.updated_time},
+        "balances": [{"coin": b.coin, "wallet_balance": str(b.wallet_balance), "locked": str(b.locked), "borrow_amount": str(b.borrow_amount), "accrued_interest": str(b.accrued_interest), "usd_value": str(b.usd_value), "has_liability": b.has_liability} for b in balances],
+        "instrument": {"quote_minimum": str(rules.quote_minimum), "base_quantity_minimum": str(rules.base_quantity_minimum), "quantity_step": str(rules.quantity_step), "price_tick_size": str(rules.price_tick_size)},
+        "message": "READ ONLY — NO ORDER EXECUTED",
+    }
+    if args.order_link_id:
+        order = client.lookup_order(args.order_link_id)
+        fills = client.executions(args.order_link_id)
+        result["order"] = {"order_link_id": order.order_link_id, "order_id": order.order_id, "state": order.state.value, "raw_status": order.raw_status, "executed_qty": str(order.executed_qty), "executed_value": str(order.executed_value)}
+        result["executions"] = [{"exec_qty": str(f.exec_qty), "exec_price": str(f.exec_price), "exec_value": str(f.exec_value), "exec_fee": str(f.exec_fee), "exec_time": f.exec_time, "exec_id": f.exec_id, "order_id": f.order_id, "order_link_id": f.order_link_id} for f in fills]
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -346,6 +371,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _summarize_shadow(args)
         elif args.command == "execution-plan":
             result = _execution_plan(args)
+        elif args.command == "private-verify":
+            result = _private_verify(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
