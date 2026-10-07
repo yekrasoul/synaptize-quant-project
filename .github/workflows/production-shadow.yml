@@ -18,6 +18,9 @@ jobs:
     name: Read-only BTC DCA shadow
     runs-on: ubuntu-latest
     timeout-minutes: 30 # must match config/runtime.yaml; GitHub evaluates this before Python starts
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
     env:
       CONTEXT_JSON: ${{ runner.temp }}/production-context.json
       RESULT_JSON: ${{ runner.temp }}/production-result.json
@@ -101,7 +104,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           artifact-ids: ${{ steps.prior.outputs.artifact_id }}
-          path: data
+          path: btc_dca_bridge/data
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ steps.prior.outputs.run_id }}
@@ -122,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: production-shadow-${{ steps.context.outputs.run_id }}
-          path: data/
+          path: btc_dca_bridge/data/
           if-no-files-found: error
           retention-days: ${{ steps.context.outputs.completed_retention_days }}
           compression-level: 0
@@ -132,7 +135,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: production-shadow-partial-${{ steps.context.outputs.run_id }}-${{ github.run_id }}
-          path: data/
+          path: btc_dca_bridge/data/
           if-no-files-found: ignore
           retention-days: ${{ steps.context.outputs.partial_retention_days }}
           compression-level: 0
