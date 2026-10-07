@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -32,13 +33,14 @@ class OperationLock:
     """Atomic per-identity local lock. Stale ownership needs explicit recovery."""
     def __init__(self, root: Path, *, client_order_id: str, approval_id: str, canary_id: str, now: Callable[[], datetime]) -> None:
         self.root, self.now = Path(root), now
+        self.client_order_id, self.approval_id, self.canary_id = client_order_id, approval_id, canary_id
         identity = f"{client_order_id}|{approval_id}|{canary_id}"
         self.path = self.root / "operation_locks" / (hashlib.sha256(identity.encode()).hexdigest() + ".lock")
         self._owned = False
 
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"client_order_id": self.path.stem, "created_at_utc": self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")})
+        payload = json.dumps({"pid": os.getpid(), "hostname": socket.gethostname(), "created_at_utc": self.now().astimezone(UTC).isoformat().replace("+00:00", "Z"), "client_order_id": self.client_order_id, "approval_id": self.approval_id, "canary_id": self.canary_id}, sort_keys=True)
         try:
             fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         except FileExistsError as exc:
@@ -67,6 +69,20 @@ class OperationLock:
             raise OperationLockError("operation lock ownership is ambiguous") from exc
         if created.tzinfo is None or self.now().astimezone(UTC) - created.astimezone(UTC) <= max_age:
             raise OperationLockError("operation lock is not provably stale")
+        if payload.get("hostname") != socket.gethostname():
+            raise OperationLockError("ambiguous ownership: lock belongs to another host")
+        try:
+            pid = int(payload["pid"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise OperationLockError("ambiguous ownership: malformed PID") from exc
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise OperationLockError("ambiguous ownership: PID liveness unresolved") from exc
+        else:
+            raise OperationLockError("lock owner is still alive")
         self.path.unlink()
         return True
 
@@ -129,7 +145,20 @@ class OperationsService:
         link = manifest_data.get("client_order_id") if manifest_data else None
         confirmed_for_identity = any(item.payload.get("decision_id") == (manifest_data or {}).get("decision_id") or (link is not None and item.payload.get("order_link_id") == link) for item in confirmed_executions(ledger))
         related = [item[0] for item in reconciliations if link and item[0].get("client_order_id") == link]
-        partial_quote = sum((Decimal(str(fill["quote_value_usdt"])) for item in related if item.get("reconciliation_state") == "partial" for fill in item.get("fills", [])), Decimal("0"))
+        partial_fills: dict[str, dict[str, Any]] = {}
+        fill_fields = ("order_id", "order_link_id", "quantity_btc", "quote_value_usdt", "average_price_usdt", "executed_at_utc", "fee", "fee_asset", "category", "symbol")
+        for item in related:
+            if item.get("reconciliation_state") != "partial":
+                continue
+            for fill in item.get("fills", []):
+                exec_id = str(fill.get("exec_id", ""))
+                if not exec_id:
+                    raise ArtifactCorruptError("partial reconciliation contains fill without execId")
+                prior = partial_fills.get(exec_id)
+                if prior is not None and any(str(prior.get(field)) != str(fill.get(field)) for field in fill_fields):
+                    raise ArtifactCorruptError(f"conflicting partial fill evidence for execId {exec_id}")
+                partial_fills[exec_id] = fill
+        partial_quote = sum((Decimal(str(fill["quote_value_usdt"])) for fill in partial_fills.values()), Decimal("0"))
         state, reasons, allowed = "SAFE_IDLE", [], ["prepare"]
         reconciliation_required = False
         production_defaults_block = not config.live_execution_enabled or config.kill_switch or config.order_submission not in {"implemented_disabled", "implemented"}
@@ -167,19 +196,61 @@ class OperationsService:
         return OperationsSnapshot(state, tuple(allowed), ("new-submission",) if reconciliation_required else (), tuple(reasons), artifacts, {"calendar_month": month, "confirmed_spend_usdt": str(spent), "remaining_usdt": str(remaining)}, reconciliation_required, exposure)
 
     def audit_run(self, run_id: str) -> dict[str, Any]:
-        chain: dict[str, Any] = {}
-        for kind, timestamp in ((ArtifactType.DECISION, "created_at_utc"), (ArtifactType.ORDER_INTENT, "created_at_utc"), (ArtifactType.CANARY_MANIFEST, "prepared_at_utc"), (ArtifactType.LIVE_APPROVAL, "approved_at_utc"), (ArtifactType.ORDER_SUBMISSION_ATTEMPT, "created_at_utc"), (ArtifactType.ORDER_SUBMISSION_OUTCOME, "completed_at_utc"), (ArtifactType.SUBMISSION_RECONCILIATION, "reconciled_at_utc")):
-            items = [item for item in self._items(kind) if item[0].get("run_id") == run_id or item[2].stem == run_id]
-            chain[kind.value] = [{"path": str(path), "schema_version": payload["schema_version"], "sha256": digest, "timestamp": payload.get(timestamp), "status": "valid"} for payload, digest, path in items]
-        decisions = [item for item in self._items(ArtifactType.DECISION) if item[0].get("run_id") == run_id or item[2].stem == run_id]
-        decision_id = decisions[0][0].get("decision_id") if len(decisions) == 1 else None
-        executions = [item.payload for item in read_executions(self.ledger_path) if decision_id and item.payload.get("decision_id") == decision_id]
-        chain["execution"] = [{"execution_id": item.get("execution_id"), "status": item.get("status"), "ledger": "canonical"} for item in executions]
+        kinds = ((ArtifactType.DECISION, "created_at_utc"), (ArtifactType.ORDER_INTENT, "created_at_utc"), (ArtifactType.CANARY_MANIFEST, "prepared_at_utc"), (ArtifactType.LIVE_APPROVAL, "approved_at_utc"), (ArtifactType.ORDER_SUBMISSION_ATTEMPT, "created_at_utc"), (ArtifactType.ORDER_SUBMISSION_OUTCOME, "completed_at_utc"), (ArtifactType.SUBMISSION_RECONCILIATION, "reconciled_at_utc"))
+        all_items = {kind: self._items(kind) for kind, _ in kinds}
+        roots = [item for item in all_items[ArtifactType.DECISION] if item[2].stem == run_id or item[0].get("run_id") == run_id]
+        problems: list[str] = []
+        if len(roots) != 1:
+            return {"root_run_id": run_id, "related_run_ids": [], "status": "invalid", "integrity": "missing_or_inconsistent", "identity_consistent": False, "transition_consistent": False, "artifact_chain": {}, "ledger_execution": [], "problems": ["root Decision is missing or duplicated"]}
+        decision = roots[0][0]
+        identity = {"decision_id": decision.get("decision_id")}
+        chain: dict[str, list[dict[str, Any]]] = {}
+        def linked(payload: Mapping[str, Any]) -> bool:
+            return any(value is not None and payload.get(key) == value for key, value in identity.items())
+        for kind, timestamp in kinds:
+            candidates = [item for item in all_items[kind] if item[2].stem == run_id or linked(item[0])]
+            chain[kind.value] = [{"path": str(path), "schema_version": payload["schema_version"], "sha256": digest, "timestamp": payload.get(timestamp), "run_id": payload.get("run_id") or path.stem, "identity": {key: payload.get(key) for key in ("decision_id", "order_intent_id", "canary_id", "approval_id", "client_order_id", "order_id") if key in payload}, "status": "valid"} for payload, digest, path in candidates]
+            for payload, _, _ in candidates:
+                for key, value in payload.items():
+                    if key.endswith("_id") and value and key in identity and value != identity[key]:
+                        problems.append(f"identity mismatch in {kind.value}: {key}")
+                identity.update({key: payload[key] for key in ("order_intent_id", "canary_id", "approval_id", "client_order_id", "order_id") if payload.get(key) and key not in identity})
+        def first_payload(name: str) -> Mapping[str, Any] | None:
+            entries = chain.get(name, [])
+            if not entries:
+                return None
+            path = Path(entries[0]["path"])
+            kind = next(kind for kind, _ in kinds if kind.value == name)
+            year, month, day = (int(value) for value in path.parts[-4:-1])
+            return self.store.read(kind, run_id=path.stem, artifact_date_utc=datetime(year, month, day, tzinfo=UTC))
+        intent_payload = first_payload("order_intent")
+        manifest_payload = first_payload("canary_manifest")
+        approval_payload = first_payload("live_approval")
+        attempt_payload = first_payload("order_submission_attempt")
+        outcome_payload = first_payload("order_submission_outcome")
+        reconciliation_payload = first_payload("submission_reconciliation")
+        if intent_payload and any(intent_payload.get(key) != decision.get(key) for key in ("strategy_id", "strategy_version")):
+            problems.append("Decision to OrderIntent strategy identity mismatch")
+        if intent_payload and manifest_payload and any(intent_payload.get(key) != manifest_payload.get(key) for key in ("decision_id", "order_intent_id", "client_order_id", "exchange", "market_type", "symbol", "side")):
+            problems.append("OrderIntent to CanaryManifest identity mismatch")
+        if manifest_payload and approval_payload and any(manifest_payload.get(key) != approval_payload.get(key) for key in ("canary_id", "decision_id", "order_intent_id", "client_order_id", "approved_amount_usdt", "order_payload_fingerprint")):
+            problems.append("CanaryManifest to LiveApproval identity mismatch")
+        if approval_payload and attempt_payload and any(approval_payload.get(key) != attempt_payload.get(key) for key in ("approval_id", "canary_id", "decision_id", "order_intent_id", "client_order_id", "manifest_sha256", "approved_amount_usdt")):
+            problems.append("LiveApproval to SubmissionAttempt identity mismatch")
+        if attempt_payload and outcome_payload and any(attempt_payload.get(key) != outcome_payload.get(key) for key in ("decision_id", "order_intent_id", "client_order_id")):
+            problems.append("SubmissionAttempt to SubmissionOutcome identity mismatch")
+        if outcome_payload and reconciliation_payload and any(outcome_payload.get(key) != reconciliation_payload.get(key) for key in ("decision_id", "order_intent_id", "client_order_id")):
+            problems.append("SubmissionOutcome to reconciliation identity mismatch")
+        executions = [item.payload for item in read_executions(self.ledger_path) if item.payload.get("decision_id") == decision.get("decision_id")]
+        ledger_execution = [{"execution_id": item.get("execution_id"), "status": item.get("status"), "ledger": "canonical"} for item in executions]
         required = ("decision", "order_intent", "canary_manifest", "live_approval", "order_submission_attempt", "order_submission_outcome", "submission_reconciliation")
         missing = [name for name in required if not chain[name]]
-        identities = [entry for entries in chain.values() for entry in entries]
-        complete = bool(identities) and not missing and len(decisions) == 1
-        return {"run_id": run_id, "chain": chain, "missing_artifacts": missing, "status": "complete" if complete else "incomplete", "integrity": "valid" if complete else "missing_or_inconsistent", "identity_consistent": len(decisions) == 1}
+        if missing: problems.append("missing artifacts: " + ",".join(missing))
+        if any(item.get("outcome_category") == "confirmed_execution" for raw in all_items[ArtifactType.ORDER_SUBMISSION_OUTCOME] for item in [raw[0]] if linked(item)) and not ledger_execution:
+            problems.append("confirmed outcome has no ledger execution")
+        related_runs = sorted({entry["run_id"] for entries in chain.values() for entry in entries} | {run_id})
+        valid = not problems and bool(ledger_execution)
+        return {"root_run_id": run_id, "related_run_ids": related_runs, "status": "complete" if valid else "invalid", "integrity": "valid" if valid else "invalid", "identity_consistent": not problems, "transition_consistent": not problems, "artifact_chain": chain, "ledger_execution": ledger_execution, "problems": problems, "missing_artifacts": missing}
 
     def record_event(self, *, action: str, result: str, reason: str, run_id: str | None, artifact_ids: Mapping[str, str | None]) -> Path:
         """Publish a digest-addressed immutable manual-operator audit event."""
@@ -202,6 +273,9 @@ class OperationsService:
 
     def health(self) -> dict[str, Any]:
         try:
+            config = load_execution_config()
+            if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
+                return {"status": "BLOCKED", "reason": "unsafe execution configuration is enabled"}
             snapshot = self.snapshot()
             inspected = {kind: self._items(kind) for kind in (ArtifactType.CANARY_MANIFEST, ArtifactType.LIVE_APPROVAL, ArtifactType.ORDER_SUBMISSION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_OUTCOME, ArtifactType.SUBMISSION_RECONCILIATION)}
             for kind, field in ((ArtifactType.CANARY_MANIFEST, "canary_id"), (ArtifactType.LIVE_APPROVAL, "approval_id")):

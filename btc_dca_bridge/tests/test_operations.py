@@ -24,7 +24,7 @@ class OperationsTests(unittest.TestCase):
     def test_plan_health_and_audit_are_read_only_on_empty_store(self):
         self.assertEqual(self.service.health()["status"], "HEALTHY")
         audit = self.service.audit_run("run_20261007T120000Z_ops00001")
-        self.assertEqual(audit["status"], "incomplete")
+        self.assertEqual(audit["status"], "invalid")
         self.assertFalse((self.root / "data").exists())
 
     def test_operation_lock_blocks_duplicate_operator_and_releases(self):

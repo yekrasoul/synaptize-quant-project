@@ -19,6 +19,7 @@ from btc_dca_bridge.config import ExecutionConfig
 from btc_dca_bridge.execution import InstrumentRules, make_order_intent
 from btc_dca_bridge.live_order import ConfirmedFill, ReconciliationEvidence
 from btc_dca_bridge.market_data.http import HttpResponse
+from btc_dca_bridge.errors import ArtifactCorruptError
 from btc_dca_bridge.operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, EXIT_UNAVAILABLE, OperationLock, OperationLockError, OperationsService
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, PrivateApiUnavailableError, WalletBalance
 
@@ -98,6 +99,14 @@ class CliOperationsTests(unittest.TestCase):
         code, status, _ = self.invoke(["ops-status", "--run-id", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
         self.assertEqual((code, status["state"]), (EXIT_RECONCILIATION, "RECONCILIATION_REQUIRED"))
         self.assertEqual(status["operational_exposure"]["known_unresolved_partial_quote_usdt"], "12.49")
+        # A later immutable snapshot repeats exec-a and adds exec-b; exposure
+        # is keyed by execId, not by snapshot row count.
+        store = ArtifactStore(self.data)
+        prior = store.submission_reconciliations(decision_id=self.intent.decision_id, canary_id=self.manifest["canary_id"], client_order_id=self.intent.client_order_id, order_id="order-cli")[0]
+        repeated = dict(prior, run_id=self.recovery_run, reconciled_at_utc=(self.now + timedelta(seconds=1)).isoformat().replace("+00:00", "Z"), fills=prior["fills"] + [{"exec_id": "exec-cli-b", "order_id": "order-cli", "order_link_id": self.intent.client_order_id, "category": "spot", "symbol": "BTCUSDT", "quantity_btc": "0.0001", "quote_value_usdt": "12.50", "average_price_usdt": "125000", "executed_at_utc": (self.now + timedelta(seconds=1)).isoformat().replace("+00:00", "Z"), "fee": "0.01", "fee_asset": "USDT"}])
+        store.persist(ArtifactType.SUBMISSION_RECONCILIATION, repeated, run_id=self.recovery_run + "_extra01")
+        status = OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).snapshot(run_id=self.run_id)
+        self.assertEqual(status.operational_exposure["known_unresolved_partial_quote_usdt"], "24.99")
         code, plan, _ = self.invoke(["ops-plan", "--run-id", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
         self.assertEqual(code, EXIT_RECONCILIATION); self.assertEqual(plan["allowed_next_action"], "reconcile-existing")
         fill_b = ConfirmedFill("exec-cli-b", "order-cli", self.intent.client_order_id, Decimal("0.0001"), Decimal("12.50"), Decimal("125000"), (self.now + timedelta(seconds=1)).isoformat().replace("+00:00", "Z"), Decimal("0.01"), "USDT")
@@ -115,8 +124,12 @@ class CliOperationsTests(unittest.TestCase):
         self.assertEqual((code, status["state"]), (0, "SAFE_IDLE"))
         code, audit, _ = self.invoke(["audit-run", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
         self.assertEqual((code, audit["status"]), (0, "complete"), audit)
+        self.assertIn(self.recovery_run, audit["related_run_ids"])
         code, health, _ = self.invoke(["ops-health", "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
         self.assertEqual((code, health["status"]), (0, "HEALTHY"))
+        conflicting = dict(repeated, run_id=self.recovery_run, reconciled_at_utc=(self.now + timedelta(seconds=2)).isoformat().replace("+00:00", "Z"), fills=[dict(repeated["fills"][0], quote_value_usdt="99.99")])
+        store.persist(ArtifactType.SUBMISSION_RECONCILIATION, conflicting, run_id=self.recovery_run + "_extra02")
+        with self.assertRaises(ArtifactCorruptError): OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).snapshot(run_id=self.run_id)
 
     def test_cli_exit_codes_artifact_failures_and_unavailable_reads(self):
         code, _, _ = self.invoke(["audit-run", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
@@ -136,11 +149,18 @@ class CliOperationsTests(unittest.TestCase):
         lock.acquire()
         with self.assertRaises(OperationLockError): lock.recover_stale()
         payload = json.loads(lock.path.read_text()); payload["created_at_utc"] = (self.now - timedelta(minutes=16)).isoformat().replace("+00:00", "Z"); lock.path.write_text(json.dumps(payload))
-        self.assertTrue(lock.recover_stale())
+        with self.assertRaises(OperationLockError): lock.recover_stale()
+        with patch("btc_dca_bridge.operations.os.kill", side_effect=ProcessLookupError):
+            self.assertTrue(lock.recover_stale())
         service = OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now)
         paths = [service.record_event(action=action, result="blocked", reason="synthetic", run_id=self.run_id, artifact_ids={}) for action in ("operation_blocked", "reconciliation_requested", "integrity_failure")]
         self.assertEqual(len({path.name for path in paths}), 3)
         self.assertTrue(all("secret" not in path.read_text().lower() for path in paths))
+
+    def test_health_blocks_unsafe_synthetic_execution_config(self):
+        unsafe = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
+        with patch("btc_dca_bridge.operations.load_execution_config", return_value=unsafe):
+            self.assertEqual(OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).health()["status"], "BLOCKED")
 
 
 if __name__ == "__main__": unittest.main()
