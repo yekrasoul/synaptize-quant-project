@@ -102,6 +102,9 @@ class WalletBalance:
     borrow_amount: Decimal
     accrued_interest: Decimal
     usd_value: Decimal
+    # The current Unified wallet endpoint does not expose an authoritative
+    # amount available for this exact Spot quote-buy operation.
+    available_for_spot_quote_buy: Decimal | None = None
 
     @property
     def has_liability(self) -> bool: return self.borrow_amount > 0 or self.accrued_interest > 0

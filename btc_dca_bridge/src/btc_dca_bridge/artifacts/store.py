@@ -43,6 +43,7 @@ class ArtifactType(str, Enum):
     SAFETY_VALIDATION = "safety_validation"
     ORDER_SUBMISSION_ATTEMPT = "order_submission_attempt"
     ORDER_SUBMISSION_OUTCOME = "order_submission_outcome"
+    CANARY_MANIFEST = "canary_manifest"
 
 
 _DIRECTORIES = {
@@ -54,6 +55,7 @@ _DIRECTORIES = {
     ArtifactType.SAFETY_VALIDATION: "safety_validations",
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempts",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcomes",
+    ArtifactType.CANARY_MANIFEST: "canary_manifests",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -64,6 +66,7 @@ _SCHEMAS = {
     ArtifactType.SAFETY_VALIDATION: "safety_validation",
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempt",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcome",
+    ArtifactType.CANARY_MANIFEST: "canary_manifest",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -74,6 +77,7 @@ _TIMESTAMPS = {
     ArtifactType.SAFETY_VALIDATION: "checked_at_utc",
     ArtifactType.ORDER_SUBMISSION_ATTEMPT: "created_at_utc",
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "completed_at_utc",
+    ArtifactType.CANARY_MANIFEST: "prepared_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -219,14 +223,20 @@ class ArtifactStore:
 
     def has_submission_attempt(self, decision_id: str, client_order_id: str) -> bool:
         """Conservatively detect prior prepared evidence before a POST."""
-        root = self.root / _DIRECTORIES[ArtifactType.ORDER_SUBMISSION_ATTEMPT]
-        for path in root.glob("*/*/*/*.json"):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                return True
-            if isinstance(payload, dict) and payload.get("decision_id") == decision_id and payload.get("client_order_id") == client_order_id:
-                return True
+        return self.has_submission_artifact(decision_id, client_order_id, kinds=(ArtifactType.ORDER_SUBMISSION_ATTEMPT,))
+
+    def has_submission_artifact(self, decision_id: str, client_order_id: str, *, kinds: tuple[ArtifactType, ...] | None = None) -> bool:
+        """Conservatively detect any prior immutable submission evidence."""
+        kinds = kinds or (ArtifactType.ORDER_SUBMISSION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_OUTCOME)
+        for kind in kinds:
+            root = self.root / _DIRECTORIES[kind]
+            for path in root.glob("*/*/*/*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    return True
+                if isinstance(payload, dict) and payload.get("decision_id") == decision_id and payload.get("client_order_id") == client_order_id:
+                    return True
         return False
 
     def _payload(self, artifact: Mapping[str, Any] | Any) -> dict[str, Any]:

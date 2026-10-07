@@ -26,6 +26,7 @@ SCHEMA_FILES = {
     "safety_validation": "safety_validation.schema.json",
     "order_submission_attempt": "order_submission_attempt.schema.json",
     "order_submission_outcome": "order_submission_outcome.schema.json",
+    "canary_manifest": "canary_manifest.schema.json",
     "order_submission": "order_submission.schema.json",
     "reconciliation_result": "reconciliation_result.schema.json",
 }
