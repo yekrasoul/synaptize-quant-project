@@ -536,7 +536,7 @@ def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], in
 
 def _production_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     result = ProductionReadinessService(data_root=args.data_root, ledger_path=args.ledger).evaluate()
-    return result, 0 if result["status"] != "NOT_READY" else 2
+    return result, 0 if result["status"] == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" else 2
 
 
 def _production_connectivity() -> tuple[dict[str, object], int]:
