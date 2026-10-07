@@ -170,6 +170,25 @@ class ReconciliationEvidence:
 
 
 @dataclass(frozen=True)
+class SubmissionReconciliation:
+    run_id: str
+    decision_id: str
+    order_intent_id: str
+    canary_id: str
+    approval_id: str
+    client_order_id: str
+    order_id: str
+    reconciliation_state: str
+    reconciled_at_utc: str
+    fills: tuple[ConfirmedFill, ...]
+    source: str = "Bybit private order/fill reconciliation"
+    ledger_mutated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema_version": "5.4.1", "run_id": self.run_id, "decision_id": self.decision_id, "order_intent_id": self.order_intent_id, "canary_id": self.canary_id, "approval_id": self.approval_id, "client_order_id": self.client_order_id, "order_id": self.order_id, "reconciliation_state": self.reconciliation_state, "reconciled_at_utc": self.reconciled_at_utc, "fills": [{"exec_id": fill.execution_id, "order_id": fill.order_id, "order_link_id": fill.order_link_id, "category": fill.category, "symbol": fill.symbol, "quantity_btc": format(fill.quantity_btc, "f"), "quote_value_usdt": format(fill.quote_value_usdt, "f"), "average_price_usdt": format(fill.average_price_usdt, "f"), "executed_at_utc": fill.executed_at_utc, "fee": format(fill.fee, "f"), "fee_asset": fill.fee_asset} for fill in self.fills], "source": self.source, "ledger_mutated": self.ledger_mutated}
+
+
+@dataclass(frozen=True)
 class SubmissionResult:
     attempt: OrderSubmissionAttempt | None
     outcome: SubmissionOutcome
@@ -277,16 +296,13 @@ class LiveOrderEngine:
         except ArtifactAlreadyExistsError as exc: raise LiveOrderSafetyError("submission attempt already exists; reconciliation required") from exc
         try:
             response = transport.submit_spot_market_buy(request)
-            outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler)
+            outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler, canary_id=manifest["canary_id"], approval_id=approval.approval_id)
         except AmbiguousSubmissionError:
             # The transport boundary may have been crossed. Reconcile before
             # returning control, and never retry this approval/attempt.
-            outcome, evidence = self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+            outcome, evidence = self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=manifest["canary_id"], approval_id=approval.approval_id)
         if evidence is not None and evidence.state == "confirmed" and evidence.fills:
-            for fill in evidence.fills:
-                self._validate_fill(fill, evidence.order_id, intent.client_order_id)
-                payload = {"schema_version": "1.1.0", "execution_id": "execution_" + fill.execution_id, "executed_at_utc": fill.executed_at_utc, "asset": "BTC", "quote_currency": "USDT", "executed_usd": float(fill.quote_value_usdt), "reference_price_usdt": float(fill.average_price_usdt), "btc_quantity": float(fill.quantity_btc), "status": "reconciled", "reconciliation": {"source": "Bybit private order/fill reconciliation", "note": "authoritative Spot BTCUSDT fill bound to orderLinkId"}, "decision_id": intent.decision_id, "canary_id": manifest["canary_id"], "approval_id": approval.approval_id, "order_id": fill.order_id, "order_link_id": fill.order_link_id, "execution_id_bybit": fill.execution_id, "fee": float(fill.fee), "fee_asset": fill.fee_asset}
-                append_execution_once(ledger_path, payload)
+            self._append_aggregate_execution(ledger_path, evidence, intent, manifest["canary_id"], approval.approval_id)
             outcome = SubmissionOutcome(outcome.run_id, outcome.decision_id, outcome.order_intent_id, outcome.client_order_id, outcome.state, outcome.completed_at_utc, outcome.ret_code, outcome.ret_msg, outcome.order_id, outcome.returned_order_link_id, "confirmed", False, "confirmed_execution")
         self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_OUTCOME, outcome, run_id=run_id)
         return SubmissionResult(attempt, outcome)
@@ -322,6 +338,10 @@ class LiveOrderEngine:
             raise LiveOrderSafetyError("persisted CanaryManifest digest or bytes do not match supplied manifest")
 
     def _validate_persisted_approval(self, approval: LiveApproval, approval_sha256: str, intent: OrderIntent, manifest: Mapping[str, Any], manifest_sha256: str, *, now_utc: datetime) -> None:
+        self._validate_persisted_approval_receipt(approval, approval_sha256)
+        approval.validate(intent, now_utc=now_utc, manifest=manifest, manifest_sha256=manifest_sha256)
+
+    def _validate_persisted_approval_receipt(self, approval: LiveApproval, approval_sha256: str) -> None:
         try:
             persisted, persisted_sha = self.artifact_store.find_artifact(ArtifactType.LIVE_APPROVAL, identity_field="approval_id", identity_value=approval.approval_id)
         except Exception as exc:
@@ -331,7 +351,6 @@ class LiveOrderEngine:
             validate_live_approval(persisted)
         except Exception as exc:
             raise LiveOrderSafetyError("persisted LiveApproval schema validation failed") from exc
-        approval.validate(intent, now_utc=now_utc, manifest=manifest, manifest_sha256=manifest_sha256)
 
     @staticmethod
     def _fresh_private_checks(client: FreshBybitReadClient, intent: OrderIntent) -> tuple[ApiCredentialInfo, Any, SubmissionState]:
@@ -356,7 +375,80 @@ class LiveOrderEngine:
         if not fill.execution_id or not fill.fee_asset or fill.quantity_btc <= 0 or fill.quote_value_usdt <= 0 or fill.average_price_usdt <= 0: raise LiveOrderSafetyError("fill values or authoritative fee identity are malformed")
         _utc(fill.executed_at_utc)
 
-    def _reconcile_after_possible_submission(self, intent: OrderIntent, run_id: str, reconciler: PostAckReconciler, *, ack_order_id: str | None = None, ack_order_link_id: str | None = None) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
+    def _persist_reconciliation(self, intent: OrderIntent, run_id: str, canary_id: str, approval_id: str, evidence: ReconciliationEvidence) -> None:
+        if not evidence.order_id:
+            raise LiveOrderSafetyError("reconciliation lacks authoritative order ID")
+        artifact = SubmissionReconciliation(run_id, intent.decision_id, intent.order_intent_id, canary_id, approval_id, intent.client_order_id, evidence.order_id, evidence.state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), evidence.fills)
+        digest = hashlib.sha256(_canonical_json(artifact.to_dict()).encode()).hexdigest()
+        artifact_run_id = f"{run_id}_recon_{digest[:16]}"
+        try:
+            self.artifact_store.persist(ArtifactType.SUBMISSION_RECONCILIATION, artifact, run_id=artifact_run_id)
+        except ArtifactAlreadyExistsError:
+            # A byte-identical observation is idempotent. Read-back verifies
+            # the immutable canonical bytes and digest before accepting it.
+            prior = self.artifact_store.submission_reconciliations(decision_id=intent.decision_id, canary_id=canary_id, client_order_id=intent.client_order_id, order_id=evidence.order_id)
+            if not any(item == artifact.to_dict() for item in prior):
+                raise LiveOrderSafetyError("reconciliation artifact identity conflicts")
+
+    @staticmethod
+    def _fill_from_artifact(payload: Mapping[str, Any]) -> ConfirmedFill:
+        try:
+            return ConfirmedFill(str(payload["exec_id"]), str(payload["order_id"]), str(payload["order_link_id"]), Decimal(str(payload["quantity_btc"])), Decimal(str(payload["quote_value_usdt"])), Decimal(str(payload["average_price_usdt"])), str(payload["executed_at_utc"]), Decimal(str(payload["fee"])), str(payload["fee_asset"]), str(payload["category"]), str(payload["symbol"]))
+        except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+            raise LiveOrderSafetyError("persisted reconciliation fill is malformed") from exc
+
+    def _combined_reconciliation_fills(self, intent: OrderIntent, canary_id: str, approval_id: str, current: ReconciliationEvidence) -> tuple[ConfirmedFill, ...]:
+        if not current.order_id:
+            raise LiveOrderSafetyError("confirmed reconciliation lacks order ID")
+        snapshots = self.artifact_store.submission_reconciliations(decision_id=intent.decision_id, canary_id=canary_id, client_order_id=intent.client_order_id, order_id=current.order_id)
+        fills: dict[str, ConfirmedFill] = {}
+        for snapshot in snapshots:
+            if snapshot.get("order_intent_id") != intent.order_intent_id or snapshot.get("approval_id") != approval_id:
+                raise LiveOrderSafetyError("persisted reconciliation identity conflicts")
+            for raw_fill in snapshot["fills"]:
+                fill = self._fill_from_artifact(raw_fill)
+                self._validate_fill(fill, current.order_id, intent.client_order_id)
+                existing = fills.get(fill.execution_id)
+                if existing is not None and existing != fill:
+                    raise LiveOrderSafetyError("contradictory reconciliation evidence for execution ID")
+                fills[fill.execution_id] = fill
+        if not fills:
+            raise LiveOrderSafetyError("confirmed reconciliation has no authoritative fills")
+        return tuple(fills[execution_id] for execution_id in sorted(fills))
+
+    def _append_aggregate_execution(self, ledger_path, evidence: ReconciliationEvidence, intent: OrderIntent, canary_id: str, approval_id: str) -> None:
+        if not evidence.order_id or not evidence.fills:
+            raise LiveOrderSafetyError("cannot append an unconfirmed execution")
+        for fill in evidence.fills:
+            self._validate_fill(fill, evidence.order_id, intent.client_order_id)
+        fee_assets = {fill.fee_asset for fill in evidence.fills}
+        if len(fee_assets) != 1:
+            raise LiveOrderSafetyError("multiple authoritative fee assets require reconciliation")
+        total_btc = sum((fill.quantity_btc for fill in evidence.fills), Decimal("0"))
+        total_quote = sum((fill.quote_value_usdt for fill in evidence.fills), Decimal("0"))
+        total_fee = sum((fill.fee for fill in evidence.fills), Decimal("0"))
+        if total_btc <= 0 or total_quote <= 0:
+            raise LiveOrderSafetyError("aggregate fill values are malformed")
+        execution_ids = tuple(sorted(fill.execution_id for fill in evidence.fills))
+        aggregate_id = hashlib.sha256((evidence.order_id + "|" + intent.client_order_id + "|" + "|".join(execution_ids)).encode()).hexdigest()[:32]
+        completed_at = max((_utc(fill.executed_at_utc) for fill in evidence.fills)).isoformat().replace("+00:00", "Z")
+        payload = {"schema_version": "1.1.0", "execution_id": "execution_order_" + aggregate_id, "executed_at_utc": completed_at, "asset": "BTC", "quote_currency": "USDT", "executed_usd": float(total_quote), "reference_price_usdt": float(total_quote / total_btc), "btc_quantity": float(total_btc), "status": "reconciled", "reconciliation": {"source": "Bybit private order/fill reconciliation", "note": "authoritative aggregated Spot BTCUSDT fills bound to orderLinkId"}, "decision_id": intent.decision_id, "canary_id": canary_id, "approval_id": approval_id, "order_id": evidence.order_id, "order_link_id": intent.client_order_id, "execution_id_bybit": ",".join(execution_ids), "fee": float(total_fee), "fee_asset": fee_assets.pop()}
+        append_execution_once(ledger_path, payload)
+
+    def reconcile_existing(self, intent: OrderIntent, *, ledger_path, approval: LiveApproval, approval_sha256: str, manifest: Mapping[str, Any], manifest_sha256: str, run_id: str, post_ack_reconciler: PostAckReconciler) -> SubmissionResult:
+        """Read-only recovery path for a prior attempt; it cannot submit an order."""
+        if manifest is None or approval is None or post_ack_reconciler is None:
+            raise LiveOrderSafetyError("persisted manifest, approval, and fresh reconciler are required")
+        self._validate_persisted_manifest(manifest, manifest_sha256)
+        self._validate_persisted_approval_receipt(approval, approval_sha256)
+        outcome, evidence = self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=str(manifest["canary_id"]), approval_id=approval.approval_id)
+        if evidence is not None and evidence.state == "confirmed" and evidence.fills:
+            self._append_aggregate_execution(ledger_path, evidence, intent, str(manifest["canary_id"]), approval.approval_id)
+            outcome = SubmissionOutcome(outcome.run_id, outcome.decision_id, outcome.order_intent_id, outcome.client_order_id, outcome.state, outcome.completed_at_utc, outcome.ret_code, outcome.ret_msg, outcome.order_id, outcome.returned_order_link_id, "confirmed", False, "confirmed_execution")
+        self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_OUTCOME, outcome, run_id=run_id)
+        return SubmissionResult(None, outcome)
+
+    def _reconcile_after_possible_submission(self, intent: OrderIntent, run_id: str, reconciler: PostAckReconciler, *, canary_id: str, approval_id: str, ack_order_id: str | None = None, ack_order_link_id: str | None = None) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
         try:
             evidence = reconciler.reconcile_after_ack(intent.client_order_id)
             if not isinstance(evidence, ReconciliationEvidence):
@@ -372,31 +464,40 @@ class LiveOrderEngine:
                 raise LiveOrderSafetyError("duplicate execution identity in reconciliation")
             for fill in evidence.fills:
                 self._validate_fill(fill, evidence.order_id, intent.client_order_id)
+            if evidence.state in {"active", "partial", "confirmed"}:
+                if not evidence.order_id:
+                    raise LiveOrderSafetyError("reconciliation lacks authoritative order ID")
+                if evidence.state == "active" and evidence.fills:
+                    raise LiveOrderSafetyError("active order unexpectedly has fill evidence")
+                if evidence.state in {"partial", "confirmed"} and not evidence.fills:
+                    raise LiveOrderSafetyError("filled reconciliation lacks authoritative fills")
+                self._persist_reconciliation(intent, run_id, canary_id, approval_id, evidence)
             if evidence.state == "confirmed":
                 if not evidence.order_id or not evidence.fills:
                     raise LiveOrderSafetyError("confirmed reconciliation lacks authoritative fills")
-                return self._outcome(intent, run_id, "acknowledged", order_id=evidence.order_id, returned_link=intent.client_order_id, reconciliation="confirmed", category="confirmed_execution"), evidence
+                combined = self._combined_reconciliation_fills(intent, canary_id, approval_id, evidence)
+                return self._outcome(intent, run_id, "acknowledged", order_id=evidence.order_id, returned_link=intent.client_order_id, reconciliation="confirmed", category="confirmed_execution"), ReconciliationEvidence("confirmed", evidence.order_id, combined, intent.client_order_id)
             if evidence.state in {"active", "partial", "ambiguous", "conclusively_absent"}:
-                schema_state = evidence.state if evidence.state in {"ambiguous", "conclusively_absent"} else "ambiguous"
+                schema_state = evidence.state if evidence.state in {"partial", "ambiguous", "conclusively_absent"} else "ambiguous"
                 return self._outcome(intent, run_id, "ambiguous", msg=f"reconciliation state: {evidence.state}", order_id=evidence.order_id, returned_link=intent.client_order_id, reconciliation=schema_state, category="reconciliation_required"), evidence
             raise LiveOrderSafetyError("reconciler returned unknown state")
         except Exception as exc:
             return self._outcome(intent, run_id, "ambiguous", msg=f"reconciliation required: {exc}", returned_link=intent.client_order_id, reconciliation="ambiguous", category="reconciliation_required"), None
 
-    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
+    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler, *, canary_id: str, approval_id: str) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
         if response.status >= 500:
-            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
         if response.status >= 400: return self._outcome(intent, run_id, "rejected_by_exchange", msg="HTTP response rejected submission", category="exchange_rejected"), None
         try: body = json.loads(response.body.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
-        if not isinstance(body, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        except (UnicodeDecodeError, json.JSONDecodeError): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
+        if not isinstance(body, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
         code, msg, result = body.get("retCode"), body.get("retMsg"), body.get("result")
         if code != 0:
-            if not isinstance(code, int): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+            if not isinstance(code, int): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
             return self._outcome(intent, run_id, "rejected_by_exchange", code=code, msg=str(msg) if msg is not None else None, category="exchange_rejected"), None
-        if not isinstance(result, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        if not isinstance(result, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
         ack_order_id = result.get("orderId") if isinstance(result.get("orderId"), str) else None
         ack_order_link_id = result.get("orderLinkId") if isinstance(result.get("orderLinkId"), str) else None
         if ack_order_id is None or ack_order_link_id is None:
-            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)
-        return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)
+            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)
+        return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)

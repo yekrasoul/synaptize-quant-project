@@ -357,7 +357,16 @@ class BybitPostAckReconciler:
         fills = self.client.executions(client_order_id)
         if order.order_id and any(fill.order_id != order.order_id for fill in fills):
             return ReconciliationEvidence("ambiguous", order_link_id=client_order_id)
-        if order.state in {OrderState.ACTIVE, OrderState.PARTIALLY_FILLED, OrderState.AMBIGUOUS}:
+        if order.state is OrderState.ACTIVE:
+            if fills:
+                return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)
+            return ReconciliationEvidence("active", order.order_id, (), client_order_id)
+        if order.state is OrderState.PARTIALLY_FILLED:
+            if not fills:
+                return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)
+            converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, fill.fee_asset, fill.category, fill.symbol) for fill in fills)
+            return ReconciliationEvidence("partial", order.order_id, converted, client_order_id)
+        if order.state is OrderState.AMBIGUOUS:
             return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)
         if order.state is not OrderState.FILLED or not fills:
             return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)

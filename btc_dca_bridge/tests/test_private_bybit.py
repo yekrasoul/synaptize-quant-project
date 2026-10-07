@@ -3,12 +3,13 @@ import hmac
 import json
 import unittest
 from decimal import Decimal
+from decimal import Decimal
 
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import (
     ACCOUNT_INFO, EXECUTION_LIST, INSTRUMENTS_INFO, ORDER_HISTORY, ORDER_REALTIME,
-    WALLET_BALANCE, ApiCredentialInfo, AuthenticationError, BybitPrivateReadClient,
-    CredentialClassification, MalformedBybitResponseError, OrderState, PermissionError,
+    WALLET_BALANCE, ApiCredentialInfo, AuthenticationError, BybitPostAckReconciler, BybitPrivateReadClient,
+    CredentialClassification, ExecutionFill, MalformedBybitResponseError, OrderState, PermissionError, ReadOnlyOrder,
     canonical_query, signature,
 )
 
@@ -84,6 +85,14 @@ class PrivateBybitTests(unittest.TestCase):
         self.assertEqual(client.executions("dca-abc")[0].fee_asset, "BTC")
         missing = self.client({EXECUTION_LIST: response({"list": [base]})})
         with self.assertRaises(MalformedBybitResponseError): missing.executions("dca-abc")
+
+    def test_post_ack_reconciler_preserves_partial_fill_evidence(self):
+        class Client:
+            def lookup_order(self, client_order_id): return ReadOnlyOrder(client_order_id, "order-1", OrderState.PARTIALLY_FILLED, "PartiallyFilled", Decimal("0.1"), Decimal("10"))
+            def executions(self, client_order_id): return (ExecutionFill(Decimal("0.1"), Decimal("100"), Decimal("10"), Decimal("0.01"), "USDT", "2026-10-07T12:00:01Z", "exec-1", "order-1", client_order_id, "spot", "BTCUSDT"),)
+        evidence = BybitPostAckReconciler(Client()).reconcile_after_ack("dca-abc")
+        self.assertEqual(evidence.state, "partial"); self.assertEqual(evidence.order_id, "order-1")
+        self.assertEqual(evidence.order_link_id, "dca-abc"); self.assertEqual(evidence.fills[0].fee_asset, "USDT")
 
     def test_absent_is_only_after_both_successful_order_reads_and_execution_read(self):
         client = self.client({ORDER_REALTIME: response({"list": []}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": []})})

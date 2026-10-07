@@ -45,6 +45,7 @@ class ArtifactType(str, Enum):
     ORDER_SUBMISSION_OUTCOME = "order_submission_outcome"
     CANARY_MANIFEST = "canary_manifest"
     LIVE_APPROVAL = "live_approval"
+    SUBMISSION_RECONCILIATION = "submission_reconciliation"
 
 
 _DIRECTORIES = {
@@ -58,6 +59,7 @@ _DIRECTORIES = {
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcomes",
     ArtifactType.CANARY_MANIFEST: "canary_manifests",
     ArtifactType.LIVE_APPROVAL: "live_approvals",
+    ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -70,6 +72,7 @@ _SCHEMAS = {
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcome",
     ArtifactType.CANARY_MANIFEST: "canary_manifest",
     ArtifactType.LIVE_APPROVAL: "live_approval",
+    ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliation",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -82,6 +85,7 @@ _TIMESTAMPS = {
     ArtifactType.ORDER_SUBMISSION_OUTCOME: "completed_at_utc",
     ArtifactType.CANARY_MANIFEST: "prepared_at_utc",
     ArtifactType.LIVE_APPROVAL: "approved_at_utc",
+    ArtifactType.SUBMISSION_RECONCILIATION: "reconciled_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -278,6 +282,27 @@ class ArtifactStore:
                 if isinstance(payload, dict) and payload.get("decision_id") == decision_id and payload.get("client_order_id") == client_order_id:
                     return True
         return False
+
+    def submission_reconciliations(self, *, decision_id: str, canary_id: str, client_order_id: str, order_id: str) -> tuple[dict[str, Any], ...]:
+        """Return all digest-verified immutable reconciliation snapshots for one order."""
+        kind = ArtifactType.SUBMISSION_RECONCILIATION
+        matches: list[dict[str, Any]] = []
+        for path in sorted((self.root / _DIRECTORIES[kind]).glob("*/*/*/*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ArtifactCorruptError("cannot inspect submission reconciliation artifact") from exc
+            if not isinstance(raw, dict):
+                raise ArtifactCorruptError("submission reconciliation artifact is malformed")
+            identity = (raw.get("decision_id"), raw.get("canary_id"), raw.get("client_order_id"), raw.get("order_id"))
+            if identity != (decision_id, canary_id, client_order_id, order_id):
+                continue
+            try:
+                year, month, day = (int(part) for part in path.parts[-4:-1])
+            except (TypeError, ValueError) as exc:
+                raise ArtifactCorruptError("submission reconciliation artifact directory date is invalid") from exc
+            matches.append(self.read(kind, run_id=path.stem, artifact_date_utc=datetime(year, month, day, tzinfo=UTC)))
+        return tuple(matches)
 
     def _payload(self, artifact: Mapping[str, Any] | Any) -> dict[str, Any]:
         candidate = artifact.to_dict() if hasattr(artifact, "to_dict") else artifact

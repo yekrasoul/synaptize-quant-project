@@ -74,6 +74,12 @@ class LiveOrderHardeningTests(unittest.TestCase):
         values.update(kwargs)
         return self.engine.submit(self.intent, self.decision, **values)
 
+    def fill(self, execution_id, quantity, quote, fee="0.01", *, order_id="order-1", fee_asset="USDT"):
+        return ConfirmedFill(execution_id, order_id, self.intent.client_order_id, Decimal(quantity), Decimal(quote), Decimal(quote) / Decimal(quantity), "2026-10-07T12:00:01Z", Decimal(fee), fee_asset)
+
+    def reconcile_existing(self, evidence, *, run_id="run_20261007T120100Z_recon000"):
+        return self.engine.reconcile_existing(self.intent, ledger_path=self.ledger, approval=self.approval, approval_sha256=self.approval_receipt.sha256, manifest=self.manifest, manifest_sha256=self.manifest_sha, run_id=run_id, post_ack_reconciler=FakeReconciler(evidence))
+
     def test_missing_manifest_read_client_or_reconciler_blocks_before_post(self):
         for field in ("manifest", "read_client", "post_ack_reconciler"):
             with self.subTest(field=field):
@@ -192,6 +198,68 @@ class LiveOrderHardeningTests(unittest.TestCase):
                 self.assertEqual(reconciler.calls, [self.intent.client_order_id])
                 self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
                 self.assertEqual(self.ledger.read_text(), "")
+
+    def test_active_order_persists_empty_reconciliation_evidence(self):
+        result = self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("active", "order-1", (), self.intent.client_order_id)))
+        self.assertEqual(result.outcome.reconciliation_state, "ambiguous")
+        snapshots = ArtifactStore(self.data).submission_reconciliations(decision_id=self.intent.decision_id, canary_id=self.manifest["canary_id"], client_order_id=self.intent.client_order_id, order_id="order-1")
+        self.assertEqual(len(snapshots), 1); self.assertEqual(snapshots[0]["reconciliation_state"], "active"); self.assertEqual(snapshots[0]["fills"], [])
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_partial_fill_evidence_is_immutable_and_does_not_write_ledger(self):
+        fill = self.fill("exec-a", "0.0001", "12.49")
+        result = self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", (fill,), self.intent.client_order_id)))
+        self.assertEqual(result.outcome.reconciliation_state, "partial")
+        snapshots = ArtifactStore(self.data).submission_reconciliations(decision_id=self.intent.decision_id, canary_id=self.manifest["canary_id"], client_order_id=self.intent.client_order_id, order_id="order-1")
+        self.assertEqual(len(snapshots), 1); self.assertEqual(snapshots[0]["fills"][0]["exec_id"], "exec-a")
+        self.assertEqual(snapshots[0]["fills"][0]["fee_asset"], "USDT"); self.assertEqual(self.ledger.read_text(), "")
+
+    def test_multiple_partial_fills_are_preserved_without_ledger_write(self):
+        fills = (self.fill("exec-a", "0.0001", "12.49"), self.fill("exec-b", "0.0001", "12.50"))
+        self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", fills, self.intent.client_order_id)))
+        snapshots = ArtifactStore(self.data).submission_reconciliations(decision_id=self.intent.decision_id, canary_id=self.manifest["canary_id"], client_order_id=self.intent.client_order_id, order_id="order-1")
+        self.assertEqual([item["exec_id"] for item in snapshots[0]["fills"]], ["exec-a", "exec-b"])
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_partial_missing_fee_asset_fails_closed(self):
+        fill = self.fill("exec-a", "0.0001", "12.49", fee_asset="")
+        result = self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", (fill,), self.intent.client_order_id)))
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertFalse((self.data / "submission_reconciliations").exists())
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_partial_to_filled_recovery_aggregates_unique_fills_once(self):
+        first = self.fill("exec-a", "0.0001", "12.49")
+        self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", (first,), self.intent.client_order_id)))
+        second = self.fill("exec-b", "0.0001", "12.50")
+        result = self.reconcile_existing(ReconciliationEvidence("confirmed", "order-1", (first, second), self.intent.client_order_id))
+        self.assertEqual(result.outcome.outcome_category, "confirmed_execution")
+        row = json.loads(self.ledger.read_text())
+        self.assertEqual(row["executed_usd"], 24.99); self.assertEqual(row["btc_quantity"], 0.0002)
+        self.assertEqual(row["execution_id_bybit"], "exec-a,exec-b")
+        replay = self.reconcile_existing(ReconciliationEvidence("confirmed", "order-1", (first, second), self.intent.client_order_id), run_id="run_20261007T120200Z_recon001")
+        self.assertEqual(replay.outcome.outcome_category, "confirmed_execution")
+        self.assertEqual(len(self.ledger.read_text().splitlines()), 1)
+
+    def test_conflicting_prior_fill_evidence_blocks_final_ledger_append(self):
+        for quantity, fee, order_id in (("0.0002", "0.01", "order-1"), ("0.0001", "0.02", "order-1"), ("0.0001", "0.01", "other-order")):
+            with self.subTest(quantity=quantity, fee=fee, order_id=order_id):
+                self.setUp()
+                first = self.fill("exec-a", "0.0001", "12.49")
+                self.submit(post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", (first,), self.intent.client_order_id)))
+                changed = self.fill("exec-a", quantity, "12.49", fee=fee, order_id=order_id)
+                result = self.reconcile_existing(ReconciliationEvidence("confirmed", "order-1", (changed,), self.intent.client_order_id), run_id="run_20261007T120200Z_recon001")
+                self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+                self.assertEqual(self.ledger.read_text(), "")
+
+    def test_partial_to_partial_preserves_evidence_without_post_or_topup(self):
+        first = self.fill("exec-a", "0.0001", "12.49")
+        transport = FakeTransport(self.ack)
+        self.submit(transport=transport, post_ack_reconciler=FakeReconciler(ReconciliationEvidence("partial", "order-1", (first,), self.intent.client_order_id)))
+        second = self.fill("exec-b", "0.0001", "12.50")
+        result = self.reconcile_existing(ReconciliationEvidence("partial", "order-1", (first, second), self.intent.client_order_id))
+        self.assertEqual(len(transport.calls), 1); self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertEqual(self.ledger.read_text(), "")
 
     def test_missing_authoritative_fee_asset_fails_closed(self):
         fill = ConfirmedFill("exec-no-fee-asset", "order-1", self.intent.client_order_id, Decimal("0.0002"), Decimal("24.98"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "")
