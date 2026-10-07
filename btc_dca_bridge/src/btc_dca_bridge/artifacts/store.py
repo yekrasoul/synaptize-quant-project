@@ -229,6 +229,42 @@ class ArtifactStore:
         """Conservatively detect prior prepared evidence before a POST."""
         return self.has_submission_artifact(decision_id, client_order_id, kinds=(ArtifactType.ORDER_SUBMISSION_ATTEMPT,))
 
+    def find_artifact(self, artifact_type: ArtifactType | str, *, identity_field: str, identity_value: str) -> tuple[dict[str, Any], str]:
+        """Read exactly one immutable artifact and return its verified digest."""
+        kind = _artifact_type(artifact_type)
+        root = self.root / _DIRECTORIES[kind]
+        matches: list[Path] = []
+        for path in root.glob("*/*/*/*.json"):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ArtifactCorruptError(f"cannot inspect {kind.value} artifact") from exc
+            if isinstance(raw, dict) and raw.get(identity_field) == identity_value:
+                matches.append(path)
+        if not matches:
+            raise ArtifactNotFoundError(f"artifact {kind.value} {identity_value} not found")
+        if len(matches) != 1:
+            raise ArtifactCorruptError(f"multiple immutable {kind.value} artifacts match {identity_value}")
+        parts = matches[0].parts
+        try:
+            artifact_date = datetime(int(parts[-4]), int(parts[-3]), int(parts[-2]), tzinfo=UTC)
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ArtifactCorruptError("artifact directory date is invalid") from exc
+        payload = self.read(kind, run_id=matches[0].stem, artifact_date_utc=artifact_date)
+        digest = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
+        return payload, digest
+
+    def has_submission_attempt_identity(self, *, approval_id: str, canary_id: str, decision_id: str, client_order_id: str) -> bool:
+        root = self.root / _DIRECTORIES[ArtifactType.ORDER_SUBMISSION_ATTEMPT]
+        for path in root.glob("*/*/*/*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return True
+            if isinstance(payload, dict) and all(payload.get(k) == v for k, v in (("approval_id", approval_id), ("canary_id", canary_id), ("decision_id", decision_id), ("client_order_id", client_order_id))):
+                return True
+        return False
+
     def has_submission_artifact(self, decision_id: str, client_order_id: str, *, kinds: tuple[ArtifactType, ...] | None = None) -> bool:
         """Conservatively detect any prior immutable submission evidence."""
         kinds = kinds or (ArtifactType.ORDER_SUBMISSION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_OUTCOME)

@@ -130,6 +130,8 @@ class ExecutionFill:
     exec_id: str
     order_id: str
     order_link_id: str
+    category: str
+    symbol: str
 
 
 class ReadTransport(Protocol):
@@ -286,7 +288,9 @@ class BybitPrivateReadClient:
         if row.get("orderLinkId") != requested_client_order_id:
             raise MalformedBybitResponseError("order evidence orderLinkId does not match requested client_order_id")
         for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
-            if field in row and row[field] != expected:
+            if field not in row:
+                return ReadOnlyOrder(str(row.get("orderLinkId", "")), row.get("orderId"), OrderState.AMBIGUOUS, "missing_identity", Decimal("0"), Decimal("0"))
+            if row.get(field) != expected:
                 raise MalformedBybitResponseError(f"order evidence {field} does not match approved Spot identity")
         status = str(row.get("orderStatus"))
         state = {"New": OrderState.ACTIVE, "Untriggered": OrderState.ACTIVE, "PartiallyFilled": OrderState.PARTIALLY_FILLED, "Filled": OrderState.FILLED, "Cancelled": OrderState.CANCELLED, "Rejected": OrderState.REJECTED}.get(status, OrderState.AMBIGUOUS)
@@ -313,8 +317,8 @@ class BybitPrivateReadClient:
             for row in rows:
                 if row.get("orderLinkId") != client_order_id: raise MalformedBybitResponseError("execution evidence orderLinkId does not match requested client_order_id")
                 for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
-                    if field in row and row[field] != expected: raise MalformedBybitResponseError(f"execution evidence {field} does not match approved Spot identity")
-            return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"])) for row in rows)
+                    if row.get(field) != expected: raise MalformedBybitResponseError(f"execution evidence {field} does not match approved Spot identity")
+            return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"]), str(row["category"]), str(row["symbol"])) for row in rows)
         except (KeyError, AttributeError, TypeError) as exc: raise MalformedBybitResponseError("execution fill is malformed") from exc
 
     def submission_state(self, client_order_id: str) -> str:
@@ -343,7 +347,7 @@ class BybitSubmissionEvidence(SubmissionState):
 class BybitPostAckReconciler:
     """Fresh post-ACK read-back adapter; never reuses pre-submit evidence."""
     def __init__(self, client: BybitPrivateReadClient): self.client = client
-    def reconcile_after_ack(self, client_order_id: str) -> str:
+    def reconcile_after_ack(self, client_order_id: str):
         # The execution engine accepts this richer object and only creates an
         # Execution from its authoritative fill rows.  Keep the legacy string
         # return for clients that do not expose fill details.
@@ -356,7 +360,7 @@ class BybitPostAckReconciler:
             return ReconciliationEvidence("ambiguous", order.order_id)
         if order.state is not OrderState.FILLED or not fills:
             return ReconciliationEvidence("ambiguous", order.order_id)
-        converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, "") for fill in fills)
+        converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, "", fill.category, fill.symbol) for fill in fills)
         return ReconciliationEvidence("confirmed", order.order_id, converted)
 
 
