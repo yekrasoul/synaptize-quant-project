@@ -27,6 +27,7 @@ from .ledger import read_executions
 from .operations import OperationLock, OperationLockError, OperationsService
 from .paths import DATA_PATH, LEDGER_PATH
 from .private_bybit import AccountInfo, BybitPrivateReadClient, CredentialClassification, MalformedBybitResponseError, PrivateBybitError
+from .quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, unavailable_quote_unit_limit, validate_quote_unit_limit_evidence
 
 
 CHECK_STATUSES = {"PASS", "FAIL", "BLOCKED", "UNAVAILABLE", "NOT_APPLICABLE"}
@@ -89,7 +90,7 @@ def classify_production_account_mode(account: AccountInfo, *, now: datetime, max
 
 
 class ProductionReadinessService:
-    def __init__(self, *, data_root: Path = DATA_PATH, ledger_path: Path = LEDGER_PATH, now: Callable[[], datetime] | None = None, client_factory: Callable[[], Any] | None = None, repo_probe: Callable[[], Mapping[str, Any]] | None = None, server_time_probe: Callable[[], Any] | None = None, filesystem_probe: Callable[[], tuple[bool, str]] | None = None, lock_probe: Callable[[], tuple[bool, str]] | None = None, secret_scan_probe: Callable[[], Mapping[str, Any]] | None = None, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY) -> None:
+    def __init__(self, *, data_root: Path = DATA_PATH, ledger_path: Path = LEDGER_PATH, now: Callable[[], datetime] | None = None, client_factory: Callable[[], Any] | None = None, repo_probe: Callable[[], Mapping[str, Any]] | None = None, server_time_probe: Callable[[], Any] | None = None, filesystem_probe: Callable[[], tuple[bool, str]] | None = None, lock_probe: Callable[[], tuple[bool, str]] | None = None, secret_scan_probe: Callable[[], Mapping[str, Any]] | None = None, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy: QuoteUnitLimitPolicy = PRODUCTION_QUOTE_UNIT_LIMIT_POLICY) -> None:
         self.data_root, self.ledger_path = Path(data_root), Path(ledger_path)
         self.now = now or (lambda: datetime.now(UTC))
         self.client_factory = client_factory or BybitPrivateReadClient.from_environment
@@ -99,6 +100,7 @@ class ProductionReadinessService:
         self.lock_probe = lock_probe or self._lock_test
         self.secret_scan_probe = secret_scan_probe or self._secret_hygiene
         self.availability_policy = availability_policy
+        self.quote_limit_policy = quote_limit_policy
 
     @staticmethod
     def _repo_status() -> Mapping[str, Any]:
@@ -240,15 +242,25 @@ class ProductionReadinessService:
             else:
                 add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, f"authoritative_amount_usdt={available_amount}; minimum_v1_usdt=10", "authoritative Spot quote-buy availability is proven and meets the V1 minimum", "")
             rules = client.instrument_rules()
+            observed_at = self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")
+            quote_limit_evidence = unavailable_quote_unit_limit(observed_at_utc=observed_at)
+            if rules.market_buy_quote_maximum is not None and rules.market_order_qty_unit == "quoteCoin" and self.quote_limit_policy.approved_sources:
+                endpoint, field = sorted(self.quote_limit_policy.approved_sources)[0]
+                quote_limit_evidence = QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", endpoint, field, "USDT", rules.market_buy_quote_maximum, True, observed_at, "CONFIRMED")
             v1_results: dict[str, str] = {}
-            for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
-                try:
-                    rules.validate_quote(amount)
-                    if rules.market_buy_quote_maximum is None: raise ValueError("quoteCoin market-buy upper bound is not provided by the authoritative contract")
-                    if amount > rules.market_buy_quote_maximum: raise ValueError("quote amount exceeds authoritative quoteCoin market-buy maximum")
-                    v1_results[str(amount)] = "PASS"
-                except Exception as exc:
+            try:
+                quote_maximum = validate_quote_unit_limit_evidence(quote_limit_evidence, now=self.now(), policy=self.quote_limit_policy)
+            except QuoteUnitLimitValidationError as exc:
+                for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
                     v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
+            else:
+                for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
+                    try:
+                        rules.validate_quote(amount)
+                        if amount > quote_maximum: raise ValueError("quote amount exceeds authoritative quoteCoin market-buy maximum")
+                        v1_results[str(amount)] = "PASS"
+                    except Exception as exc:
+                        v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
             valid_ranges = all(value == "PASS" for value in v1_results.values())
             add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin contract proves V1 $10-$100" if valid_ranges else "quoteCoin market-buy upper bound cannot be proven from current authoritative fields", "Implement an official quote-unit upper-bound source; PROPOSED V2 CHANGE REQUIRED if V1 limits must change")
             add("DETERMINISTIC_ORDER_ID", "operations", "PASS", True, "client order identity and orderLinkId are supported", "deterministic identity support is present")
@@ -284,7 +296,7 @@ class ProductionReadinessService:
         add("REAL_MONEY_AUTHORIZATION", "security", "PASS", False, "granted=false required=true status=NOT_AUTHORIZED", "readiness never grants real-money authorization")
         failures = [item for item in checks if item.required and item.status in {"FAIL", "BLOCKED", "UNAVAILABLE"}]
         state = "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" if not failures else ("READY_FOR_OPERATOR_PREPARATION" if all(item.status not in {"FAIL", "BLOCKED"} for item in failures) else "NOT_READY")
-        return {"status": state, "checks": [item.to_dict() for item in checks], "blockers": [{"check_id": item.check_id, "reason": item.reason, "remediation": item.remediation} for item in failures], "real_money_authorization": {"granted": False, "required": True, "status": "NOT_AUTHORIZED"}, "host": {"hostname": socket.gethostname(), "pid": os.getpid(), "platform": platform.platform(), "python_version": platform.python_version()}}
+        return {"status": state, "checks": [item.to_dict() for item in checks], "blockers": [{"check_id": item.check_id, "reason": item.reason, "remediation": item.remediation} for item in failures], "quote_unit_limit_evidence": quote_limit_evidence.to_dict() if 'quote_limit_evidence' in locals() else unavailable_quote_unit_limit(observed_at_utc=self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")).to_dict(), "real_money_authorization": {"granted": False, "required": True, "status": "NOT_AUTHORIZED"}, "host": {"hostname": socket.gethostname(), "pid": os.getpid(), "platform": platform.platform(), "python_version": platform.python_version()}}
 
 
 def production_connectivity(*, client_factory: Callable[[], Any] | None = None) -> dict[str, Any]:

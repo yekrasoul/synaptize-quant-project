@@ -15,7 +15,7 @@ Verification date: 2026-10-07. Sources are the official Bybit V5 documentation.
 | Spot quote-buy availability provenance | GET | USDT | `spotMaxTradeAmount` is actual available quote amount for Spot trading without borrowable amount | Unified status 6 only | `BybitPrivateReadClient.spot_quote_availability` / `availability.py::validate_spot_quote_availability` | required buying-power proof | Plain Decimal, derived, deprecated, generic, stale, or unknown source fails | [Spot Borrow Quota](https://bybit-exchange.github.io/docs/v5/order/spot-borrow-quota) |
 | `lotSizeFilter.minOrderAmt` | GET | USDT | minimum quote amount | Spot | `InstrumentRules.quote_minimum` | validates `$10` floor | Missing/malformed minimum blocks | [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
 | `lotSizeFilter.maxMarketOrderQty` | GET | base coin quantity | maximum market quantity, not a USDT quote maximum | Spot | `InstrumentRules.max_market_order_qty` | informational only for quoteCoin readiness | Never compare directly to USDT amounts | [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
-| QuoteCoin market-buy upper bound | GET | USDT | no authoritative quote-unit upper-bound field is currently implemented | Spot | `InstrumentRules.market_buy_quote_maximum` remains `None` in production parser | proves `$10/$25/$50/$75/$100` only when supplied by an approved source | Upper bound unproven => `UNAVAILABLE` / `NOT_READY` | [Place Order](https://bybit-exchange.github.io/docs/v5/order/create-order), [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
+| QuoteCoin market-buy upper bound | GET | USDT | no authoritative quote-unit upper-bound field is currently implemented | Spot | `QuoteUnitLimitEvidence` / `quote_limits.py`; production policy is empty | proves `$10/$25/$50/$75/$100` only when supplied by an approved source | Upper bound unproven => `UNAVAILABLE` / `NOT_READY`; no base-quantity price conversion | [Place Order](https://bybit-exchange.github.io/docs/v5/order/create-order), [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument), [Account Instrument Info](https://bybit-exchange.github.io/docs/v5/account/instrument) |
 | `/v5/market/time` `timeNano`/`timeSecond` | GET | ns/s converted to ms | authoritative Bybit server clock | public | `BybitPrivateReadClient.server_time_ms` | midpoint clock-skew measurement | Malformed/unavailable time is unavailable | [Server Time](https://bybit-exchange.github.io/docs/v5/market/time) |
 | `/v5/market/instruments-info` | GET | Spot metadata | BTCUSDT, BTC/USDT, Trading, precision and limits | public Spot | `instrument_rules` | instrument readiness | Malformed/invalid rules block | [Instrument Info](https://bybit-exchange.github.io/docs/v5/market/instrument) |
 | `/v5/order/realtime` and `/v5/order/history` | GET | order identity | order state bound to exact `orderLinkId` | Unified Spot | `lookup_order` | connectivity and recovery | Ambiguous identity blocks | [Open & Closed Orders](https://bybit-exchange.github.io/docs/v5/order/open-order) |
@@ -43,3 +43,13 @@ requires an explicit `SpotQuoteAvailability` provenance record, exact approved e
 and field, supported account type, `authoritative=true`, UTC observation time, maximum
 age of 60 seconds, and no more than 5 seconds of future tolerance. Invalid or unavailable
 provenance blocks before any live submission transport can be invoked.
+
+## Phase 5.8 quote-unit limit policy
+
+The official Create Order, public Instruments Info, and Account Instruments Info
+contracts document Spot `marketUnit=quoteCoin` but do not expose an authoritative
+USDT maximum for the exact BTCUSDT Market Buy operation. `maxOrderAmt` is deprecated,
+and `maxMarketOrderQty` is not treated as a quote-unit value. The production policy
+`APPROVED_QUOTE_UNIT_LIMIT_SOURCES` is therefore empty and
+`market_buy_quote_maximum` remains `None`. `/v5/order/pre-check` is a POST focused on
+UTA IMR/MMR calculations and is not used as quote-limit evidence.
