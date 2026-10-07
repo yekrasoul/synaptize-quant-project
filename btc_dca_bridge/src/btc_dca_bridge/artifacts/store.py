@@ -38,22 +38,26 @@ class ArtifactType(str, Enum):
     MARKET = "market"
     SENTIMENT = "sentiment"
     DECISION = "decision"
+    RUN = "run"
 
 
 _DIRECTORIES = {
     ArtifactType.MARKET: "market",
     ArtifactType.SENTIMENT: "sentiment",
     ArtifactType.DECISION: "decisions",
+    ArtifactType.RUN: "runs",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
     ArtifactType.SENTIMENT: "sentiment_snapshot",
     ArtifactType.DECISION: "decision",
+    ArtifactType.RUN: "shadow_run",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
     ArtifactType.SENTIMENT: "retrieved_at_utc",
     ArtifactType.DECISION: "created_at_utc",
+    ArtifactType.RUN: "completed_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -183,9 +187,27 @@ class ArtifactStore:
     def _validate(self, kind: ArtifactType, payload: dict[str, Any], *, corrupt: bool = False) -> None:
         try:
             validate_artifact(_SCHEMAS[kind], payload)
-        except SchemaValidationError as exc:
+            if kind is ArtifactType.RUN:
+                self._validate_run_manifest_identity(payload)
+        except (SchemaValidationError, ValueError) as exc:
             error = ArtifactCorruptError if corrupt else ArtifactSchemaValidationError
             raise error(str(exc)) from exc
+
+    @staticmethod
+    def _validate_run_manifest_identity(payload: dict[str, Any]) -> None:
+        run_id = payload["run_id"]
+        completed = _parse_timestamp(payload["completed_at_utc"], "completed_at_utc")
+        if payload["started_at_utc"] != payload["completed_at_utc"]:
+            raise ValueError("shadow run manifest must use one canonical run instant")
+        date_path = completed.strftime("%Y/%m/%d")
+        for field, directory in (
+            ("market_artifact", "market"),
+            ("sentiment_artifact", "sentiment"),
+            ("decision_artifact", "decisions"),
+        ):
+            expected = f"{directory}/{date_path}/{run_id}.json"
+            if payload[field]["path"] != expected:
+                raise ValueError(f"{field} path does not match run identity and UTC date")
 
     def _directory(self, kind: ArtifactType, timestamp: datetime) -> Path:
         timestamp = _utc(timestamp, "artifact timestamp")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 
@@ -13,9 +14,10 @@ from .errors import BtcDcaError
 from .engine import calculate_decision
 from .ledger import read_executions
 from .models import MarketSnapshot
-from .paths import CONFIG_PATH, LEDGER_PATH
+from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
 from .portfolio import derive_portfolio
 from .schemas import validate_all_schemas, validate_artifact
+from .shadow import build_live_shadow_pipeline, format_shadow_output
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -39,7 +41,38 @@ def _parser() -> argparse.ArgumentParser:
     calculate.add_argument("--config", type=Path, default=CONFIG_PATH)
     calculate.add_argument("--snapshot-id", default="market_cli_input")
     calculate.add_argument("--captured-at", default="1970-01-08T00:00:00Z")
+
+    run = subparsers.add_parser("run", help="run the read-only shadow pipeline")
+    run.add_argument("--mode", choices=("shadow",), default="shadow")
+    run.add_argument("--run-id")
+    run.add_argument("--run-at", help="injected RFC 3339 UTC run time")
+    run.add_argument("--config", type=Path, default=CONFIG_PATH)
+    run.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    run.add_argument("--data-root", type=Path, default=DATA_PATH)
     return parser
+
+
+def _run_time(value: str | None) -> datetime:
+    if value is None:
+        return datetime.now(UTC)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("--run-at must be an RFC 3339 UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("--run-at must be an RFC 3339 UTC timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _run_shadow(args: argparse.Namespace):
+    run_at = _run_time(args.run_at)
+    pipeline = build_live_shadow_pipeline(
+        run_at_utc=run_at,
+        config_path=args.config,
+        ledger_path=args.ledger,
+        data_root=args.data_root,
+    )
+    return pipeline.run(run_at_utc=run_at, run_id=args.run_id)
 
 
 def _calculate(args: argparse.Namespace) -> dict[str, object]:
@@ -103,7 +136,9 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if args.command == "calculate":
+        if args.command == "run":
+            result = _run_shadow(args)
+        elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
             result = _portfolio(args)
@@ -112,5 +147,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (BtcDcaError, ValueError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}), file=sys.stderr)
         return 2
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.command == "run":
+        print(format_shadow_output(result))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
     return 0

@@ -248,3 +248,38 @@ class InvalidArtifactPathError(ArtifactError):
 
 class ArtifactSchemaValidationError(ArtifactError):
     default_code = ArtifactErrorCode.SCHEMA_VALIDATION_FAILED
+
+
+class ShadowRunErrorCode(str, Enum):
+    """Stable stage failures for read-only shadow composition."""
+
+    MARKET_DATA_FAILED = "MARKET_DATA_FAILED"
+    SENTIMENT_FAILED = "SENTIMENT_FAILED"
+    LEDGER_FAILED = "LEDGER_FAILED"
+    DECISION_FAILED = "DECISION_FAILED"
+    PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
+    RUN_ALREADY_COMPLETED = "RUN_ALREADY_COMPLETED"
+
+
+class ShadowRunError(BtcDcaError):
+    """A shadow stage failed without producing a completed run manifest."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: ShadowRunErrorCode,
+        cause: Exception | None = None,
+    ) -> None:
+        self.code = code
+        self.stage = code.value.removesuffix("_FAILED")
+        self.cause = cause
+        super().__init__(f"{code.value}: {message}")
+
+
+class ShadowRunAlreadyCompletedError(ShadowRunError):
+    def __init__(self, run_id: str) -> None:
+        super().__init__(
+            f"completed shadow run already exists: {run_id}",
+            code=ShadowRunErrorCode.RUN_ALREADY_COMPLETED,
+        )

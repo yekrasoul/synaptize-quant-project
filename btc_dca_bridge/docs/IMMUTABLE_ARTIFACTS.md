@@ -12,6 +12,7 @@ data/
   market/2026/10/07/run_20261007T120000Z_a1b2c3d4e5f6.json.sha256
   sentiment/2026/10/07/run_20261007T120000Z_a1b2c3d4e5f6.json
   decisions/2026/10/07/run_20261007T120000Z_a1b2c3d4e5f6.json
+  runs/2026/10/07/run_20261007T120000Z_a1b2c3d4e5f6.json
 ```
 
 One logical orchestration run supplies the same `run_id` to all three writes. A run ID is `run_YYYYMMDDTHHMMSSZ_<suffix>`; the suffix is 8–64 filesystem-safe ASCII letters, digits, `_`, or `-`, and must start alphanumeric. Callers inject the timestamp and stable suffix, so tests and future orchestration can be deterministic. IDs containing separators, traversal, nulls, or ambiguous forms are rejected.
@@ -25,3 +26,7 @@ The store validates each artifact against its canonical existing schema before c
 Temporary files are written and fsynced in the final directory. On supported macOS and Linux filesystems, `os.link(temp, final)` atomically creates a new directory entry and fails with `EEXIST` if either concurrent writer already created the target. This deliberately avoids `os.replace`, which can overwrite. The sidecar is published before the JSON payload; a crash can leave only an ignored/orphan sidecar, never a partial canonical `.json` artifact. Temporary files are cleaned on handled failure. A filesystem without same-directory hard-link or directory-fsync support fails closed with `PERSISTENCE_IO_ERROR` rather than weakening no-clobber semantics.
 
 Failures distinguish invalid paths, already-existing artifacts, missing artifacts, schema-validation failure, corrupt stored content/digests, and I/O. There is no database, cloud storage, scheduling, market retrieval, allocation calculation, execution, or ledger mutation in this layer.
+
+For shadow composition, the `runs/` artifact is a completion manifest published
+only after market, sentiment, and decision artifacts. Component artifacts without
+a valid run manifest are partial evidence, never a completed run.

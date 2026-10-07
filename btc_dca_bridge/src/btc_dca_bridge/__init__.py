@@ -6,6 +6,7 @@ from .ledger import executions_for_month, read_executions
 from .market_data.snapshot import build_market_snapshot
 from .models import MarketSnapshot, PortfolioState, PortfolioSummary, StrategyDecision
 from .portfolio import derive_portfolio
+from .shadow import ShadowPipeline, ShadowRunResult
 
 __all__ = [
     "MarketSnapshot",
@@ -13,6 +14,8 @@ __all__ = [
     "PortfolioSummary",
     "StrategyConfig",
     "StrategyDecision",
+    "ShadowPipeline",
+    "ShadowRunResult",
     "calculate_decision",
     "calculate_drawdown",
     "build_market_snapshot",

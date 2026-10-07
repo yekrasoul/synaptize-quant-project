@@ -21,6 +21,7 @@ SCHEMA_FILES = {
     "portfolio_state": "portfolio_state.schema.json",
     "portfolio_state_1_0": "portfolio_state_v1_0.schema.json",
     "sentiment_snapshot": "sentiment_snapshot.schema.json",
+    "shadow_run": "shadow_run.schema.json",
 }
 
 
