@@ -280,9 +280,15 @@ def _summarize_shadow(args: argparse.Namespace) -> dict[str, object]:
         market = shadow.get("market_snapshot", {})
         sentiment = shadow.get("sentiment_snapshot", {})
         decision = shadow.get("decision", {})
+        market_metadata = market.get("market_data_metadata", {})
+        source = (
+            market_metadata.get("source", "unknown")
+            if isinstance(market_metadata, dict)
+            else "unknown"
+        )
         lines.extend(
             (
-                f"- Market source: `{market.get('source', 'unknown')}`",
+                f"- Market source: `{source}`",
                 f"- Drawdown: `{decision.get('drawdown_percent', 'unknown')}%`",
                 f"- Fear & Greed: `{sentiment.get('value', 'unknown')}`",
                 f"- Final purchase: `${decision.get('final_purchase_usd', 'unknown')}`",
