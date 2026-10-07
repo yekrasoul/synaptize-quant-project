@@ -76,11 +76,26 @@ class ProductionEvidenceTests(unittest.TestCase):
         legacy.pop("quote_unit_limit_result")
         legacy["schema_version"] = "5.7.0"
         legacy["evidence_id"] = "evidence-" + "c" * 32
+        legacy["status"] = "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION"
         receipt = ArtifactStore(self.root / "data").persist_production_evidence(legacy)
         self.assertEqual(receipt.schema_version, "5.7.0")
         result = self.service.verify(legacy["evidence_id"], current_account_fingerprint=_account_fingerprint(FakeClient())[0])
         self.assertEqual(result["status"], "VALID_NOT_READY")
         self.assertNotEqual(result["status"], "CORRUPT")
+        self.assertIn("legacy evidence predates Phase 5.8 quote-unit-limit proof", result["reason"])
+
+    def test_legacy_ready_bundle_blocks_preauthorization(self):
+        bundle, _ = self.service.collect()
+        original = self.root / "data" / "production_evidence" / "2026" / "10" / "07" / f"{bundle['evidence_id']}.json"
+        original.unlink()
+        original.with_suffix(original.suffix + ".sha256").unlink()
+        legacy = dict(bundle)
+        legacy.pop("quote_unit_limit_result")
+        legacy.update({"schema_version": "5.7.0", "status": "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "evidence_id": "evidence-" + "f" * 32})
+        ArtifactStore(self.root / "data").persist_production_evidence(legacy)
+        result = preauthorization_status(self.service)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertNotEqual(result["status"], "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION")
 
     def test_58_requires_quote_unit_limit_result_and_unknown_version_is_explicit(self):
         bundle, _ = self.service.collect()

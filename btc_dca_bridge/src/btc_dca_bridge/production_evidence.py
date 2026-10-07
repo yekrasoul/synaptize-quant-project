@@ -214,6 +214,14 @@ class ProductionEvidenceService:
                 return {"status": "INVALID", "evidence_id": evidence_id, "reason": "ACCOUNT_IDENTITY_UNAVAILABLE: current fingerprint is required"}
             if bundle.get("account_identity_fingerprint") != current_account_fingerprint:
                 return {"status": "INVALID", "evidence_id": evidence_id, "reason": "account identity fingerprint mismatch"}
+        if bundle.get("schema_version") == "5.7.0":
+            return {
+                "status": "VALID_NOT_READY",
+                "evidence_id": evidence_id,
+                "reason": "legacy evidence predates Phase 5.8 quote-unit-limit proof",
+                "expires_at_utc": bundle["expires_at_utc"],
+                "real_money_authorization": dict(AUTHORIZATION),
+            }
         ready = bundle.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" and bundle.get("account_identity_status") == "PROVEN"
         return {"status": "VALID_READY_FOR_SEPARATE_AUTHORIZATION" if ready else "VALID_NOT_READY", "evidence_id": evidence_id, "expires_at_utc": bundle["expires_at_utc"], "real_money_authorization": dict(AUTHORIZATION)}
 
