@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/sentiment_snapshot/1.0.0",
+  "title": "SentimentSnapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshot_id", "source", "index_name", "value", "classification", "observed_at_utc", "retrieved_at_utc", "upstream_identifier", "validation"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "snapshot_id": {"type": "string", "pattern": "^sentiment_[A-Za-z0-9_-]+$"},
+    "source": {"const": "alternative_me_crypto_fear_greed"},
+    "index_name": {"const": "Crypto Fear & Greed Index"},
+    "value": {"type": "integer", "minimum": 0, "maximum": 100},
+    "classification": {"type": ["string", "null"]},
+    "observed_at_utc": {"type": "string", "format": "date-time"},
+    "retrieved_at_utc": {"type": "string", "format": "date-time"},
+    "upstream_identifier": {"const": "https://api.alternative.me/fng/?limit=1&format=json"},
+    "validation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["value_in_range", "fresh", "source_identity_valid"],
+      "properties": {
+        "value_in_range": {"const": true}, "fresh": {"const": true}, "source_identity_valid": {"const": true}
+      }
+    }
+  }
+}

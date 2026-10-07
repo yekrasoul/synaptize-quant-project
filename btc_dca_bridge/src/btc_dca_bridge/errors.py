@@ -132,3 +132,69 @@ class AllSourcesUnavailableError(DataUnavailableError):
         self.fallback_failure = fallback_failure
         self.fallback_attempted = True
         super().__init__(message, source=fallback_source)
+
+
+class SentimentErrorCode(str, Enum):
+    """Stable machine-readable failure categories for sentiment callers."""
+
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    RATE_LIMITED = "RATE_LIMITED"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+    INVALID_SENTIMENT_VALUE = "INVALID_SENTIMENT_VALUE"
+    DATA_STALE = "DATA_STALE"
+    INVALID_TIMESTAMP = "INVALID_TIMESTAMP"
+
+
+class SentimentError(BtcDcaError):
+    """Base failure raised by the independent sentiment boundary."""
+
+    default_code = SentimentErrorCode.SOURCE_UNAVAILABLE
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: SentimentErrorCode | None = None,
+        status_code: int | None = None,
+        retryable: bool = False,
+        source: str | None = None,
+    ) -> None:
+        self.code = code or self.default_code
+        self.status_code = status_code
+        self.retryable = retryable
+        self.source = source
+        super().__init__(f"{self.code.value}: {message}")
+
+
+class SentimentSourceUnavailableError(SentimentError):
+    """The configured source could not provide a usable reading."""
+
+
+class InvalidSentimentResponseError(SentimentError):
+    """The source response lacks required provenance or has malformed JSON."""
+
+    default_code = SentimentErrorCode.INVALID_RESPONSE
+
+
+class InvalidSentimentValueError(SentimentError):
+    """The source value is not an integer in the V1 range 0..100."""
+
+    default_code = SentimentErrorCode.INVALID_SENTIMENT_VALUE
+
+
+class SentimentDataStaleError(SentimentError):
+    """The source observation exceeds the configured sentiment age."""
+
+    default_code = SentimentErrorCode.DATA_STALE
+
+
+class InvalidSentimentTimestampError(SentimentError):
+    """The source observation timestamp is malformed or impossible."""
+
+    default_code = SentimentErrorCode.INVALID_TIMESTAMP
+
+
+class SentimentRateLimitedError(SentimentError):
+    """The public sentiment source rejected the request due to rate limits."""
+
+    default_code = SentimentErrorCode.RATE_LIMITED
