@@ -204,7 +204,7 @@ class CanaryPreparationTests(unittest.TestCase):
         from btc_dca_bridge.artifacts import ArtifactType
         from btc_dca_bridge.execution import client_order_id, make_order_intent
         intent = make_order_intent(self.decision, run_id=self.run_id, created_at_utc=self.decision["created_at_utc"])
-        attempt = OrderSubmissionAttempt(self.run_id, intent.decision_id, intent.order_intent_id, intent.client_order_id, Decimal("25"), "a" * 64, self.decision["created_at_utc"])
+        attempt = OrderSubmissionAttempt(self.run_id, "canary-" + "a" * 32, "approval-" + "a" * 32, "b" * 64, intent.decision_id, intent.order_intent_id, intent.client_order_id, Decimal("25"), "a" * 64, "Bybit", "spot", "BTCUSDT", "Buy", "Market", self.decision["created_at_utc"])
         ArtifactStore(data).persist(ArtifactType.ORDER_SUBMISSION_ATTEMPT, attempt, run_id=self.run_id)
         result = self.prepare(data=data)
         self.assertEqual(result.manifest.canary_status, "BLOCKED")

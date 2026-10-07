@@ -29,7 +29,18 @@ SCHEMA_FILES = {
     "canary_manifest": "canary_manifest.schema.json",
     "order_submission": "order_submission.schema.json",
     "reconciliation_result": "reconciliation_result.schema.json",
+    "submission_reconciliation": "submission_reconciliation.schema.json",
 }
+
+def validate_live_approval(artifact: dict[str, Any], schemas_path: Path = SCHEMAS_PATH) -> None:
+    """Validate the approval artifact without expanding the legacy schema set."""
+    schema = {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": False, "required": ["schema_version", "approval_id", "canary_id", "manifest_sha256", "decision_id", "order_intent_id", "client_order_id", "approved_amount_usdt", "order_payload_fingerprint", "exchange", "market_type", "symbol", "side", "order_type", "approved_at_utc", "expires_at_utc", "standing_authorization"], "properties": {"schema_version": {"const": "5.4.0"}, "approval_id": {"type": "string", "pattern": "^approval-[a-f0-9]{32}$"}, "canary_id": {"type": "string", "pattern": "^canary-[a-f0-9]{32}$"}, "manifest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "decision_id": {"type": "string"}, "order_intent_id": {"type": "string"}, "client_order_id": {"type": "string", "pattern": "^dca-[a-f0-9]{32}$"}, "approved_amount_usdt": {"type": "string"}, "order_payload_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "exchange": {"const": "Bybit"}, "market_type": {"const": "spot"}, "symbol": {"const": "BTCUSDT"}, "side": {"const": "Buy"}, "order_type": {"const": "Market"}, "approved_at_utc": {"type": "string", "format": "date-time"}, "expires_at_utc": {"type": "string", "format": "date-time"}, "standing_authorization": {"const": False}}}
+    Draft202012Validator.check_schema(schema)
+    errors = sorted(Draft202012Validator(schema, format_checker=FormatChecker()).iter_errors(artifact), key=lambda error: list(error.path))
+    if errors:
+        error = errors[0]
+        location = ".".join(str(part) for part in error.absolute_path) or "<root>"
+        raise SchemaValidationError(f"live_approval schema violation at {location}: {error.message}")
 
 
 def load_schema(name: str, schemas_path: Path = SCHEMAS_PATH) -> dict[str, Any]:
