@@ -22,7 +22,7 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(snapshot.monthly_budget["remaining_usdt"], "500")
 
     def test_plan_health_and_audit_are_read_only_on_empty_store(self):
-        self.assertEqual(self.service.health()["status"], "HEALTHY")
+        self.assertEqual(self.service.health()["status"], "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY")
         audit = self.service.audit_run("run_20261007T120000Z_ops00001")
         self.assertEqual(audit["status"], "invalid")
         self.assertFalse((self.root / "data").exists())

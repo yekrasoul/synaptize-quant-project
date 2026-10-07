@@ -21,8 +21,11 @@ Order POST is not used, and no order-create probe is used.
 
 The operator commands `production-blockers` and `contract-status` are read-only.
 They report the active `MARKET_CONTRACT` blocker, current capability snapshot,
-and the immutable authorization state. No command turns the blocker into a
-pass.
+and the immutable authorization state. The blocker clears only when both an
+explicitly approved source policy and fresh `QuoteUnitLimitEvidence` pass the
+shared quote-limit validator. Policy presence alone and evidence alone are
+insufficient. The current Bybit provider reports `NOT_EXPOSED`, and the
+production approved-source set remains empty.
 
 ## Future contract-change boundary
 
@@ -45,11 +48,14 @@ changes `APPROVED_QUOTE_UNIT_LIMIT_SOURCES` automatically.
 
 ## Operator interpretation
 
-`HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY` means internal safety, artifact, and
-configuration checks are healthy while an external contract prerequisite is
-missing. `BROKEN`/`CORRUPT` means the software or its evidence cannot be
-trusted. The former permits observation and research only; neither permits an
-order.
+Health checks integrity first, then execution configuration, unresolved
+submission/reconciliation state, and finally external contract blockers. If
+reconciliation is unresolved, health reports
+`HEALTHY_WITH_UNRESOLVED_RECONCILIATION` and may include the external blocker
+as supplemental context. `HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY` means internal
+operational state is otherwise healthy while an external contract prerequisite
+is missing. `CORRUPT` means software evidence cannot be trusted. These states
+permit observation and recovery only; none permits an order.
 
 `live_execution_enabled=false`, `kill_switch=true`, and
 `order_submission=not_implemented` remain checked-in production defaults.

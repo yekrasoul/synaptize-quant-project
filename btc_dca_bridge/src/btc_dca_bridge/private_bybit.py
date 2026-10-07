@@ -318,7 +318,8 @@ class BybitPrivateReadClient:
         result = self._read(INSTRUMENTS_INFO, {"category": "spot", "symbol": "BTCUSDT"}, public=True)
         return parse_bybit_spot_instrument_info({"retCode": 0, "result": result})
 
-    def quote_unit_limit_evidence(self) -> QuoteUnitLimitEvidence:
+    @staticmethod
+    def quote_unit_limit_evidence() -> QuoteUnitLimitEvidence:
         """Report the documented absence of an authoritative quote ceiling.
 
         Public lot-size metadata exposes a base-coin quantity, not a quote-USDT
