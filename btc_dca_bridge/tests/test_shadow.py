@@ -234,6 +234,12 @@ class ShadowPipelineTest(unittest.TestCase):
         first = pipeline.run(run_at_utc=NOW)
         with self.assertRaises(ShadowRunAlreadyCompletedError):
             pipeline.run(run_at_utc=NOW, run_id=first.run_id)
+        with self.assertRaises(ShadowRunAlreadyCompletedError):
+            pipeline.run(
+                run_at_utc=datetime(2026, 10, 8, 0, 1, tzinfo=UTC),
+                run_id=first.run_id,
+                run_identity_at_utc=NOW,
+            )
 
         partial_root = self.root / "partial"
         store = ArtifactStore(partial_root)

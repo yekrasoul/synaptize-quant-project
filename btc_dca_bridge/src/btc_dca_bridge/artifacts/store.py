@@ -178,6 +178,29 @@ class ArtifactStore:
             raise ArtifactCorruptError("artifact does not use canonical serialization")
         return decoded
 
+    def find_completed_run(self, *, run_id: str) -> dict[str, Any]:
+        """Find one exact completed manifest by safe identity across UTC dates."""
+        safe_run_id = _validate_run_id(run_id)
+        run_root = self.root / _DIRECTORIES[ArtifactType.RUN]
+        matches = sorted(run_root.glob(f"*/*/*/{safe_run_id}.json"))
+        if not matches:
+            raise ArtifactNotFoundError(f"completed run not found: {safe_run_id}")
+        if len(matches) != 1:
+            raise ArtifactCorruptError(
+                f"multiple completed manifests exist for run identity: {safe_run_id}"
+            )
+        path = matches[0]
+        try:
+            year, month, day = (int(part) for part in path.parts[-4:-1])
+            artifact_date = datetime(year, month, day, tzinfo=UTC)
+        except (TypeError, ValueError) as exc:
+            raise ArtifactCorruptError("completed run has an invalid UTC directory") from exc
+        return self.read(
+            ArtifactType.RUN,
+            run_id=safe_run_id,
+            artifact_date_utc=artifact_date,
+        )
+
     def _payload(self, artifact: Mapping[str, Any] | Any) -> dict[str, Any]:
         candidate = artifact.to_dict() if hasattr(artifact, "to_dict") else artifact
         if not isinstance(candidate, Mapping):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,8 +17,15 @@ from .ledger import read_executions
 from .models import MarketSnapshot
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
 from .portfolio import derive_portfolio
+from .production import (
+    ProductionRunContext,
+    read_json_object,
+    run_production_shadow,
+    write_json_object,
+)
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
+from .notifications import TelegramNotifier, format_failure_message, format_success_message
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,6 +57,40 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, default=CONFIG_PATH)
     run.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     run.add_argument("--data-root", type=Path, default=DATA_PATH)
+
+    production_context = subparsers.add_parser(
+        "production-context", help="derive deterministic production-shadow identity"
+    )
+    production_context.add_argument("--trigger", choices=("scheduled", "manual"), required=True)
+    production_context.add_argument("--process-started-at", required=True)
+    production_context.add_argument("--trigger-created-at")
+    production_context.add_argument("--trigger-id", required=True)
+    production_context.add_argument("--output", type=Path, required=True)
+    production_context.add_argument("--github-output", type=Path)
+
+    production = subparsers.add_parser(
+        "production-shadow", help="run the canonical scheduled/manual production shadow"
+    )
+    production.add_argument("--context", type=Path, required=True)
+    production.add_argument("--result-json", type=Path, required=True)
+    production.add_argument("--config", type=Path, default=CONFIG_PATH)
+    production.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    production.add_argument("--data-root", type=Path, default=DATA_PATH)
+    production.add_argument("--github-output", type=Path)
+
+    notify = subparsers.add_parser(
+        "notify-shadow", help="send Telegram from a structured production result"
+    )
+    notify.add_argument("--result-json", type=Path, required=True)
+    notify.add_argument("--failure-stage")
+    notify.add_argument("--failure-category")
+
+    summary = subparsers.add_parser(
+        "summarize-shadow", help="write a structured production-shadow job summary"
+    )
+    summary.add_argument("--result-json", type=Path, required=True)
+    summary.add_argument("--summary-file", type=Path, required=True)
+    summary.add_argument("--retention-status", required=True)
     return parser
 
 
@@ -133,11 +175,122 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _production_context(args: argparse.Namespace) -> dict[str, object]:
+    context = ProductionRunContext.create(
+        trigger_type=args.trigger,
+        process_started_at_utc=_run_time(args.process_started_at),
+        trigger_id=args.trigger_id,
+        trigger_created_at_utc=(
+            _run_time(args.trigger_created_at) if args.trigger_created_at else None
+        ),
+    )
+    payload = context.to_dict()
+    write_json_object(args.output, payload)
+    if args.github_output is not None:
+        with args.github_output.open("a", encoding="utf-8") as handle:
+            handle.write(f"run_id={context.run_id}\n")
+            handle.write(f"logical_run_at_utc={context.logical_run_at_utc}\n")
+            handle.write(f"trigger_type={context.trigger_type}\n")
+    return payload
+
+
+def _production_shadow(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    context = ProductionRunContext.from_dict(read_json_object(args.context))
+    result = run_production_shadow(
+        context,
+        config_path=args.config,
+        ledger_path=args.ledger,
+        data_root=args.data_root,
+    ).to_dict()
+    write_json_object(args.result_json, result)
+    if args.github_output is not None:
+        with args.github_output.open("a", encoding="utf-8") as handle:
+            handle.write(f"status={result['status']}\n")
+            handle.write(f"run_id={result['run_id']}\n")
+    return result, 0 if result["status"] in {"completed", "already_completed"} else 2
+
+
+def _notify_shadow(args: argparse.Namespace) -> dict[str, object]:
+    outcome = read_json_object(args.result_json)
+    if outcome.get("status") == "already_completed" and not args.failure_category:
+        outcome["notification_status"] = "suppressed"
+        outcome["duplicate_notification_suppressed"] = True
+        write_json_object(args.result_json, outcome)
+        return outcome
+    if args.failure_category or outcome.get("status") == "failed":
+        message = format_failure_message(
+            outcome,
+            stage=args.failure_stage,
+            category=args.failure_category,
+        )
+    elif outcome.get("status") == "completed":
+        message = format_success_message(outcome)
+    else:
+        raise ValueError("structured production result has unsupported status")
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+    try:
+        delivery = TelegramNotifier(token, chat_id).send(message)
+    except (BtcDcaError, ValueError):
+        outcome["notification_status"] = "failed"
+        write_json_object(args.result_json, outcome)
+        raise
+    outcome["notification_status"] = "sent"
+    outcome["notification_delivery"] = {
+        "channel": "telegram",
+        "message_id": delivery.message_id,
+        "attempts": delivery.attempts,
+    }
+    write_json_object(args.result_json, outcome)
+    return outcome
+
+
+def _summarize_shadow(args: argparse.Namespace) -> dict[str, object]:
+    outcome = read_json_object(args.result_json)
+    lines = [
+        "## Production shadow",
+        "",
+        f"- Run ID: `{outcome.get('run_id', 'unknown')}`",
+        f"- Trigger: `{outcome.get('trigger_type', 'unknown')}`",
+        f"- Logical slot: `{outcome.get('logical_run_at_utc', 'unknown')}`",
+        f"- Status: `{outcome.get('status', 'unknown')}`",
+        f"- Retention: `{args.retention_status}`",
+        f"- Notification: `{outcome.get('notification_status', 'unknown')}`",
+        "- Mode: `SHADOW — NO ORDER EXECUTED`",
+    ]
+    shadow = outcome.get("shadow_result")
+    if isinstance(shadow, dict):
+        market = shadow.get("market_snapshot", {})
+        sentiment = shadow.get("sentiment_snapshot", {})
+        decision = shadow.get("decision", {})
+        lines.extend(
+            (
+                f"- Market source: `{market.get('source', 'unknown')}`",
+                f"- Drawdown: `{decision.get('drawdown_percent', 'unknown')}%`",
+                f"- Fear & Greed: `{sentiment.get('value', 'unknown')}`",
+                f"- Final purchase: `${decision.get('final_purchase_usd', 'unknown')}`",
+            )
+        )
+    args.summary_file.parent.mkdir(parents=True, exist_ok=True)
+    with args.summary_file.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return {"status": "written", "run_id": outcome.get("run_id")}
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        exit_code = 0
         if args.command == "run":
             result = _run_shadow(args)
+        elif args.command == "production-context":
+            result = _production_context(args)
+        elif args.command == "production-shadow":
+            result, exit_code = _production_shadow(args)
+        elif args.command == "notify-shadow":
+            result = _notify_shadow(args)
+        elif args.command == "summarize-shadow":
+            result = _summarize_shadow(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
@@ -151,4 +304,4 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(format_shadow_output(result))
     else:
         print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+    return exit_code

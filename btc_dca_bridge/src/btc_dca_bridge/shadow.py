@@ -113,20 +113,27 @@ class ShadowPipeline:
         self._ledger_reader = ledger_reader
         self._decision_calculator = decision_calculator
 
-    def run(self, *, run_at_utc: datetime, run_id: str | None = None) -> ShadowRunResult:
+    def run(
+        self,
+        *,
+        run_at_utc: datetime,
+        run_id: str | None = None,
+        run_identity_at_utc: datetime | None = None,
+    ) -> ShadowRunResult:
         run_at = _utc(run_at_utc)
-        shared_run_id = run_id or _default_run_id(run_at)
+        identity_at = _utc(run_identity_at_utc) if run_identity_at_utc is not None else run_at
+        shared_run_id = run_id or _default_run_id(identity_at)
         # make_run_id performs the canonical path-safety validation even when supplied.
         if run_id is not None:
             try:
                 suffix = shared_run_id.split("_", 2)[-1] if isinstance(shared_run_id, str) else ""
-                expected_prefix = f"run_{run_at.strftime('%Y%m%dT%H%M%SZ')}_"
+                expected_prefix = f"run_{identity_at.strftime('%Y%m%dT%H%M%SZ')}_"
                 if not isinstance(shared_run_id, str) or not shared_run_id.startswith(expected_prefix):
                     raise ValueError("run identity timestamp mismatch")
-                make_run_id(run_at, suffix)
+                make_run_id(identity_at, suffix)
             except Exception as exc:
                 self._raise(ShadowRunErrorCode.PERSISTENCE_FAILED, "invalid run identity", exc)
-        self._reject_completed(shared_run_id, run_at)
+        self._reject_completed(shared_run_id)
 
         try:
             market = self.market_provider.get_market_snapshot(captured_at_utc=run_at)
@@ -198,9 +205,9 @@ class ShadowPipeline:
             manifest_receipt,
         )
 
-    def _reject_completed(self, run_id: str, run_at: datetime) -> None:
+    def _reject_completed(self, run_id: str) -> None:
         try:
-            self.artifact_store.read(ArtifactType.RUN, run_id=run_id, artifact_date_utc=run_at)
+            self.artifact_store.find_completed_run(run_id=run_id)
         except ArtifactNotFoundError:
             return
         except ArtifactError as exc:

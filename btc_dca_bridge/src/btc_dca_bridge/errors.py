@@ -283,3 +283,30 @@ class ShadowRunAlreadyCompletedError(ShadowRunError):
             f"completed shadow run already exists: {run_id}",
             code=ShadowRunErrorCode.RUN_ALREADY_COMPLETED,
         )
+
+
+class NotificationErrorCode(str, Enum):
+    """Stable delivery failures for notification callers."""
+
+    NOTIFICATION_TIMEOUT = "NOTIFICATION_TIMEOUT"
+    NOTIFICATION_RATE_LIMITED = "NOTIFICATION_RATE_LIMITED"
+    NOTIFICATION_HTTP_ERROR = "NOTIFICATION_HTTP_ERROR"
+    NOTIFICATION_INVALID_RESPONSE = "NOTIFICATION_INVALID_RESPONSE"
+    NOTIFICATION_FAILED = "NOTIFICATION_FAILED"
+
+
+class NotificationError(BtcDcaError):
+    """Telegram delivery failed without changing canonical run state."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: NotificationErrorCode,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        self.code = code
+        self.status_code = status_code
+        self.retryable = retryable
+        super().__init__(f"{code.value}: {message}")
