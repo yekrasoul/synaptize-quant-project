@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
+from .blocked_production import ProductionBlocker, active_production_blockers
 from .config import load_execution_config, load_strategy_config
 from .errors import ArtifactCorruptError, ArtifactNotFoundError, LedgerValidationError
 from .ledger import confirmed_executions, executions_for_month, read_executions
@@ -103,10 +104,11 @@ class OperationsSnapshot:
 
 
 class OperationsService:
-    def __init__(self, *, data_root: Path, ledger_path: Path, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, *, data_root: Path, ledger_path: Path, now: Callable[[], datetime] | None = None, blocker_evaluator: Callable[..., tuple[ProductionBlocker, ...]] | None = None) -> None:
         self.store = ArtifactStore(data_root)
         self.data_root, self.ledger_path = Path(data_root), Path(ledger_path)
         self.now = now or (lambda: datetime.now(UTC))
+        self.blocker_evaluator = blocker_evaluator or active_production_blockers
 
     def _items(self, kind: ArtifactType) -> list[tuple[dict[str, Any], str, Path]]:
         directories = {ArtifactType.DECISION: "decisions", ArtifactType.ORDER_INTENT: "order_intents", ArtifactType.CANARY_MANIFEST: "canary_manifests", ArtifactType.LIVE_APPROVAL: "live_approvals", ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempts", ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcomes", ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations"}
@@ -348,5 +350,19 @@ class OperationsService:
             return {"status": "BLOCKED", "reason": str(exc)}
         if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
             return {"status": "BLOCKED", "reason": "unsafe execution configuration is enabled"}
-        status = "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" if snapshot.reconciliation_required else "HEALTHY"
-        return {"status": status, "snapshot": snapshot.to_dict()}
+        try:
+            blockers = self.blocker_evaluator(now=self.now())
+        except Exception as exc:
+            return {"status": "BLOCKED", "reason": f"production blocker evidence could not be validated: {exc}", "snapshot": snapshot.to_dict()}
+        if snapshot.reconciliation_required:
+            result = {
+                "status": "HEALTHY_WITH_UNRESOLVED_RECONCILIATION",
+                "snapshot": snapshot.to_dict(),
+            }
+            if blockers:
+                result["external_blockers"] = [item.to_dict() for item in blockers]
+                result["external_dependency_state"] = "PRODUCTION_BLOCKED_EXTERNAL_CONTRACT"
+            return result
+        if blockers:
+            return {"status": "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY", "reason": blockers[0].evidence, "blockers": [item.to_dict() for item in blockers], "snapshot": snapshot.to_dict()}
+        return {"status": "HEALTHY", "snapshot": snapshot.to_dict()}

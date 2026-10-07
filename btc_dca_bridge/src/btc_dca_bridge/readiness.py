@@ -195,7 +195,7 @@ class ProductionReadinessService:
             add("CANONICAL_LEDGER", "ledger", "PASS", True, f"{len(executions)} schema-valid executions", "canonical ledger readable and valid")
             operations = OperationsService(data_root=self.data_root, ledger_path=self.ledger_path, now=self.now)
             health = operations.health()
-            add("ARTIFACT_INTEGRITY", "artifacts", "PASS" if health["status"] in {"HEALTHY", "HEALTHY_WITH_UNRESOLVED_RECONCILIATION"} else "FAIL", True, health["status"], "artifact and operations integrity is trusted" if health["status"] != "CORRUPT" else "artifact integrity is corrupt", "Repair immutable artifacts and digests")
+            add("ARTIFACT_INTEGRITY", "artifacts", "PASS" if health["status"] in {"HEALTHY", "HEALTHY_WITH_UNRESOLVED_RECONCILIATION", "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY"} else "FAIL", True, health["status"], "artifact and operations integrity is trusted" if health["status"] != "CORRUPT" else "artifact integrity is corrupt", "Repair immutable artifacts and digests")
             snapshot = operations.snapshot()
             unresolved = snapshot.reconciliation_required
             add("UNRESOLVED_OPERATIONS", "operations", "FAIL" if unresolved else "PASS", True, snapshot.state, "unresolved submission identity exists" if unresolved else "no unresolved submission identity", "Run reconcile-existing before preparing a new canary" if unresolved else "")
