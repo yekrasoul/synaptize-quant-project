@@ -127,6 +127,13 @@ class CliOperationsTests(unittest.TestCase):
         self.assertIn(self.recovery_run, audit["related_run_ids"])
         code, health, _ = self.invoke(["ops-health", "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
         self.assertEqual((code, health["status"]), (0, "HEALTHY"))
+        original_row = rows[0]
+        for change in ({"order_id": "wrong-order"}, {"order_link_id": "dca-" + "b" * 32}, {"canary_id": "canary-" + "b" * 32}, {"approval_id": "approval-" + "b" * 32}, {"execution_id_bybit": "exec-cli-a"}, {"executed_usd": 25.0}, {"btc_quantity": 0.0003}, {"reference_price_usdt": 100000}, {"fee": 0.03}, {"fee_asset": "BTC"}):
+            with self.subTest(change=change):
+                self.ledger.write_text(json.dumps(dict(original_row, **change)) + "\n")
+                code, audit, _ = self.invoke(["audit-run", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
+                self.assertEqual((code, audit["status"]), (EXIT_BLOCKED, "invalid"))
+        self.ledger.write_text(json.dumps(original_row) + "\n")
         conflicting = dict(repeated, run_id=self.recovery_run, reconciled_at_utc=(self.now + timedelta(seconds=2)).isoformat().replace("+00:00", "Z"), fills=[dict(repeated["fills"][0], quote_value_usdt="99.99")])
         store.persist(ArtifactType.SUBMISSION_RECONCILIATION, conflicting, run_id=self.recovery_run + "_extra02")
         with self.assertRaises(ArtifactCorruptError): OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).snapshot(run_id=self.run_id)

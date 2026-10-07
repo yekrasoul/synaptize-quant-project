@@ -18,7 +18,7 @@ from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
 from .config import load_execution_config, load_strategy_config
-from .errors import ArtifactCorruptError, ArtifactNotFoundError
+from .errors import ArtifactCorruptError, ArtifactNotFoundError, LedgerValidationError
 from .ledger import confirmed_executions, executions_for_month, read_executions
 
 
@@ -241,16 +241,76 @@ class OperationsService:
             problems.append("SubmissionAttempt to SubmissionOutcome identity mismatch")
         if outcome_payload and reconciliation_payload and any(outcome_payload.get(key) != reconciliation_payload.get(key) for key in ("decision_id", "order_intent_id", "client_order_id")):
             problems.append("SubmissionOutcome to reconciliation identity mismatch")
-        executions = [item.payload for item in read_executions(self.ledger_path) if item.payload.get("decision_id") == decision.get("decision_id")]
+        ledger_rows = list(read_executions(self.ledger_path))
+        executions = [item.payload for item in ledger_rows if item.payload.get("decision_id") == decision.get("decision_id")]
         ledger_execution = [{"execution_id": item.get("execution_id"), "status": item.get("status"), "ledger": "canonical"} for item in executions]
         required = ("decision", "order_intent", "canary_manifest", "live_approval", "order_submission_attempt", "order_submission_outcome", "submission_reconciliation")
         missing = [name for name in required if not chain[name]]
         if missing: problems.append("missing artifacts: " + ",".join(missing))
-        if any(item.get("outcome_category") == "confirmed_execution" for raw in all_items[ArtifactType.ORDER_SUBMISSION_OUTCOME] for item in [raw[0]] if linked(item)) and not ledger_execution:
-            problems.append("confirmed outcome has no ledger execution")
+        intent_payload = intent_payload or {}
+        manifest_payload = manifest_payload or {}
+        approval_payload = approval_payload or {}
+        recon_payloads = [item[0] for item in all_items[ArtifactType.SUBMISSION_RECONCILIATION] if item[0].get("decision_id") == decision.get("decision_id")]
+        expected_fills: dict[str, Mapping[str, Any]] = {}
+        numeric_fill_fields = {"quantity_btc", "quote_value_usdt", "average_price_usdt", "fee"}
+        fill_fields = ("order_id", "order_link_id", "category", "symbol", "quantity_btc", "quote_value_usdt", "average_price_usdt", "executed_at_utc", "fee", "fee_asset")
+        for reconciliation in recon_payloads:
+            for fill in reconciliation.get("fills", []):
+                exec_id = str(fill.get("exec_id", ""))
+                if not exec_id:
+                    problems.append("reconciliation fill is missing exec_id")
+                    continue
+                prior = expected_fills.get(exec_id)
+                if prior is not None:
+                    for field in fill_fields:
+                        if field in numeric_fill_fields:
+                            try:
+                                equal = Decimal(str(prior.get(field))) == Decimal(str(fill.get(field)))
+                            except Exception:
+                                equal = False
+                        else:
+                            equal = prior.get(field) == fill.get(field)
+                        if not equal:
+                            problems.append(f"conflicting reconciliation evidence for execId {exec_id}: {field}")
+                expected_fills[exec_id] = fill
+        confirmed_recons = [item for item in recon_payloads if item.get("reconciliation_state") == "confirmed"]
+        if executions and not confirmed_recons:
+            problems.append("ledger execution has no confirmed reconciliation")
+        authoritative_order_ids = {item.get("order_id") for item in recon_payloads if item.get("order_id")}
+        if len(authoritative_order_ids) != 1:
+            problems.append("reconciliation history does not establish exactly one order_id")
+        order_id = next(iter(authoritative_order_ids), None)
+        exact_identity = lambda row: row.get("decision_id") == decision.get("decision_id") and row.get("canary_id") == manifest_payload.get("canary_id") and row.get("approval_id") == approval_payload.get("approval_id") and row.get("order_id") == order_id and row.get("order_link_id") == manifest_payload.get("client_order_id")
+        exact_executions = [row for row in executions if exact_identity(row)]
+        if any(not exact_identity(row) for row in executions):
+            problems.append("ledger contains same-decision execution with wrong order identity")
+        if confirmed_recons and len(exact_executions) != 1:
+            problems.append("confirmed order identity must have exactly one final ledger execution")
+        expected_quote = sum((Decimal(str(fill.get("quote_value_usdt"))) for fill in expected_fills.values()), Decimal("0"))
+        expected_btc = sum((Decimal(str(fill.get("quantity_btc"))) for fill in expected_fills.values()), Decimal("0"))
+        expected_fee = sum((Decimal(str(fill.get("fee"))) for fill in expected_fills.values()), Decimal("0"))
+        fee_assets = {str(fill.get("fee_asset")) for fill in expected_fills.values()}
+        expected_price = expected_quote / expected_btc if expected_btc else Decimal("0")
+        expected_ids = set(expected_fills)
+        if exact_executions:
+            execution = exact_executions[0]
+            claimed_ids = [part for part in str(execution.get("execution_id_bybit", "")).split(",") if part]
+            if len(claimed_ids) != len(set(claimed_ids)) or set(claimed_ids) != expected_ids:
+                problems.append("ledger execution execId set does not match authoritative fills")
+            def dec(field: str) -> Decimal:
+                return Decimal(str(execution.get(field)))
+            if dec("executed_usd") != expected_quote:
+                problems.append("ledger executed_usd does not match authoritative fills")
+            if dec("btc_quantity") != expected_btc:
+                problems.append("ledger btc_quantity does not match authoritative fills")
+            if dec("reference_price_usdt") != expected_price:
+                problems.append("ledger reference price does not match authoritative effective price")
+            if len(fee_assets) != 1 or dec("fee") != expected_fee or execution.get("fee_asset") != next(iter(fee_assets), None):
+                problems.append("ledger fee evidence does not match authoritative fills")
+        expected_totals = {"executed_usd": str(expected_quote), "btc_quantity": str(expected_btc), "reference_price_usdt": str(expected_price), "fee": str(expected_fee), "fee_asset": next(iter(fee_assets), None)}
         related_runs = sorted({entry["run_id"] for entries in chain.values() for entry in entries} | {run_id})
-        valid = not problems and bool(ledger_execution)
-        return {"root_run_id": run_id, "related_run_ids": related_runs, "status": "complete" if valid else "invalid", "integrity": "valid" if valid else "invalid", "identity_consistent": not problems, "transition_consistent": not problems, "artifact_chain": chain, "ledger_execution": ledger_execution, "problems": problems, "missing_artifacts": missing}
+        valid = not problems and bool(ledger_execution) and bool(confirmed_recons)
+        return {"root_run_id": run_id, "related_run_ids": related_runs, "status": "complete" if valid else "invalid", "integrity": "valid" if valid else "invalid", "identity_consistent": not problems, "transition_consistent": not problems, "artifact_chain": chain, "ledger_execution": ledger_execution, "authoritative_fill_count": len(expected_fills), "authoritative_exec_ids": sorted(expected_ids), "expected_execution_totals": expected_totals, "ledger_execution_count": len(exact_executions), "problems": problems, "missing_artifacts": missing}
 
     def record_event(self, *, action: str, result: str, reason: str, run_id: str | None, artifact_ids: Mapping[str, str | None]) -> Path:
         """Publish a digest-addressed immutable manual-operator audit event."""
@@ -283,6 +343,8 @@ class OperationsService:
                 if len(identities) != len(set(identities)):
                     return {"status": "CORRUPT", "reason": f"duplicate immutable {field}"}
         except ArtifactCorruptError as exc:
+            return {"status": "CORRUPT", "reason": str(exc)}
+        except LedgerValidationError as exc:
             return {"status": "CORRUPT", "reason": str(exc)}
         except Exception as exc:
             return {"status": "BLOCKED", "reason": str(exc)}
