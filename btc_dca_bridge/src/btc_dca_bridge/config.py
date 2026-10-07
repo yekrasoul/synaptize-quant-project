@@ -16,6 +16,7 @@ from .paths import (
     CONFIG_PATH, MARKET_DATA_CONFIG_PATH, NOTIFICATIONS_CONFIG_PATH,
     PERSISTENCE_CONFIG_PATH, RESEARCH_CONFIG_PATH, RUNTIME_CONFIG_PATH,
     SENTIMENT_CONFIG_PATH,
+    EXECUTION_CONFIG_PATH,
 )
 
 
@@ -101,6 +102,36 @@ class StrategyConfig:
             if band.minimum <= index <= band.maximum:
                 return band.multiplier
         raise ConfigurationError(f"sentiment bands do not cover {index}")
+
+
+@dataclass(frozen=True)
+class ExecutionConfig:
+    schema_version: str
+    live_execution_enabled: bool
+    kill_switch: bool
+    explicit_live_approval_required: bool
+    monthly_cap_usd: Decimal
+    exchange: str
+    market_type: str
+    symbol: str
+    order_submission: str
+
+
+def load_execution_config(path: Path = EXECUTION_CONFIG_PATH) -> ExecutionConfig:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigurationError(f"cannot load execution config {path}: {exc}") from exc
+    root = _mapping(raw, "execution config")
+    expected = {"schema_version", "live_execution_enabled", "kill_switch", "explicit_live_approval_required", "monthly_cap_usd", "market", "order_submission"}
+    if set(root) != expected or root.get("schema_version") != "1.0.0":
+        raise ConfigurationError("execution config keys or schema version are invalid")
+    for key in ("live_execution_enabled", "kill_switch", "explicit_live_approval_required"):
+        if not isinstance(root[key], bool): raise ConfigurationError(f"{key} must be boolean")
+    cap = _decimal(root["monthly_cap_usd"], "execution.monthly_cap_usd", positive=True)
+    if cap != Decimal("500") or root["market"] != "Bybit Spot BTCUSDT" or root["order_submission"] != "not_implemented":
+        raise ConfigurationError("execution safety invariants are invalid")
+    return ExecutionConfig(root["schema_version"], root["live_execution_enabled"], root["kill_switch"], root["explicit_live_approval_required"], cap, "Bybit", "spot", "BTCUSDT", root["order_submission"])
 
 
 def _parse_condition(condition: Any, label: str) -> DrawdownBand:

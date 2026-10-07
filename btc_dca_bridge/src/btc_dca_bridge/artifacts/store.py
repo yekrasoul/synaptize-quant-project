@@ -40,6 +40,7 @@ class ArtifactType(str, Enum):
     DECISION = "decision"
     RUN = "run"
     ORDER_INTENT = "order_intent"
+    SAFETY_VALIDATION = "safety_validation"
 
 
 _DIRECTORIES = {
@@ -48,6 +49,7 @@ _DIRECTORIES = {
     ArtifactType.DECISION: "decisions",
     ArtifactType.RUN: "runs",
     ArtifactType.ORDER_INTENT: "order_intents",
+    ArtifactType.SAFETY_VALIDATION: "safety_validations",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -55,6 +57,7 @@ _SCHEMAS = {
     ArtifactType.DECISION: "decision",
     ArtifactType.RUN: "shadow_run",
     ArtifactType.ORDER_INTENT: "order_intent",
+    ArtifactType.SAFETY_VALIDATION: "safety_validation",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -62,6 +65,7 @@ _TIMESTAMPS = {
     ArtifactType.DECISION: "created_at_utc",
     ArtifactType.RUN: "completed_at_utc",
     ArtifactType.ORDER_INTENT: "created_at_utc",
+    ArtifactType.SAFETY_VALIDATION: "checked_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
