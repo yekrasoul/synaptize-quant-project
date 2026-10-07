@@ -21,6 +21,11 @@ fresh pre-submission reconciliation. It creates a `CanaryManifest` with
 status `READY_FOR_MANUAL_APPROVAL` only when every preparation gate passes.
 Otherwise it creates a `BLOCKED` manifest with explicit reasons.
 
+The supplied Decision is validated first with the canonical `decision` JSON
+Schema. Only a schema-valid V1 Decision whose status is exactly `approved` may
+reach the remaining gates; missing, malformed, unsupported, or non-approved
+Decisions fail closed before an OrderIntent is created.
+
 The manifest is the boundary between preparation and a future Phase 5.4B
 manual execution step. It expires after 15 minutes and cannot be extended or
 used as a standing approval. `CanaryExecutor` is an explicit disabled
@@ -39,10 +44,16 @@ Preparation rereads the canonical ledger and rejects cap overflow, prior
 confirmed evidence, stale month context, and any existing submission attempt
 or outcome for the same deterministic order identity. It requires a
 `TRADE_CAPABLE` Spot-only credential, valid account context, sufficient
-immediately available USDT, BTC/USDT with no borrow or accrued interest, valid
+authoritative USDT availability for the exact Spot BTCUSDT quote-buy operation,
+BTC/USDT with no borrow or accrued interest, valid
 authoritative BTCUSDT Spot metadata, and fresh Phase 5.2 reconciliation that
 is exactly `conclusively_absent`. Any active, partial, confirmed, ambiguous,
 failed, or contradictory read blocks preparation.
+
+The Phase 5.2 Unified wallet read currently does not expose a documented
+account-mode-specific availability field proving that exact operation. It is
+therefore recorded as unavailable and blocks preparation; `walletBalance -
+locked` and generic USD portfolio value are never treated as authoritative.
 
 No API key, API secret, signature, authorization header, or raw credential is
 included in the manifest or CLI output. No Execution, fill, acknowledgement,

@@ -20,6 +20,7 @@ from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
 from .live_order import SpotMarketBuyRequest
 from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
+from .schemas import validate_artifact
 
 CANARY_SCHEMA_VERSION = "5.4.0"
 CANARY_EXPIRY = timedelta(minutes=15)
@@ -88,6 +89,8 @@ class CanaryManifest:
     account_updated_time: str | None
     wallet_usdt: Decimal | None
     wallet_btc: Decimal | None
+    authoritative_available_usdt: Decimal | None
+    availability_method: str
     liability_detected: bool | None
     instrument_min_order_amt: Decimal | None
     instrument_qty_step: Decimal | None
@@ -125,6 +128,8 @@ class CanaryManifest:
             "account_updated_time": self.account_updated_time,
             "wallet_usdt": None if self.wallet_usdt is None else str(self.wallet_usdt),
             "wallet_btc": None if self.wallet_btc is None else str(self.wallet_btc),
+            "authoritative_available_usdt": None if self.authoritative_available_usdt is None else str(self.authoritative_available_usdt),
+            "availability_method": self.availability_method,
             "liability_detected": self.liability_detected,
             "instrument_min_order_amt": None if self.instrument_min_order_amt is None else str(self.instrument_min_order_amt),
             "instrument_qty_step": None if self.instrument_qty_step is None else str(self.instrument_qty_step),
@@ -157,6 +162,10 @@ class CanaryPreparer:
         prepared_at = _timestamp(now)
         expires_at = _timestamp(now + CANARY_EXPIRY)
         validate_calendar_month(calendar_month)
+        try:
+            validate_artifact("decision", dict(decision))
+        except Exception as exc:
+            raise CanaryPreparationError(f"Decision schema validation failed: {exc}") from exc
         intent = make_order_intent(decision, run_id=run_id, created_at_utc=str(decision["created_at_utc"]))
         amount = _decimal(decision["final_purchase_usd"], "Decision.final_purchase_usd")
         request = SpotMarketBuyRequest(amount, intent.client_order_id)
@@ -172,6 +181,8 @@ class CanaryPreparer:
         credential: ApiCredentialInfo | None = None
         account: AccountInfo | None = None
         balances: tuple[WalletBalance, ...] = ()
+        authoritative_available_usdt: Decimal | None = None
+        availability_method = "unsupported: no exact Unified Spot quote-buy availability field"
         rules = None
         pre_state = "unavailable"
 
@@ -182,6 +193,7 @@ class CanaryPreparer:
         if now.strftime("%Y-%m") != calendar_month: reasons.append("requested month is not the current UTC calendar month")
         if intent.created_at_utc[:7] != calendar_month: reasons.append("Decision/run month does not match requested calendar month")
         if intent.strategy_id != "btc_adaptive_dca_v1" or intent.strategy_version != "1.0.0": reasons.append("only V1 Decision is eligible")
+        if decision["status"] != "approved": reasons.append("Decision status must be approved")
         if amount != intent.quote_amount_usdt: reasons.append("Decision amount does not exactly match OrderIntent")
         if amount != amount.to_integral_value() or amount <= 0: reasons.append("V1 amount is not a positive whole-dollar amount")
         if intent.exchange != "Bybit" or intent.market_type != "spot" or intent.symbol != "BTCUSDT" or intent.side != "Buy": reasons.append("order identity is not approved")
@@ -218,8 +230,16 @@ class CanaryPreparer:
             if usdt is None or btc is None: reasons.append("BTC and USDT wallet balances are required")
             else:
                 if usdt.has_liability or btc.has_liability: reasons.append("wallet liability detected")
-                available_usdt = usdt.wallet_balance - usdt.locked
-                if available_usdt < amount: reasons.append("available USDT is insufficient for exact V1 amount")
+                authoritative_available_usdt = usdt.available_for_spot_quote_buy
+                if authoritative_available_usdt is None:
+                    reasons.append("authoritative USDT availability for exact Spot quote buy is unavailable")
+                else:
+                    try:
+                        authoritative_available_usdt = _decimal(authoritative_available_usdt, "authoritative available USDT")
+                        availability_method = "explicit authoritative account-mode-specific Spot quote-buy availability"
+                        if authoritative_available_usdt < amount: reasons.append("authoritative available USDT is insufficient for exact V1 amount")
+                    except CanaryPreparationError:
+                        reasons.append("authoritative USDT availability is malformed")
         except Exception:
             reasons.append("wallet verification unavailable")
         try:
@@ -248,6 +268,7 @@ class CanaryPreparer:
             str(account.spot_hedging_status) if account else None,
             str(account.updated_time) if account else None,
             self._wallet_value(balances, "USDT"), self._wallet_value(balances, "BTC"),
+            authoritative_available_usdt, availability_method,
             any(balance.has_liability for balance in balances) if balances else None,
             rules.quote_minimum if rules else None, rules.quantity_step if rules else None,
             rules.price_tick_size if rules else None, pre_state, payload_fingerprint,

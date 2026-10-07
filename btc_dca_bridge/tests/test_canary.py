@@ -22,7 +22,7 @@ class FakeReadClient:
         self.credential = credential or ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",)})
         self.account = account or AccountInfo(6, "REGULAR_MARGIN", "OFF", "1")
         self.balances = balances or (
-            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100")),
+            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")),
             WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")),
         )
         self.rules = rules or InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"))
@@ -86,6 +86,62 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertFalse((self.root / "data" / "order_submission_outcomes").exists())
         validate_artifact("canary_manifest", manifest.to_dict())
 
+    def test_decision_schema_is_validated_before_order_intent(self):
+        malformed = dict(self.decision)
+        del malformed["market_snapshot_id"]
+        with self.assertRaisesRegex(CanaryPreparationError, "Decision schema validation failed"):
+            CanaryPreparer(artifact_store=ArtifactStore(self.root / "data-schema"), client=self.client,
+                           execution_config=config(), now=lambda: self.now).prepare(
+                malformed, run_id=self.run_id, calendar_month="2026-10", ledger_path=self.ledger)
+
+        malformed = dict(self.decision, final_purchase_usd="25")
+        with self.assertRaisesRegex(CanaryPreparationError, "Decision schema validation failed"):
+            CanaryPreparer(artifact_store=ArtifactStore(self.root / "data-type"), client=self.client,
+                           execution_config=config(), now=lambda: self.now).prepare(
+                malformed, run_id=self.run_id, calendar_month="2026-10", ledger_path=self.ledger)
+
+    def test_only_explicitly_approved_decision_can_be_ready(self):
+        for status in ("monthly_cap_reached", "data_unavailable"):
+            with self.subTest(status=status):
+                result = CanaryPreparer(
+                    artifact_store=ArtifactStore(self.root / f"data-status-{status}"), client=self.client,
+                    execution_config=config(), now=lambda: self.now).prepare(
+                        dict(self.decision, status=status), run_id=self.run_id,
+                        calendar_month="2026-10", ledger_path=self.ledger)
+                self.assertEqual(result.manifest.canary_status, "BLOCKED")
+                self.assertIn("status must be approved", " ".join(result.manifest.reasons))
+
+    def test_missing_authoritative_availability_blocks_without_resizing(self):
+        client = FakeReadClient(balances=(
+            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100")),
+            WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")),
+        ))
+        result = self.prepare(client=client, data=self.root / "data-no-authoritative-availability")
+        self.assertEqual(result.manifest.canary_status, "BLOCKED")
+        self.assertIn("authoritative USDT availability", " ".join(result.manifest.reasons))
+        self.assertEqual(result.manifest.approved_amount_usdt, Decimal("25"))
+        self.assertEqual(result.order_payload["qty"], "25")
+
+    def test_malformed_availability_and_account_context_fail_closed(self):
+        malformed = FakeReadClient(balances=(
+            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), "not-a-number"),
+            WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")),
+        ))
+        result = self.prepare(client=malformed, data=self.root / "data-malformed-availability")
+        self.assertEqual(result.manifest.canary_status, "BLOCKED")
+        self.assertIn("availability is malformed", " ".join(result.manifest.reasons))
+
+        ambiguous_account = FakeReadClient(
+            account=AccountInfo(None, "REGULAR_MARGIN", "OFF", "1"),
+            balances=(
+                WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")),
+                WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")),
+            ),
+        )
+        result = self.prepare(client=ambiguous_account, data=self.root / "data-ambiguous-account")
+        self.assertEqual(result.manifest.canary_status, "BLOCKED")
+        self.assertIn("account verification is incomplete", " ".join(result.manifest.reasons))
+
     def test_manifest_is_immutable_and_has_fifteen_minute_expiry(self):
         result = self.prepare()
         self.assertEqual(result.manifest.expires_at_utc, "2026-10-07T12:15:00Z")
@@ -123,13 +179,13 @@ class CanaryPreparationTests(unittest.TestCase):
                 self.assertEqual(result.manifest.canary_status, "BLOCKED")
 
     def test_liability_or_insufficient_wallet_blocks_without_reducing_amount(self):
-        liabilities = FakeReadClient(balances=(WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("1"), Decimal("0"), Decimal("100")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000"))))
+        liabilities = FakeReadClient(balances=(WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("1"), Decimal("0"), Decimal("100"), Decimal("100")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000"))))
         result = self.prepare(client=liabilities, data=self.root / "data-liability")
         self.assertEqual(result.manifest.canary_status, "BLOCKED")
         self.assertIn("liability", " ".join(result.manifest.reasons))
         self.assertEqual(result.manifest.approved_amount_usdt, Decimal("25"))
 
-        insufficient = FakeReadClient(balances=(WalletBalance("USDT", Decimal("5"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("5")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000"))))
+        insufficient = FakeReadClient(balances=(WalletBalance("USDT", Decimal("5"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("5"), Decimal("5")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000"))))
         result = self.prepare(client=insufficient, data=self.root / "data-insufficient")
         self.assertIn("insufficient", " ".join(result.manifest.reasons))
         self.assertEqual(result.order_payload["qty"], "25")
