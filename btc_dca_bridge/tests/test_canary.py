@@ -9,10 +9,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType
+from btc_dca_bridge.availability import SpotQuoteAvailabilityPolicy
 from btc_dca_bridge.canary import CanaryExecutor, CanaryPreparer, CanaryPreparationError
 from btc_dca_bridge.config import ExecutionConfig
 from btc_dca_bridge.execution import InstrumentRules
-from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
+from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, SpotQuoteAvailability, WalletBalance
 from btc_dca_bridge.schemas import validate_artifact
 from btc_dca_bridge.cli import main
 
@@ -22,7 +23,7 @@ class FakeReadClient:
         self.credential = credential or ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",)})
         self.account = account or AccountInfo(6, "REGULAR_MARGIN", "OFF", "1")
         self.balances = balances or (
-            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")),
+            WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), SpotQuoteAvailability(Decimal("100"), "/test/availability", "quoteAvailable", "TEST", True, "2026-10-07T11:59:30Z")),
             WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")),
         )
         self.rules = rules or InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"))
@@ -43,6 +44,11 @@ class FakeReadClient:
 
 def config():
     return ExecutionConfig("1.0.0", False, True, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "not_implemented")
+
+
+TEST_AVAILABILITY_POLICY = SpotQuoteAvailabilityPolicy(
+    frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1)
+)
 
 
 class CanaryPreparationTests(unittest.TestCase):
@@ -67,6 +73,7 @@ class CanaryPreparationTests(unittest.TestCase):
             client=client or self.client,
             execution_config=config(),
             now=lambda: self.now,
+            availability_policy=TEST_AVAILABILITY_POLICY,
         ).prepare(self.decision, run_id=self.run_id, calendar_month="2026-10", ledger_path=ledger or self.ledger)
 
     def test_happy_preparation_is_ready_and_never_has_post_transport(self):
@@ -91,13 +98,13 @@ class CanaryPreparationTests(unittest.TestCase):
         del malformed["market_snapshot_id"]
         with self.assertRaisesRegex(CanaryPreparationError, "Decision schema validation failed"):
             CanaryPreparer(artifact_store=ArtifactStore(self.root / "data-schema"), client=self.client,
-                           execution_config=config(), now=lambda: self.now).prepare(
+                           execution_config=config(), now=lambda: self.now, availability_policy=TEST_AVAILABILITY_POLICY).prepare(
                 malformed, run_id=self.run_id, calendar_month="2026-10", ledger_path=self.ledger)
 
         malformed = dict(self.decision, final_purchase_usd="25")
         with self.assertRaisesRegex(CanaryPreparationError, "Decision schema validation failed"):
             CanaryPreparer(artifact_store=ArtifactStore(self.root / "data-type"), client=self.client,
-                           execution_config=config(), now=lambda: self.now).prepare(
+                           execution_config=config(), now=lambda: self.now, availability_policy=TEST_AVAILABILITY_POLICY).prepare(
                 malformed, run_id=self.run_id, calendar_month="2026-10", ledger_path=self.ledger)
 
     def test_only_explicitly_approved_decision_can_be_ready(self):
@@ -105,7 +112,7 @@ class CanaryPreparationTests(unittest.TestCase):
             with self.subTest(status=status):
                 result = CanaryPreparer(
                     artifact_store=ArtifactStore(self.root / f"data-status-{status}"), client=self.client,
-                    execution_config=config(), now=lambda: self.now).prepare(
+                    execution_config=config(), now=lambda: self.now, availability_policy=TEST_AVAILABILITY_POLICY).prepare(
                         dict(self.decision, status=status), run_id=self.run_id,
                         calendar_month="2026-10", ledger_path=self.ledger)
                 self.assertEqual(result.manifest.canary_status, "BLOCKED")
@@ -129,7 +136,7 @@ class CanaryPreparationTests(unittest.TestCase):
         ))
         result = self.prepare(client=malformed, data=self.root / "data-malformed-availability")
         self.assertEqual(result.manifest.canary_status, "BLOCKED")
-        self.assertIn("availability is malformed", " ".join(result.manifest.reasons))
+        self.assertIn("explicit provenance", " ".join(result.manifest.reasons))
 
         ambiguous_account = FakeReadClient(
             account=AccountInfo(None, "REGULAR_MARGIN", "OFF", "1"),
@@ -187,7 +194,7 @@ class CanaryPreparationTests(unittest.TestCase):
 
         insufficient = FakeReadClient(balances=(WalletBalance("USDT", Decimal("5"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("5"), Decimal("5")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000"))))
         result = self.prepare(client=insufficient, data=self.root / "data-insufficient")
-        self.assertIn("insufficient", " ".join(result.manifest.reasons))
+        self.assertIn("authoritative USDT availability", " ".join(result.manifest.reasons))
         self.assertEqual(result.order_payload["qty"], "25")
 
     def test_only_conclusive_absence_passes_reconciliation(self):
@@ -218,7 +225,7 @@ class CanaryPreparationTests(unittest.TestCase):
         decision_path = self.root / "decision.json"
         decision_path.write_text(json.dumps(self.decision))
         output = StringIO()
-        with patch("btc_dca_bridge.cli.BybitPrivateReadClient.from_environment", return_value=self.client), redirect_stdout(output):
+        with patch("btc_dca_bridge.cli.BybitPrivateReadClient.from_environment", return_value=self.client), patch("btc_dca_bridge.cli.PRODUCTION_AVAILABILITY_POLICY", TEST_AVAILABILITY_POLICY), redirect_stdout(output):
             code = main(["canary-prepare", "--decision-json", str(decision_path), "--run-id", self.run_id,
                          "--month", "2026-10", "--ledger", str(self.ledger), "--data-root", str(self.root / "cli-data")])
         self.assertEqual(code, 0)

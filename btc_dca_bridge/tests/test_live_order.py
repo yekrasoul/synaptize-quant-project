@@ -15,6 +15,8 @@ from btc_dca_bridge.live_order import (AmbiguousSubmissionError, ConfirmedFill, 
     LiveOrderEngine, LiveOrderSafetyError, ReconciliationEvidence, SpotMarketBuyRequest)
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
+from btc_dca_bridge.private_bybit import SpotQuoteAvailability
+from btc_dca_bridge.availability import SpotQuoteAvailabilityPolicy
 from btc_dca_bridge.schemas import validate_artifact
 
 
@@ -23,7 +25,7 @@ class FakeReader:
         self.state = state
         self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
         self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "fresh")
-        self.balances = (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
+        self.balances = (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), SpotQuoteAvailability(Decimal("100"), "/test/availability", "quoteAvailable", "TEST", True, "2026-10-07T12:00:00Z")), WalletBalance("BTC", Decimal("0.1"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("6000")))
         self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"))
     def credential_info(self): return self.credential
     def account_info(self): return self.account
@@ -64,7 +66,8 @@ class LiveOrderHardeningTests(unittest.TestCase):
         ArtifactStore(self.data).persist(ArtifactType.CANARY_MANIFEST, self.manifest, run_id=self.run_id)
         self.approval = LiveApproval.for_manifest(self.manifest, self.manifest_sha, now_utc=self.now)
         self.approval_receipt = ArtifactStore(self.data).persist(ArtifactType.LIVE_APPROVAL, self.approval, run_id=self.run_id)
-        self.engine = LiveOrderEngine(artifact_store=ArtifactStore(self.data), now=lambda: self.now)
+        self.availability_policy = SpotQuoteAvailabilityPolicy(frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1))
+        self.engine = LiveOrderEngine(artifact_store=ArtifactStore(self.data), now=lambda: self.now, availability_policy=self.availability_policy)
         self.reader = FakeReader()
         self.ack = HttpResponse(200, {}, json.dumps({"retCode": 0, "retMsg": "OK", "result": {"orderId": "order-1", "orderLinkId": self.intent.client_order_id}}).encode())
         self.reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1"))
@@ -89,6 +92,13 @@ class LiveOrderHardeningTests(unittest.TestCase):
                 self.assertEqual(result.outcome.state, "blocked")
                 self.assertFalse(transport.calls)
                 self.assertFalse(list((self.data / "order_submission_attempts").rglob("*.json")) if (self.data / "order_submission_attempts").exists() else [])
+
+    def test_plain_decimal_availability_blocks_before_post(self):
+        self.reader.balances = (WalletBalance("USDT", Decimal("100"), Decimal("0"), Decimal("0"), Decimal("0"), Decimal("100"), Decimal("100")), self.reader.balances[1])
+        transport = FakeTransport(self.ack)
+        with self.assertRaises(LiveOrderSafetyError):
+            self.submit(transport=transport)
+        self.assertEqual(transport.calls, [])
 
     def test_unpersisted_tampered_or_wrong_hash_approval_blocks(self):
         self.approval = replace(self.approval, approval_id="approval-" + "b" * 32)

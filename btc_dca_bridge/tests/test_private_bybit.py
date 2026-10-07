@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import (
-    ACCOUNT_INFO, EXECUTION_LIST, INSTRUMENTS_INFO, ORDER_HISTORY, ORDER_REALTIME,
+    ACCOUNT_INFO, EXECUTION_LIST, INSTRUMENTS_INFO, ORDER_HISTORY, ORDER_REALTIME, SERVER_TIME,
     WALLET_BALANCE, ApiCredentialInfo, AuthenticationError, BybitPostAckReconciler, BybitPrivateReadClient,
     CredentialClassification, ExecutionFill, MalformedBybitResponseError, OrderState, PermissionError, ReadOnlyOrder,
     canonical_query, signature,
@@ -70,6 +70,12 @@ class PrivateBybitTests(unittest.TestCase):
     def test_instrument_adapter_uses_hardened_parser(self):
         rules = self.client({INSTRUMENTS_INFO: response(instrument_result())}).instrument_rules()
         self.assertEqual(rules.quote_minimum, Decimal("10"))
+
+    def test_server_time_parser_is_get_only_and_strict(self):
+        self.assertEqual(self.client({SERVER_TIME: response({"timeSecond": "1791374340"})}).server_time_ms(), 1791374340000)
+        self.assertEqual(self.client({SERVER_TIME: response({"timeNano": "1791374340000000000"})}).server_time_ms(), 1791374340000)
+        with self.assertRaises(MalformedBybitResponseError):
+            self.client({SERVER_TIME: response({"timeSecond": "bad"})}).server_time_ms()
 
     def test_order_states_and_execution_fills(self):
         order = {"orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}

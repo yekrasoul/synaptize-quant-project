@@ -31,9 +31,11 @@ from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
 from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
 from .canary import CanaryPreparer
+from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
+from .readiness import ProductionReadinessService, production_connectivity
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -150,6 +152,10 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--run-id", required=True); recover.add_argument("--canary-id", required=True); recover.add_argument("--approval-id", required=True)
     recover.add_argument("--manifest-sha", required=True); recover.add_argument("--approval-sha", required=True)
     recover.add_argument("--data-root", type=Path, default=DATA_PATH); recover.add_argument("--ledger", type=Path, default=LEDGER_PATH); recover.add_argument("--json", action="store_true")
+    readiness = subparsers.add_parser("production-readiness", help="read-only production activation readiness gate")
+    readiness.add_argument("--data-root", type=Path, default=DATA_PATH); readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH); readiness.add_argument("--json", action="store_true")
+    connectivity = subparsers.add_parser("production-connectivity", help="read-only authenticated Bybit connectivity check")
+    connectivity.add_argument("--json", action="store_true")
     return parser
 
 
@@ -419,7 +425,7 @@ def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
                 def unavailable(*unused_args, **unused_kwargs): raise RuntimeError(f"private read verification unavailable: {error_message}")
                 return unavailable
         client = UnavailableReadClient()
-    result = CanaryPreparer(artifact_store=ArtifactStore(args.data_root), client=client).prepare(
+    result = CanaryPreparer(artifact_store=ArtifactStore(args.data_root), client=client, availability_policy=PRODUCTION_AVAILABILITY_POLICY).prepare(
         decision, run_id=args.run_id, calendar_month=args.month, ledger_path=args.ledger
     )
     manifest = result.manifest.to_dict()
@@ -510,7 +516,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
     lock.acquire()
     try:
-        engine = LiveOrderEngine(artifact_store=store)
+        engine = LiveOrderEngine(artifact_store=store, availability_policy=PRODUCTION_AVAILABILITY_POLICY)
         result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
     finally:
         lock.release()
@@ -527,6 +533,20 @@ def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], in
     finally:
         lock.release()
     return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
+
+
+def _production_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = ProductionReadinessService(data_root=args.data_root, ledger_path=args.ledger).evaluate()
+    return result, 0 if result["status"] == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" else 2
+
+
+def _production_connectivity() -> tuple[dict[str, object], int]:
+    result = production_connectivity()
+    if result["status"] == "READS_FAILED":
+        return result, 5
+    if result["status"] != "READS_OK":
+        return result, 4
+    return result, 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -559,6 +579,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _canary_execute(args)
         elif args.command == "reconcile-existing":
             result, exit_code = _reconcile_existing(args)
+        elif args.command == "production-readiness":
+            result, exit_code = _production_readiness(args)
+        elif args.command == "production-connectivity":
+            result, exit_code = _production_connectivity()
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
