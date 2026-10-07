@@ -118,6 +118,7 @@ class OperationsService:
         ledger = read_executions(self.ledger_path)
         spent = sum((Decimal(str(item.payload["executed_usd"])) for item in executions_for_month(ledger, month)), Decimal("0"))
         remaining = strategy.monthly_cap_usd - spent
+        decision = self._latest(self._items(ArtifactType.DECISION), "created_at_utc", run_id)
         manifest = self._latest(self._items(ArtifactType.CANARY_MANIFEST), "prepared_at_utc", run_id)
         approval = self._latest(self._items(ArtifactType.LIVE_APPROVAL), "approved_at_utc", run_id)
         attempt = self._latest(self._items(ArtifactType.ORDER_SUBMISSION_ATTEMPT), "created_at_utc", run_id)
@@ -157,7 +158,7 @@ class OperationsService:
                     reasons.append("manual execution remains disabled by checked-in production safety defaults")
             else:
                 state, allowed = "READY_FOR_MANUAL_APPROVAL", ["approve", "inspect", "audit"]
-        artifacts = {"decision_id": manifest_data.get("decision_id") if manifest_data else None, "canary_id": manifest_data.get("canary_id") if manifest_data else None, "approval_id": approval[0].get("approval_id") if approval else None, "client_order_id": link, "attempt": "present" if attempt else None, "outcome": outcome[0].get("outcome_category") if outcome else None, "reconciliation": latest_reconciliation[0].get("reconciliation_state") if latest_reconciliation else None}
+        artifacts = {"decision_id": manifest_data.get("decision_id") if manifest_data else (decision[0].get("decision_id") if decision else None), "decision_status": decision[0].get("status") if decision else None, "canary_id": manifest_data.get("canary_id") if manifest_data else None, "canary_status": manifest_data.get("canary_status") if manifest_data else None, "manifest_expires_at_utc": manifest_data.get("expires_at_utc") if manifest_data else None, "approval_id": approval[0].get("approval_id") if approval else None, "approval_expires_at_utc": approval[0].get("expires_at_utc") if approval else None, "client_order_id": link, "attempt": "present" if attempt else None, "outcome": outcome[0].get("outcome_category") if outcome else None, "reconciliation": latest_reconciliation[0].get("reconciliation_state") if latest_reconciliation else None}
         exposure = {"confirmed_ledger_spend_usdt": str(spent), "known_unresolved_partial_quote_usdt": str(partial_quote), "remaining_confirmed_budget_usdt": str(remaining), "potential_effective_remaining_budget_usdt": str(remaining - partial_quote)}
         return OperationsSnapshot(state, tuple(allowed), ("new-submission",) if reconciliation_required else (), tuple(reasons), artifacts, {"calendar_month": month, "confirmed_spend_usdt": str(spent), "remaining_usdt": str(remaining)}, reconciliation_required, exposure)
 
