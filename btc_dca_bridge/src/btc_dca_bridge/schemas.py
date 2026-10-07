@@ -24,6 +24,8 @@ SCHEMA_FILES = {
     "shadow_run": "shadow_run.schema.json",
     "order_intent": "order_intent.schema.json",
     "safety_validation": "safety_validation.schema.json",
+    "order_submission_attempt": "order_submission_attempt.schema.json",
+    "order_submission_outcome": "order_submission_outcome.schema.json",
     "order_submission": "order_submission.schema.json",
     "reconciliation_result": "reconciliation_result.schema.json",
 }

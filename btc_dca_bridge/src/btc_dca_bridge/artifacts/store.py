@@ -41,6 +41,8 @@ class ArtifactType(str, Enum):
     RUN = "run"
     ORDER_INTENT = "order_intent"
     SAFETY_VALIDATION = "safety_validation"
+    ORDER_SUBMISSION_ATTEMPT = "order_submission_attempt"
+    ORDER_SUBMISSION_OUTCOME = "order_submission_outcome"
 
 
 _DIRECTORIES = {
@@ -50,6 +52,8 @@ _DIRECTORIES = {
     ArtifactType.RUN: "runs",
     ArtifactType.ORDER_INTENT: "order_intents",
     ArtifactType.SAFETY_VALIDATION: "safety_validations",
+    ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempts",
+    ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcomes",
 }
 _SCHEMAS = {
     ArtifactType.MARKET: "market_snapshot",
@@ -58,6 +62,8 @@ _SCHEMAS = {
     ArtifactType.RUN: "shadow_run",
     ArtifactType.ORDER_INTENT: "order_intent",
     ArtifactType.SAFETY_VALIDATION: "safety_validation",
+    ArtifactType.ORDER_SUBMISSION_ATTEMPT: "order_submission_attempt",
+    ArtifactType.ORDER_SUBMISSION_OUTCOME: "order_submission_outcome",
 }
 _TIMESTAMPS = {
     ArtifactType.MARKET: "captured_at_utc",
@@ -66,6 +72,8 @@ _TIMESTAMPS = {
     ArtifactType.RUN: "completed_at_utc",
     ArtifactType.ORDER_INTENT: "created_at_utc",
     ArtifactType.SAFETY_VALIDATION: "checked_at_utc",
+    ArtifactType.ORDER_SUBMISSION_ATTEMPT: "created_at_utc",
+    ArtifactType.ORDER_SUBMISSION_OUTCOME: "completed_at_utc",
 }
 _RUN_ID = re.compile(r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
 
@@ -208,6 +216,18 @@ class ArtifactStore:
             run_id=safe_run_id,
             artifact_date_utc=artifact_date,
         )
+
+    def has_submission_attempt(self, decision_id: str, client_order_id: str) -> bool:
+        """Conservatively detect prior prepared evidence before a POST."""
+        root = self.root / _DIRECTORIES[ArtifactType.ORDER_SUBMISSION_ATTEMPT]
+        for path in root.glob("*/*/*/*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return True
+            if isinstance(payload, dict) and payload.get("decision_id") == decision_id and payload.get("client_order_id") == client_order_id:
+                return True
+        return False
 
     def _payload(self, artifact: Mapping[str, Any] | Any) -> dict[str, Any]:
         candidate = artifact.to_dict() if hasattr(artifact, "to_dict") else artifact
