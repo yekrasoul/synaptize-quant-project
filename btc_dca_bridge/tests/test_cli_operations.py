@@ -1,6 +1,7 @@
 """CLI-level synthetic operations/recovery coverage; never creates HTTP clients."""
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -171,6 +172,18 @@ class CliOperationsTests(unittest.TestCase):
 
     def test_health_blocks_unsafe_synthetic_execution_config(self):
         unsafe = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
+        with patch("btc_dca_bridge.operations.load_execution_config", return_value=unsafe):
+            self.assertEqual(OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).health()["status"], "BLOCKED")
+
+    def test_health_corruption_precedes_unsafe_config(self):
+        unsafe = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
+        manifest_path = next((self.data / "canary_manifests").rglob("*.json"))
+        manifest_path.write_text("corrupt\n")
+        with patch("btc_dca_bridge.operations.load_execution_config", return_value=unsafe):
+            self.assertEqual(OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).health()["status"], "CORRUPT")
+        canonical = json.dumps(self.manifest_payload, sort_keys=True, separators=(",", ":")) + "\n"
+        manifest_path.write_text(canonical)
+        manifest_path.with_suffix(".json.sha256").write_text(hashlib.sha256(canonical.encode()).hexdigest() + "\n")
         with patch("btc_dca_bridge.operations.load_execution_config", return_value=unsafe):
             self.assertEqual(OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).health()["status"], "BLOCKED")
 

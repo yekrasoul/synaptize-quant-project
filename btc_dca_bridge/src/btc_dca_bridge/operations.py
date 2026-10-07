@@ -334,8 +334,6 @@ class OperationsService:
     def health(self) -> dict[str, Any]:
         try:
             config = load_execution_config()
-            if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
-                return {"status": "BLOCKED", "reason": "unsafe execution configuration is enabled"}
             snapshot = self.snapshot()
             inspected = {kind: self._items(kind) for kind in (ArtifactType.CANARY_MANIFEST, ArtifactType.LIVE_APPROVAL, ArtifactType.ORDER_SUBMISSION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_OUTCOME, ArtifactType.SUBMISSION_RECONCILIATION)}
             for kind, field in ((ArtifactType.CANARY_MANIFEST, "canary_id"), (ArtifactType.LIVE_APPROVAL, "approval_id")):
@@ -348,5 +346,7 @@ class OperationsService:
             return {"status": "CORRUPT", "reason": str(exc)}
         except Exception as exc:
             return {"status": "BLOCKED", "reason": str(exc)}
+        if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
+            return {"status": "BLOCKED", "reason": "unsafe execution configuration is enabled"}
         status = "HEALTHY_WITH_UNRESOLVED_RECONCILIATION" if snapshot.reconciliation_required else "HEALTHY"
         return {"status": status, "snapshot": snapshot.to_dict()}
