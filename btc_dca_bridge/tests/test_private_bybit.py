@@ -72,11 +72,18 @@ class PrivateBybitTests(unittest.TestCase):
 
     def test_order_states_and_execution_fills(self):
         order = {"orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}
-        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
+        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
         client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
         self.assertEqual(client.lookup_order("dca-abc").state, OrderState.PARTIALLY_FILLED)
         self.assertEqual(client.executions("dca-abc")[0].exec_qty, Decimal("0.1"))
         self.assertEqual(client.submission_state("dca-abc"), "confirmed")
+
+    def test_execution_fee_currency_is_authoritative_and_required(self):
+        base = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
+        client = self.client({EXECUTION_LIST: response({"list": [dict(base, feeCurrency="BTC")]})})
+        self.assertEqual(client.executions("dca-abc")[0].fee_asset, "BTC")
+        missing = self.client({EXECUTION_LIST: response({"list": [base]})})
+        with self.assertRaises(MalformedBybitResponseError): missing.executions("dca-abc")
 
     def test_absent_is_only_after_both_successful_order_reads_and_execution_read(self):
         client = self.client({ORDER_REALTIME: response({"list": []}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": []})})
@@ -101,14 +108,14 @@ class PrivateBybitTests(unittest.TestCase):
     def test_order_symbol_category_and_fill_identity_are_bound(self):
         bad_order = {"orderLinkId": "dca-id", "category": "linear", "symbol": "BTCUSDT", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
         with self.assertRaises(MalformedBybitResponseError): self.client({ORDER_REALTIME: response({"list": [bad_order]}), ORDER_HISTORY: response({"list": []})}).lookup_order("dca-id")
-        bad_fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT"}
+        bad_fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT"}
         client = self.client({EXECUTION_LIST: response({"list": [bad_fill]})})
         with self.assertRaises(MalformedBybitResponseError): client.executions("dca-id")
         self.assertEqual(client.submission_state("dca-id"), "ambiguous")
 
     def test_conflicting_order_and_fill_ids_are_ambiguous(self):
         order = {"orderLinkId": "dca-id", "orderId": "order-a", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
-        fill = {"execQty": "1", "execPrice": "10", "execValue": "10", "execFee": "0", "execTime": "1", "execId": "eid", "orderId": "order-b", "orderLinkId": "dca-id"}
+        fill = {"execQty": "1", "execPrice": "10", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "order-b", "orderLinkId": "dca-id"}
         client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
         self.assertEqual(client.submission_state("dca-id"), "ambiguous")
 

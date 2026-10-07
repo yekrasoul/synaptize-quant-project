@@ -126,6 +126,7 @@ class ExecutionFill:
     exec_price: Decimal
     exec_value: Decimal
     exec_fee: Decimal
+    fee_asset: str
     exec_time: str
     exec_id: str
     order_id: str
@@ -318,7 +319,7 @@ class BybitPrivateReadClient:
                 if row.get("orderLinkId") != client_order_id: raise MalformedBybitResponseError("execution evidence orderLinkId does not match requested client_order_id")
                 for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
                     if row.get(field) != expected: raise MalformedBybitResponseError(f"execution evidence {field} does not match approved Spot identity")
-            return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"]), str(row["category"]), str(row["symbol"])) for row in rows)
+            return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["feeCurrency"]), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"]), str(row["category"]), str(row["symbol"])) for row in rows)
         except (KeyError, AttributeError, TypeError) as exc: raise MalformedBybitResponseError("execution fill is malformed") from exc
 
     def submission_state(self, client_order_id: str) -> str:
@@ -355,13 +356,13 @@ class BybitPostAckReconciler:
         order = self.client.lookup_order(client_order_id)
         fills = self.client.executions(client_order_id)
         if order.order_id and any(fill.order_id != order.order_id for fill in fills):
-            return ReconciliationEvidence("ambiguous")
+            return ReconciliationEvidence("ambiguous", order_link_id=client_order_id)
         if order.state in {OrderState.ACTIVE, OrderState.PARTIALLY_FILLED, OrderState.AMBIGUOUS}:
-            return ReconciliationEvidence("ambiguous", order.order_id)
+            return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)
         if order.state is not OrderState.FILLED or not fills:
-            return ReconciliationEvidence("ambiguous", order.order_id)
-        converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, "", fill.category, fill.symbol) for fill in fills)
-        return ReconciliationEvidence("confirmed", order.order_id, converted)
+            return ReconciliationEvidence("ambiguous", order.order_id, order_link_id=client_order_id)
+        converted = tuple(ConfirmedFill(fill.exec_id, fill.order_id, fill.order_link_id, fill.exec_qty, fill.exec_value, fill.exec_price, fill.exec_time, fill.exec_fee, fill.fee_asset, fill.category, fill.symbol) for fill in fills)
+        return ReconciliationEvidence("confirmed", order.order_id, converted, client_order_id)
 
 
 # Descriptive alias for callers that do not need to distinguish the transport

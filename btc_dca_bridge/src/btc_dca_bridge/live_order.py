@@ -166,6 +166,7 @@ class ReconciliationEvidence:
     state: str
     order_id: str | None = None
     fills: tuple[ConfirmedFill, ...] = ()
+    order_link_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -276,11 +277,11 @@ class LiveOrderEngine:
         except ArtifactAlreadyExistsError as exc: raise LiveOrderSafetyError("submission attempt already exists; reconciliation required") from exc
         try:
             response = transport.submit_spot_market_buy(request)
+            outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler)
         except AmbiguousSubmissionError:
-            outcome = self._outcome(intent, run_id, "ambiguous", msg="submission outcome is ambiguous", category="transport_ambiguous")
-            self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_OUTCOME, outcome, run_id=run_id)
-            raise
-        outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler)
+            # The transport boundary may have been crossed. Reconcile before
+            # returning control, and never retry this approval/attempt.
+            outcome, evidence = self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
         if evidence is not None and evidence.state == "confirmed" and evidence.fills:
             for fill in evidence.fills:
                 self._validate_fill(fill, evidence.order_id, intent.client_order_id)
@@ -352,37 +353,50 @@ class LiveOrderEngine:
     @staticmethod
     def _validate_fill(fill: ConfirmedFill, authoritative_order_id: str | None, client_order_id: str) -> None:
         if fill.category != "spot" or fill.symbol != "BTCUSDT" or fill.order_link_id != client_order_id or not authoritative_order_id or fill.order_id != authoritative_order_id: raise LiveOrderSafetyError("fill identity is contradictory")
-        if not fill.execution_id or fill.quantity_btc <= 0 or fill.quote_value_usdt <= 0 or fill.average_price_usdt <= 0: raise LiveOrderSafetyError("fill values are malformed")
+        if not fill.execution_id or not fill.fee_asset or fill.quantity_btc <= 0 or fill.quote_value_usdt <= 0 or fill.average_price_usdt <= 0: raise LiveOrderSafetyError("fill values or authoritative fee identity are malformed")
         _utc(fill.executed_at_utc)
 
-    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler | None) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
-        if response.status >= 500: return self._outcome(intent, run_id, "ambiguous", msg="server response may have followed submission", category="transport_ambiguous"), None
-        if response.status >= 400: return self._outcome(intent, run_id, "rejected_by_exchange", msg="HTTP response rejected submission", category="exchange_rejected"), None
-        try: body = json.loads(response.body.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError): return self._outcome(intent, run_id, "ambiguous", msg="malformed order response", category="reconciliation_required"), None
-        if not isinstance(body, dict): return self._outcome(intent, run_id, "ambiguous", msg="malformed order response", category="reconciliation_required"), None
-        code, msg, result = body.get("retCode"), body.get("retMsg"), body.get("result")
-        if code != 0:
-            state = "rejected_by_exchange" if response.status < 500 else "ambiguous"
-            return self._outcome(intent, run_id, state, code=code if isinstance(code, int) else None, msg=str(msg) if msg is not None else None, category="exchange_rejected" if state == "rejected_by_exchange" else "reconciliation_required"), None
-        if not isinstance(result, dict) or not isinstance(result.get("orderId"), str) or result.get("orderLinkId") != intent.client_order_id:
-            return self._outcome(intent, run_id, "ambiguous", code=code if isinstance(code, int) else None, msg="acknowledgement identity is contradictory", order_id=result.get("orderId") if isinstance(result, dict) else None, returned_link=result.get("orderLinkId") if isinstance(result, dict) else None, category="reconciliation_required"), None
-        # Never reuse pre-submit absence after an ACK. The ACK crosses an
-        # evidence boundary, so read back through a separate fresh reconciler.
-        reconciliation = "ambiguous"
-        evidence: ReconciliationEvidence | None = None
-        if post_ack_reconciler is not None:
-            try:
-                fresh_state = post_ack_reconciler.reconcile_after_ack(intent.client_order_id)
-                if isinstance(fresh_state, ReconciliationEvidence):
-                    evidence = fresh_state
-                    reconciliation = fresh_state.state
-                else:
-                    reconciliation = "ambiguous"
-            except Exception:
-                reconciliation = "ambiguous"
-        if evidence is not None:
+    def _reconcile_after_possible_submission(self, intent: OrderIntent, run_id: str, reconciler: PostAckReconciler, *, ack_order_id: str | None = None, ack_order_link_id: str | None = None) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
+        try:
+            evidence = reconciler.reconcile_after_ack(intent.client_order_id)
+            if not isinstance(evidence, ReconciliationEvidence):
+                raise LiveOrderSafetyError("reconciler returned malformed evidence")
+            if evidence.order_link_id is not None and evidence.order_link_id != intent.client_order_id:
+                raise LiveOrderSafetyError("reconciled orderLinkId is contradictory")
+            if ack_order_link_id is not None and ack_order_link_id != intent.client_order_id:
+                raise LiveOrderSafetyError("ACK orderLinkId is contradictory")
+            if ack_order_id is not None and evidence.order_id != ack_order_id:
+                raise LiveOrderSafetyError("ACK orderId differs from reconciled orderId")
             fill_ids = [fill.execution_id for fill in evidence.fills]
             if len(fill_ids) != len(set(fill_ids)):
-                return self._outcome(intent, run_id, "ambiguous", code=code, msg="duplicate execution identity in reconciliation", order_id=result["orderId"], returned_link=result["orderLinkId"], reconciliation="ambiguous", category="reconciliation_required"), None
-        return self._outcome(intent, run_id, "acknowledged", code=code, msg=str(msg) if msg is not None else None, order_id=result["orderId"], returned_link=result["orderLinkId"], reconciliation=reconciliation, category="confirmed_execution" if evidence and evidence.state == "confirmed" and evidence.fills else "reconciliation_required"), evidence
+                raise LiveOrderSafetyError("duplicate execution identity in reconciliation")
+            for fill in evidence.fills:
+                self._validate_fill(fill, evidence.order_id, intent.client_order_id)
+            if evidence.state == "confirmed":
+                if not evidence.order_id or not evidence.fills:
+                    raise LiveOrderSafetyError("confirmed reconciliation lacks authoritative fills")
+                return self._outcome(intent, run_id, "acknowledged", order_id=evidence.order_id, returned_link=intent.client_order_id, reconciliation="confirmed", category="confirmed_execution"), evidence
+            if evidence.state in {"active", "partial", "ambiguous", "conclusively_absent"}:
+                schema_state = evidence.state if evidence.state in {"ambiguous", "conclusively_absent"} else "ambiguous"
+                return self._outcome(intent, run_id, "ambiguous", msg=f"reconciliation state: {evidence.state}", order_id=evidence.order_id, returned_link=intent.client_order_id, reconciliation=schema_state, category="reconciliation_required"), evidence
+            raise LiveOrderSafetyError("reconciler returned unknown state")
+        except Exception as exc:
+            return self._outcome(intent, run_id, "ambiguous", msg=f"reconciliation required: {exc}", returned_link=intent.client_order_id, reconciliation="ambiguous", category="reconciliation_required"), None
+
+    def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
+        if response.status >= 500:
+            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        if response.status >= 400: return self._outcome(intent, run_id, "rejected_by_exchange", msg="HTTP response rejected submission", category="exchange_rejected"), None
+        try: body = json.loads(response.body.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        if not isinstance(body, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        code, msg, result = body.get("retCode"), body.get("retMsg"), body.get("result")
+        if code != 0:
+            if not isinstance(code, int): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+            return self._outcome(intent, run_id, "rejected_by_exchange", code=code, msg=str(msg) if msg is not None else None, category="exchange_rejected"), None
+        if not isinstance(result, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler)
+        ack_order_id = result.get("orderId") if isinstance(result.get("orderId"), str) else None
+        ack_order_link_id = result.get("orderLinkId") if isinstance(result.get("orderLinkId"), str) else None
+        if ack_order_id is None or ack_order_link_id is None:
+            return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)
+        return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)

@@ -122,8 +122,83 @@ class LiveOrderHardeningTests(unittest.TestCase):
 
     def test_ambiguous_transport_is_never_retried(self):
         transport = FakeTransport(error=AmbiguousSubmissionError("uncertain"))
-        with self.assertRaises(AmbiguousSubmissionError): self.submit(transport=transport)
+        result = self.submit(transport=transport)
         self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(self.reconciler.calls, [self.intent.client_order_id])
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_ambiguous_transport_with_confirmed_fill_completes_once(self):
+        fill = ConfirmedFill("exec-timeout", "order-1", self.intent.client_order_id, Decimal("0.0002"), Decimal("24.98"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "USDT")
+        reconciler = FakeReconciler(ReconciliationEvidence("confirmed", "order-1", (fill,), self.intent.client_order_id))
+        transport = FakeTransport(error=AmbiguousSubmissionError("socket reset"))
+        result = self.submit(transport=transport, post_ack_reconciler=reconciler)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(reconciler.calls, [self.intent.client_order_id])
+        self.assertEqual(result.outcome.outcome_category, "confirmed_execution")
+        self.assertEqual(json.loads(self.ledger.read_text())["execution_id_bybit"], "exec-timeout")
+
+    def test_uncertain_http_and_ack_shapes_reconcile_without_retry(self):
+        responses = [
+            HttpResponse(503, {}, b"server error"),
+            HttpResponse(200, {}, b"not-json"),
+            HttpResponse(200, {}, b"[]"),
+            HttpResponse(200, {}, json.dumps({"retCode": 0, "result": {}}).encode()),
+            HttpResponse(200, {}, json.dumps({"retCode": 0, "result": {"orderId": "order-1", "orderLinkId": "other"}}).encode()),
+        ]
+        for response in responses:
+            with self.subTest(response=response):
+                self.setUp()
+                transport = FakeTransport(response=response)
+                reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1", (), self.intent.client_order_id))
+                result = self.submit(transport=transport, post_ack_reconciler=reconciler)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(reconciler.calls, [self.intent.client_order_id])
+                self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+                self.assertEqual(self.ledger.read_text(), "")
+
+    def test_ack_order_id_must_match_reconciled_order_id(self):
+        reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "different-order", (), self.intent.client_order_id))
+        result = self.submit(post_ack_reconciler=reconciler)
+        self.assertEqual(reconciler.calls, [self.intent.client_order_id])
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_fill_order_and_link_identity_must_match(self):
+        for order_id, order_link_id in (("different-order", self.intent.client_order_id), ("order-1", "different-link")):
+            with self.subTest(order_id=order_id, order_link_id=order_link_id):
+                self.setUp()
+                fill = ConfirmedFill("exec-identity", order_id, order_link_id, Decimal("0.0002"), Decimal("24.98"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "USDT")
+                reconciler = FakeReconciler(ReconciliationEvidence("confirmed", "order-1", (fill,), self.intent.client_order_id))
+                result = self.submit(post_ack_reconciler=reconciler)
+                self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+                self.assertEqual(self.ledger.read_text(), "")
+
+    def test_duplicate_fill_execution_ids_fail_closed(self):
+        fill = ConfirmedFill("exec-duplicate", "order-1", self.intent.client_order_id, Decimal("0.0001"), Decimal("12.49"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "USDT")
+        reconciler = FakeReconciler(ReconciliationEvidence("confirmed", "order-1", (fill, fill), self.intent.client_order_id))
+        result = self.submit(post_ack_reconciler=reconciler)
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_active_or_partial_reconciliation_never_topups(self):
+        for state in ("active", "partial"):
+            with self.subTest(state=state):
+                self.setUp()
+                reconciler = FakeReconciler(ReconciliationEvidence(state, "order-1", (), self.intent.client_order_id))
+                transport = FakeTransport(error=AmbiguousSubmissionError("timeout"))
+                result = self.submit(transport=transport, post_ack_reconciler=reconciler)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(reconciler.calls, [self.intent.client_order_id])
+                self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+                self.assertEqual(self.ledger.read_text(), "")
+
+    def test_missing_authoritative_fee_asset_fails_closed(self):
+        fill = ConfirmedFill("exec-no-fee-asset", "order-1", self.intent.client_order_id, Decimal("0.0002"), Decimal("24.98"), Decimal("124900"), "2026-10-07T12:00:01Z", Decimal("0.01"), "")
+        reconciler = FakeReconciler(ReconciliationEvidence("confirmed", "order-1", (fill,), self.intent.client_order_id))
+        result = self.submit(post_ack_reconciler=reconciler)
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+        self.assertEqual(self.ledger.read_text(), "")
 
     def test_exactly_once_ledger_append_and_conflict(self):
         payload = {"schema_version": "1.1.0", "execution_id": "execution_x", "executed_at_utc": "2026-10-07T12:00:00Z", "asset": "BTC", "quote_currency": "USDT", "executed_usd": 25, "reference_price_usdt": 100000, "btc_quantity": .00025, "status": "reconciled", "reconciliation": {"source": "Bybit private order/fill reconciliation", "note": "test"}, "decision_id": "d", "canary_id": "canary-" + "a" * 32, "approval_id": "approval-" + "a" * 32, "order_id": "o", "order_link_id": "dca-" + "a" * 32, "execution_id_bybit": "x", "fee": 0, "fee_asset": "USDT"}
