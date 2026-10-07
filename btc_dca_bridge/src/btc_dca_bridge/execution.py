@@ -148,6 +148,8 @@ class InstrumentRules:
     quote_precision: Decimal | None = None
     max_market_order_qty: Decimal | None = None
     max_limit_order_qty: Decimal | None = None
+    market_order_qty_unit: str | None = None
+    market_buy_quote_maximum: Decimal | None = None
 
     def validate_quote(self, amount: Decimal) -> None:
         for value in (self.quote_minimum, self.base_quantity_minimum, self.quantity_step, self.price_tick_size):
@@ -190,7 +192,8 @@ def parse_bybit_spot_instrument_info(payload: Mapping[str, Any]) -> InstrumentRu
         return InstrumentRules(_metadata_decimal(minimum, "minOrderAmt"),
             _metadata_decimal(lot["minOrderQty"], "minOrderQty"),
             _metadata_decimal(quantity_step_value, "qtyStep/basePrecision"),
-            _metadata_decimal(price["tickSize"], "tickSize"), quote_precision, max_market, max_limit)
+            _metadata_decimal(price["tickSize"], "tickSize"), quote_precision, max_market, max_limit,
+            "baseCoin" if max_market is not None else None, None)
     except (KeyError, TypeError, AttributeError) as exc:
         raise ExecutionSafetyError("authoritative Bybit Spot instrument metadata is missing or malformed") from exc
 

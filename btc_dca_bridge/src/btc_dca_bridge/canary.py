@@ -19,7 +19,7 @@ from .errors import ArtifactAlreadyExistsError
 from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
 from .live_order import SpotMarketBuyRequest
-from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
+from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance, spot_quote_amount
 from .schemas import validate_artifact
 
 CANARY_SCHEMA_VERSION = "5.4.0"
@@ -230,7 +230,7 @@ class CanaryPreparer:
             if usdt is None or btc is None: reasons.append("BTC and USDT wallet balances are required")
             else:
                 if usdt.has_liability or btc.has_liability: reasons.append("wallet liability detected")
-                authoritative_available_usdt = usdt.available_for_spot_quote_buy
+                authoritative_available_usdt = spot_quote_amount(usdt.available_for_spot_quote_buy)
                 if authoritative_available_usdt is None:
                     reasons.append("authoritative USDT availability for exact Spot quote buy is unavailable")
                 else:

@@ -540,7 +540,12 @@ def _production_readiness(args: argparse.Namespace) -> tuple[dict[str, object], 
 
 
 def _production_connectivity() -> tuple[dict[str, object], int]:
-    return production_connectivity(), 0
+    result = production_connectivity()
+    if result["status"] == "READS_FAILED":
+        return result, 5
+    if result["status"] != "READS_OK":
+        return result, 4
+    return result, 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

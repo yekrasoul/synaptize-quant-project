@@ -23,7 +23,7 @@ from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
 from .ledger import append_execution_once
 from .market_data.http import HttpResponse
-from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification
+from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification, spot_quote_amount
 from .schemas import validate_artifact, validate_live_approval
 
 ORDER_CREATE_PATH = "/v5/order/create"
@@ -362,7 +362,7 @@ class LiveOrderEngine:
         balances = {row.coin: row for row in client.wallet_balances()}
         if "BTC" not in balances or "USDT" not in balances: raise LiveOrderSafetyError("fresh BTC/USDT wallet evidence is incomplete")
         if any(row.has_liability for row in balances.values()): raise LiveOrderSafetyError("fresh wallet liability detected")
-        available = balances["USDT"].available_for_spot_quote_buy
+        available = spot_quote_amount(balances["USDT"].available_for_spot_quote_buy)
         if available is None or Decimal(str(available)) < intent.quote_amount_usdt: raise LiveOrderSafetyError("fresh authoritative exact Spot quote-buy availability is unavailable or insufficient")
         rules = client.instrument_rules()
         rules.validate_quote(intent.quote_amount_usdt)

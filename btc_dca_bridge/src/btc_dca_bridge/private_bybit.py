@@ -32,8 +32,9 @@ ORDER_REALTIME = "/v5/order/realtime"
 ORDER_HISTORY = "/v5/order/history"
 EXECUTION_LIST = "/v5/execution/list"
 INSTRUMENTS_INFO = "/v5/market/instruments-info"
+SERVER_TIME = "/v5/market/time"
 PRIVATE_GET_ALLOWLIST = frozenset({USER_QUERY_API, ACCOUNT_INFO, WALLET_BALANCE, ORDER_REALTIME, ORDER_HISTORY, EXECUTION_LIST})
-PUBLIC_GET_ALLOWLIST = frozenset({INSTRUMENTS_INFO})
+PUBLIC_GET_ALLOWLIST = frozenset({INSTRUMENTS_INFO, SERVER_TIME})
 
 
 class PrivateBybitError(ValueError):
@@ -85,6 +86,17 @@ class AccountInfo:
     updated_time: str | None
 
 
+@dataclass(frozen=True)
+class SpotQuoteAvailability:
+    """Authoritative, account-scoped quote-buy availability with provenance."""
+    amount_usdt: Decimal
+    source_endpoint: str
+    source_field: str
+    account_type: str
+    authoritative: bool
+    observed_at_utc: str
+
+
 def _decimal(value: Any, label: str, *, nonnegative: bool = False) -> Decimal:
     if isinstance(value, bool): raise MalformedBybitResponseError(f"{label} is not numeric")
     try: parsed = Decimal(str(value))
@@ -104,10 +116,16 @@ class WalletBalance:
     usd_value: Decimal
     # The current Unified wallet endpoint does not expose an authoritative
     # amount available for this exact Spot quote-buy operation.
-    available_for_spot_quote_buy: Decimal | None = None
+    available_for_spot_quote_buy: SpotQuoteAvailability | Decimal | None = None
 
     @property
     def has_liability(self) -> bool: return self.borrow_amount > 0 or self.accrued_interest > 0
+
+
+def spot_quote_amount(value: SpotQuoteAvailability | Decimal | None) -> Decimal | None:
+    if isinstance(value, SpotQuoteAvailability):
+        return value.amount_usdt
+    return value
 
 
 @dataclass(frozen=True)
@@ -284,6 +302,24 @@ class BybitPrivateReadClient:
         result = self._read(INSTRUMENTS_INFO, {"category": "spot", "symbol": "BTCUSDT"}, public=True)
         return parse_bybit_spot_instrument_info({"retCode": 0, "result": result})
 
+    def server_time_ms(self) -> int:
+        """Read Bybit's public server clock; this method has no order path."""
+        result = self._read(SERVER_TIME, {}, public=True)
+        raw = result.get("timeNano") or result.get("timeSecond")
+        if raw is None:
+            raise MalformedBybitResponseError("server-time response is missing timeNano/timeSecond")
+        try:
+            value = int(str(raw))
+        except (TypeError, ValueError) as exc:
+            raise MalformedBybitResponseError("server-time response is malformed") from exc
+        if "timeNano" in result:
+            value //= 1_000_000
+        else:
+            value *= 1_000
+        if value <= 0:
+            raise MalformedBybitResponseError("server-time response is non-positive")
+        return value
+
     @staticmethod
     def _order(row: Mapping[str, Any], requested_client_order_id: str) -> ReadOnlyOrder:
         if row.get("orderLinkId") != requested_client_order_id:
@@ -310,6 +346,12 @@ class BybitPrivateReadClient:
         identities = {(row.order_id, row.state) for row in rows}
         if len(states) != 1 or len(identities) != 1: return ReadOnlyOrder(client_order_id, None, OrderState.AMBIGUOUS, "contradictory", Decimal("0"), Decimal("0"))
         return rows[0]
+
+    def order_realtime_probe(self, client_order_id: str) -> tuple[ReadOnlyOrder, ...]:
+        return self._orders(ORDER_REALTIME, client_order_id)
+
+    def order_history_probe(self, client_order_id: str) -> tuple[ReadOnlyOrder, ...]:
+        return self._orders(ORDER_HISTORY, client_order_id)
 
     def executions(self, client_order_id: str) -> tuple[ExecutionFill, ...]:
         rows = self._read(EXECUTION_LIST, {"category": "spot", "symbol": "BTCUSDT", "orderLinkId": client_order_id}).get("list")
