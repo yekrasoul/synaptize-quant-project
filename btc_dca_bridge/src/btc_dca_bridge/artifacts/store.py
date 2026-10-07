@@ -31,7 +31,7 @@ from ..errors import (
     SchemaValidationError,
 )
 from ..paths import DATA_PATH
-from ..schemas import validate_artifact, validate_live_approval
+from ..schemas import UnsupportedProductionEvidenceSchemaError, validate_artifact, validate_live_approval
 
 
 class ArtifactType(str, Enum):
@@ -379,6 +379,8 @@ class ArtifactStore:
             if kind is ArtifactType.RUN:
                 self._validate_run_manifest_identity(payload)
         except (SchemaValidationError, ValueError) as exc:
+            if isinstance(exc, UnsupportedProductionEvidenceSchemaError):
+                raise
             error = ArtifactCorruptError if corrupt else ArtifactSchemaValidationError
             raise error(str(exc)) from exc
 

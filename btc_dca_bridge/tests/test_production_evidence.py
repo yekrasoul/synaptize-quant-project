@@ -67,7 +67,31 @@ class ProductionEvidenceTests(unittest.TestCase):
         self.assertEqual(status, "PROVEN")
         self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=fingerprint)["status"], "VALID_NOT_READY")
         self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint="b" * 64)["status"], "INVALID")
-        self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=None)["status"], "VALID_NOT_READY")
+        unavailable = ProductionEvidenceService(data_root=self.root / "data", ledger_path=self.root / "ledger.jsonl", now=lambda: self.now, repo_probe=self.repo)
+        self.assertEqual(unavailable.verify(bundle["evidence_id"], current_account_fingerprint=None)["status"], "INVALID")
+
+    def test_legacy_57_bundle_is_integrity_valid_but_not_modern_ready(self):
+        bundle, _ = self.service.collect()
+        legacy = dict(bundle)
+        legacy.pop("quote_unit_limit_result")
+        legacy["schema_version"] = "5.7.0"
+        legacy["evidence_id"] = "evidence-" + "c" * 32
+        receipt = ArtifactStore(self.root / "data").persist_production_evidence(legacy)
+        self.assertEqual(receipt.schema_version, "5.7.0")
+        result = self.service.verify(legacy["evidence_id"], current_account_fingerprint=_account_fingerprint(FakeClient())[0])
+        self.assertEqual(result["status"], "VALID_NOT_READY")
+        self.assertNotEqual(result["status"], "CORRUPT")
+
+    def test_58_requires_quote_unit_limit_result_and_unknown_version_is_explicit(self):
+        bundle, _ = self.service.collect()
+        invalid = dict(bundle)
+        invalid.pop("quote_unit_limit_result")
+        invalid["evidence_id"] = "evidence-" + "d" * 32
+        with self.assertRaises(Exception):
+            ArtifactStore(self.root / "data").persist_production_evidence(invalid)
+        unknown = dict(bundle, schema_version="9.9.9", evidence_id="evidence-" + "e" * 32)
+        with self.assertRaises(Exception):
+            ArtifactStore(self.root / "data").persist_production_evidence(unknown)
 
     def test_dynamic_ttl_boundaries_are_independent(self):
         bundle, _ = self.service.collect()

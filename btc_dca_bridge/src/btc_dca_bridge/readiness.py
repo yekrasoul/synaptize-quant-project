@@ -243,10 +243,13 @@ class ProductionReadinessService:
                 add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, f"authoritative_amount_usdt={available_amount}; minimum_v1_usdt=10", "authoritative Spot quote-buy availability is proven and meets the V1 minimum", "")
             rules = client.instrument_rules()
             observed_at = self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")
-            quote_limit_evidence = unavailable_quote_unit_limit(observed_at_utc=observed_at)
-            if rules.market_buy_quote_maximum is not None and rules.market_order_qty_unit == "quoteCoin" and self.quote_limit_policy.approved_sources:
-                endpoint, field = sorted(self.quote_limit_policy.approved_sources)[0]
-                quote_limit_evidence = QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", endpoint, field, "USDT", rules.market_buy_quote_maximum, True, observed_at, "CONFIRMED")
+            try:
+                quote_limit_evidence = client.quote_unit_limit_evidence()
+            except Exception as exc:
+                quote_limit_evidence = unavailable_quote_unit_limit(observed_at_utc=observed_at)
+                quote_limit_error = str(exc)
+            else:
+                quote_limit_error = ""
             v1_results: dict[str, str] = {}
             try:
                 quote_maximum = validate_quote_unit_limit_evidence(quote_limit_evidence, now=self.now(), policy=self.quote_limit_policy)
@@ -262,7 +265,7 @@ class ProductionReadinessService:
                     except Exception as exc:
                         v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
             valid_ranges = all(value == "PASS" for value in v1_results.values())
-            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin contract proves V1 $10-$100" if valid_ranges else "quoteCoin market-buy upper bound cannot be proven from current authoritative fields", "Implement an official quote-unit upper-bound source; PROPOSED V2 CHANGE REQUIRED if V1 limits must change")
+            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin contract proves V1 $10-$100" if valid_ranges else (quote_limit_error or "quoteCoin market-buy upper bound cannot be proven from current authoritative fields"), "Implement an official quote-unit upper-bound source; PROPOSED V2 CHANGE REQUIRED if V1 limits must change")
             add("DETERMINISTIC_ORDER_ID", "operations", "PASS", True, "client order identity and orderLinkId are supported", "deterministic identity support is present")
         except PrivateBybitError as exc:
             add("BYBIT_READ_ACCESS", "network", "UNAVAILABLE", True, "private read failed", str(exc), "Provide working authenticated read-only access")

@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .artifacts import ArtifactStore, ArtifactType
 from . import availability
+from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
 from .config import ExecutionConfig
 from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
@@ -210,6 +211,7 @@ class FreshBybitReadClient(Protocol):
     def wallet_balances(self): ...
     def spot_quote_availability(self): ...
     def instrument_rules(self): ...
+    def quote_unit_limit_evidence(self): ...
     def submission_state(self, client_order_id: str) -> str: ...
 
 
@@ -255,10 +257,11 @@ class SignedBybitSubmissionTransport:
 
 
 class LiveOrderEngine:
-    def __init__(self, *, artifact_store: ArtifactStore, now: Callable[[], datetime] | None = None, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY) -> None:
+    def __init__(self, *, artifact_store: ArtifactStore, now: Callable[[], datetime] | None = None, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy: QuoteUnitLimitPolicy = PRODUCTION_QUOTE_UNIT_LIMIT_POLICY) -> None:
         self.artifact_store = artifact_store
         self._now = now or (lambda: datetime.now(UTC))
         self.availability_policy = availability_policy
+        self.quote_limit_policy = quote_limit_policy
 
     @staticmethod
     def _fingerprint(request: SpotMarketBuyRequest) -> str:
@@ -281,7 +284,7 @@ class LiveOrderEngine:
         self._validate_persisted_manifest(manifest, manifest_sha256)
         self._validate_manifest(manifest, intent, execution_config, manifest_sha256=manifest_sha256, now_utc=self._now().astimezone(UTC))
         self._validate_persisted_approval(approval, approval_sha256, intent, manifest, manifest_sha256, now_utc=self._now().astimezone(UTC))
-        credential_info, instrument_provider, submission_state = self._fresh_private_checks(read_client, intent, availability_policy=self.availability_policy, now_utc=self._now().astimezone(UTC))
+        credential_info, instrument_provider, submission_state = self._fresh_private_checks(read_client, intent, availability_policy=self.availability_policy, quote_limit_policy=self.quote_limit_policy, now_utc=self._now().astimezone(UTC))
         from .ledger import confirmed_executions, read_executions
         try:
             for execution in confirmed_executions(read_executions(ledger_path)):
@@ -356,7 +359,7 @@ class LiveOrderEngine:
             raise LiveOrderSafetyError("persisted LiveApproval schema validation failed") from exc
 
     @staticmethod
-    def _fresh_private_checks(client: FreshBybitReadClient, intent: OrderIntent, *, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY, now_utc: datetime | None = None) -> tuple[ApiCredentialInfo, Any, SubmissionState]:
+    def _fresh_private_checks(client: FreshBybitReadClient, intent: OrderIntent, *, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy: QuoteUnitLimitPolicy = PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, now_utc: datetime | None = None) -> tuple[ApiCredentialInfo, Any, SubmissionState]:
         info = client.credential_info()
         if info.classification is not CredentialClassification.TRADE_CAPABLE: raise LiveOrderSafetyError("fresh credential classification is not TRADE_CAPABLE")
         if set(info.permissions) - {"Spot", "Wallet"} or not any(action in {"SpotTrade", "OrderEntry", "SpotOrder"} for action in info.permissions.get("Spot", ())): raise LiveOrderSafetyError("fresh credential permissions are not Spot-only approved trade scope")
@@ -371,6 +374,11 @@ class LiveOrderEngine:
         except availability.AvailabilityValidationError as exc:
             raise LiveOrderSafetyError("fresh authoritative exact Spot quote-buy availability is unavailable or untrusted") from exc
         if available < intent.quote_amount_usdt: raise LiveOrderSafetyError("fresh authoritative exact Spot quote-buy availability is unavailable or insufficient")
+        try:
+            maximum = validate_quote_unit_limit_evidence(client.quote_unit_limit_evidence(), now=(now_utc or datetime.now(UTC)), policy=quote_limit_policy)
+        except Exception as exc:
+            raise LiveOrderSafetyError("authoritative quote-unit market-buy maximum is unavailable or untrusted") from exc
+        if maximum < intent.quote_amount_usdt: raise LiveOrderSafetyError("authoritative quote-unit market-buy maximum is below exact amount")
         rules = client.instrument_rules()
         rules.validate_quote(intent.quote_amount_usdt)
         if client.submission_state(intent.client_order_id) != "conclusively_absent": raise LiveOrderSafetyError("fresh order reconciliation is not conclusively absent")

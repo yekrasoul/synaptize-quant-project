@@ -24,6 +24,7 @@ from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.errors import ArtifactCorruptError
 from btc_dca_bridge.operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, EXIT_UNAVAILABLE, OperationLock, OperationLockError, OperationsService
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, PrivateApiUnavailableError, SpotQuoteAvailability, WalletBalance
+from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy
 
 
 class FakeReader:
@@ -37,6 +38,7 @@ class FakeReader:
     def wallet_balances(self): return self.balances
     def instrument_rules(self): return self.rules
     def spot_quote_availability(self): return self.balances[0].available_for_spot_quote_buy
+    def quote_unit_limit_evidence(self): return QuoteUnitLimitEvidence("BTCUSDT", "spot", "Buy", "Market", "quoteCoin", "USDT", "/test/quote-limit", "maxQuote", "USDT", Decimal("100"), True, datetime.now(UTC).isoformat().replace("+00:00", "Z"), "CONFIRMED")
     def submission_state(self, unused): return "conclusively_absent"
 
 
@@ -66,7 +68,8 @@ class CliOperationsTests(unittest.TestCase):
         store.persist(ArtifactType.DECISION, self.decision, run_id=self.run_id)
         self.intent = make_order_intent(self.decision, run_id=self.run_id, created_at_utc=self.decision["created_at_utc"])
         store.persist(ArtifactType.ORDER_INTENT, self.intent, run_id=self.run_id)
-        self.manifest = CanaryPreparer(artifact_store=store, client=self.reader, execution_config=disabled, now=lambda: self.now, availability_policy=self.availability_policy).prepare(self.decision, run_id=self.run_id, calendar_month=self.now.strftime("%Y-%m"), ledger_path=self.ledger).manifest.to_dict()
+        test_quote_policy = QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(days=1))
+        self.manifest = CanaryPreparer(artifact_store=store, client=self.reader, execution_config=disabled, now=lambda: self.now, availability_policy=self.availability_policy, quote_limit_policy=test_quote_policy).prepare(self.decision, run_id=self.run_id, calendar_month=self.now.strftime("%Y-%m"), ledger_path=self.ledger).manifest.to_dict()
         self.manifest_payload, self.manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=self.manifest["canary_id"])
         self.enabled = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
 
@@ -95,7 +98,7 @@ class CliOperationsTests(unittest.TestCase):
         partial = FakeReconciler(ReconciliationEvidence("partial", "order-cli", (fill_a,), self.intent.client_order_id))
         transport = FakeTransport(HttpResponse(200, {}, json.dumps({"retCode": 0, "result": {"orderId": "order-cli", "orderLinkId": self.intent.client_order_id}}).encode()))
         execute = self.exact_args("canary-execute") + ["--month", self.now.strftime("%Y-%m")]
-        with patch("btc_dca_bridge.cli.load_execution_config", return_value=self.enabled), patch("btc_dca_bridge.cli.PRODUCTION_AVAILABILITY_POLICY", self.availability_policy), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=self.reader), patch("btc_dca_bridge.cli._submission_transport_factory", return_value=transport), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=partial):
+        with patch("btc_dca_bridge.cli.load_execution_config", return_value=self.enabled), patch("btc_dca_bridge.cli.PRODUCTION_AVAILABILITY_POLICY", self.availability_policy), patch("btc_dca_bridge.cli.PRODUCTION_QUOTE_UNIT_LIMIT_POLICY", QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(days=1))), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=self.reader), patch("btc_dca_bridge.cli._submission_transport_factory", return_value=transport), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=partial):
             code, outcome, error = self.invoke(execute)
         self.assertIn("outcome_category", outcome, error)
         self.assertEqual((code, outcome["outcome_category"], len(transport.calls)), (EXIT_RECONCILIATION, "reconciliation_required", 1))

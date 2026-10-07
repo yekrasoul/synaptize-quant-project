@@ -12,6 +12,7 @@ from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore
 from .errors import ArtifactCorruptError, ArtifactNotFoundError
+from .schemas import UnsupportedProductionEvidenceSchemaError
 from .readiness import ProductionReadinessService, production_connectivity
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitEvidence, QuoteUnitLimitValidationError, unavailable_quote_unit_limit, validate_quote_unit_limit_evidence
 
@@ -127,7 +128,7 @@ class ProductionEvidenceService:
         evidence_id = "evidence-" + hashlib.sha256(f"{repo.get('commit')}|{socket.gethostname()}|{created.isoformat()}".encode()).hexdigest()[:32]
         by_id = {item.get("check_id"): item for item in checks}
         bundle: dict[str, Any] = {
-            "schema_version": "5.7.0", "evidence_id": evidence_id,
+            "schema_version": "5.8.0", "evidence_id": evidence_id,
             "created_at_utc": created.isoformat().replace("+00:00", "Z"),
             "expires_at_utc": (created + EVIDENCE_TTL).isoformat().replace("+00:00", "Z"),
             "repository_commit": str(repo.get("commit", "")), "hostname": socket.gethostname(), "pid": __import__("os").getpid(),
@@ -165,6 +166,8 @@ class ProductionEvidenceService:
             bundle = ArtifactStore(self.data_root).read_production_evidence(evidence_id)
         except ArtifactCorruptError as exc:
             return {"status": "CORRUPT", "evidence_id": evidence_id, "reason": str(exc)}
+        except UnsupportedProductionEvidenceSchemaError as exc:
+            return {"status": "UNSUPPORTED_SCHEMA_VERSION", "evidence_id": evidence_id, "reason": str(exc)}
         except ArtifactNotFoundError as exc:
             return {"status": "INVALID", "evidence_id": evidence_id, "reason": str(exc)}
         now = _utc(self.now())

@@ -33,6 +33,7 @@ from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, Priva
 from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
+from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 from .readiness import ProductionReadinessService, production_connectivity
@@ -523,7 +524,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
     lock.acquire()
     try:
-        engine = LiveOrderEngine(artifact_store=store, availability_policy=PRODUCTION_AVAILABILITY_POLICY)
+        engine = LiveOrderEngine(artifact_store=store, availability_policy=PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
         result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
     finally:
         lock.release()

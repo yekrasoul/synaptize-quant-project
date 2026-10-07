@@ -64,6 +64,13 @@ class QuoteUnitLimitTests(unittest.TestCase):
             self.assertLessEqual(amount, maximum)
         self.assertGreater(Decimal("100"), validate_quote_unit_limit_evidence(self.evidence(maximum_quote_usdt=Decimal("100")), now=self.now, policy=self.policy) - Decimal("0.01"))
 
+    def test_v1_boundary_matrix(self):
+        for maximum, passing in ((Decimal("9.99"), ()), (Decimal("10"), ("10",)), (Decimal("25"), ("10", "25")), (Decimal("100"), ("10", "25", "50", "75", "100"))):
+            with self.subTest(maximum=maximum):
+                ceiling = validate_quote_unit_limit_evidence(self.evidence(maximum_quote_usdt=maximum), now=self.now, policy=self.policy)
+                for amount in ("10", "25", "50", "75", "100"):
+                    self.assertEqual(Decimal(amount) <= ceiling, amount in passing)
+
 
 if __name__ == "__main__":
     unittest.main()
