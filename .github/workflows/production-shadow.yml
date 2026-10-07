@@ -22,13 +22,18 @@ jobs:
       run:
         working-directory: btc_dca_bridge
     env:
-      CONTEXT_JSON: ${{ runner.temp }}/production-context.json
-      RESULT_JSON: ${{ runner.temp }}/production-result.json
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Check out canonical repository
         uses: actions/checkout@v4
+
+      - name: Initialize runner runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "CONTEXT_JSON=${RUNNER_TEMP}/production-context.json" >> "$GITHUB_ENV"
+          echo "RESULT_JSON=${RUNNER_TEMP}/production-result.json" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5

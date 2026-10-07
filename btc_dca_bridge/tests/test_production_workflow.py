@@ -20,6 +20,33 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertIsInstance(payload, dict)
         self.assertIn("jobs", payload)
 
+    def test_workflow_initializes_runtime_paths_after_runner_allocation(self):
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        job = workflow["jobs"]["shadow"]
+        job_env = job.get("env", {})
+        self.assertNotIn("CONTEXT_JSON", job_env)
+        self.assertNotIn("RESULT_JSON", job_env)
+        self.assertNotRegex(WORKFLOW_PATH.read_text(encoding="utf-8"), r"\$\{\{\s*runner\.")
+
+        steps = job["steps"]
+        path_step = next(step for step in steps if step.get("name") == "Initialize runner runtime paths")
+        self.assertIn("RUNNER_TEMP", path_step["run"])
+        self.assertIn('echo "CONTEXT_JSON=${RUNNER_TEMP}/production-context.json" >> "$GITHUB_ENV"', path_step["run"])
+        self.assertIn('echo "RESULT_JSON=${RUNNER_TEMP}/production-result.json" >> "$GITHUB_ENV"', path_step["run"])
+        self.assertLess(steps.index(path_step), next(i for i, step in enumerate(steps) if step.get("id") == "context"))
+
+    def test_workflow_preserves_canonical_schedule_dispatch_and_artifact_paths(self):
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        triggers = workflow.get("on", workflow.get(True))
+        self.assertEqual(workflow["name"], "Production shadow")
+        self.assertEqual(triggers["schedule"][0]["cron"], "0 11 * * *")
+        self.assertIn("workflow_dispatch", triggers)
+        self.assertEqual(workflow["jobs"]["shadow"]["defaults"]["run"]["working-directory"], "btc_dca_bridge")
+        text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertIn("path: btc_dca_bridge/data/", text)
+        self.assertIn('"${CONTEXT_JSON}"', text)
+        self.assertIn('"${RESULT_JSON}"', text)
+
     def test_workflow_is_canonical_frozen_least_privilege_and_durable(self):
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         lowered = workflow.lower()
