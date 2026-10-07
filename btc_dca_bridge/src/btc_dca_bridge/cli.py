@@ -620,15 +620,16 @@ def _production_status(args: argparse.Namespace) -> tuple[dict[str, object], int
 
 def _collect_production_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     result = _status_service(args).collect()
-    alert = result["alert"]
+    alerts = result.get("new_alerts", [])
     notification_status = "not_sent"
-    if alert.get("created"):
+    delivery_results: list[dict[str, str]] = []
+    for alert in alerts:
         try:
             notification = load_notification_config()
             token = os.environ.get(notification.bot_token_env_var, "")
             chat_id = os.environ.get(notification.chat_id_env_var, "")
             if not token or not chat_id:
-                notification_status = "unavailable"
+                delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "unavailable"})
             else:
                 delivery = TelegramNotifier(token, chat_id, transport=TelegramTransport(
                     connect_timeout_seconds=notification.http.connect_timeout_seconds,
@@ -636,10 +637,15 @@ def _collect_production_status(args: argparse.Namespace) -> tuple[dict[str, obje
                     max_attempts=notification.http.retry_attempts,
                     backoff_seconds=notification.http.backoff_seconds,
                 )).send(str(alert["message"]))
-                notification_status = "sent"
-                result["notification_delivery"] = {"channel": "telegram", "message_id": delivery.message_id, "attempts": delivery.attempts}
-        except (BtcDcaError, ValueError):
-            notification_status = "failed"
+                delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "sent", "message_id": str(delivery.message_id), "attempts": str(delivery.attempts)})
+        except Exception:
+            # The alert is already durable. Do not retry or remove it here;
+            # later collections will see it as covered and won't resend it.
+            delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "failed"})
+    if delivery_results:
+        statuses = {item["status"] for item in delivery_results}
+        notification_status = next(iter(statuses)) if len(statuses) == 1 else "partial_or_failed"
+        result["notification_deliveries"] = delivery_results
     result["notification_status"] = notification_status
     state = result["snapshot"]["overall_operator_state"]
     code = 5 if state == "CORRUPT" else (3 if state == "RECONCILIATION_REQUIRED" else (2 if state == "ACTION_REQUIRED" else 0))

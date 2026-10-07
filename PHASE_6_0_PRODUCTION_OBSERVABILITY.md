@@ -54,6 +54,14 @@ have their own strict schema and immutable path. Status artifacts contain
 sanitized states and identifiers only, never raw private API responses or
 credential values.
 
+Alerts are deterministic derivatives of adjacent, digest-verified snapshots.
+Collection first repairs missing alerts across its bounded recent history,
+then persists a new snapshot, then persists the transition alert. A failure in
+the final step leaves the snapshot untouched and the next collection derives
+the same alert identity from that persisted pair. `validate_status_artifacts`
+reports such a gap as `incomplete` with `missing_alert_count`; it is not
+snapshot corruption. Existing alerts and snapshots are never rewritten.
+
 Monthly spend and remaining budget are computed from validated canonical,
 confirmed ledger executions for the current UTC calendar month. Decisions,
 manifests, approvals, attempts, alerts, and unresolved partial fills do not
@@ -102,8 +110,11 @@ Classifications:
 The immutable alert key is derived from previous snapshot digest, current
 snapshot digest, classification, and sorted changed fields. Existing alert
 artifacts are checked before publication. Identical snapshots produce no
-alert; Telegram delivery is best-effort notification only and is not the
-deduplication store or a source of operational truth.
+alert; only alert artifacts newly created during the current collection are
+Telegram delivery candidates. A failed or interrupted delivery does not remove
+the alert, cause snapshot rewrite, or trigger a later automatic resend.
+Telegram delivery is best-effort notification only and is not the deduplication
+store or a source of operational truth.
 
 Telegram content is a short, sanitized state summary. It contains no API keys,
 signatures, authorization headers, raw private responses, or notification

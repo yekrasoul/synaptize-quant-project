@@ -9,11 +9,13 @@ from unittest.mock import patch
 from btc_dca_bridge import cli
 from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType
 from btc_dca_bridge.errors import ArtifactAlreadyExistsError
+from btc_dca_bridge.errors import PersistenceIOError
 from btc_dca_bridge.blocked_production import QUOTE_LIMIT_BLOCKER_ID, contract_status
 from btc_dca_bridge.production_status import (
     ProductionStatusService,
     alert_class_for,
     compare_status_snapshots,
+    derive_transition_alert,
     format_production_status_alert,
     validate_status_artifacts,
 )
@@ -119,6 +121,134 @@ class ProductionStatusTests(unittest.TestCase):
         self.assertEqual(second["diff"]["classification"], "NO_MATERIAL_CHANGE")
         self.assertFalse(second["alert"]["created"])
         self.assertEqual(validate_status_artifacts(self.root)["status"], "valid")
+
+    def _persist_material_snapshot_without_alert(self):
+        first = self.fake.service.collect()
+        self.assertEqual(first["new_alerts"], [])
+        self.clock.instant += timedelta(seconds=1)
+        self.fake.checks = dict(self.fake.checks, CLOCK_SKEW="UNAVAILABLE")
+        current = self.fake.service.evaluate().to_dict()
+        ArtifactStore(self.root).persist(ArtifactType.PRODUCTION_STATUS, current, run_id=current["snapshot_id"])
+        return first, current
+
+    def _assert_no_execution_side_effects(self, ledger_before):
+        self.assertEqual(self.ledger.read_bytes(), ledger_before)
+        self.assertFalse((self.root / "order_submission_attempts").exists())
+        self.assertFalse((self.root / "live_approvals").exists())
+
+    def test_crash_after_snapshot_persistence_backfills_exactly_once(self):
+        ledger_before = self.ledger.read_bytes()
+        self._persist_material_snapshot_without_alert()
+        gap = validate_status_artifacts(self.root)
+        self.assertEqual(gap["status"], "incomplete")
+        self.assertEqual(gap["material_transition_count"], 1)
+        self.assertEqual(gap["missing_alert_count"], 1)
+        rows = self.fake.service.history(limit=10)
+        expected = derive_transition_alert(rows[1], rows[1]["sha256"], rows[0], rows[0]["sha256"])
+        self.assertIsNotNone(expected)
+        self.assertEqual(expected, derive_transition_alert(rows[1], rows[1]["sha256"], rows[0], rows[0]["sha256"]))
+
+        self.clock.instant += timedelta(seconds=1)
+        recovered = self.fake.service.collect()
+        self.assertEqual(recovered["reconciled_alert_count"], 1)
+        self.assertEqual(len(recovered["new_alerts"]), 1)
+        self.assertEqual(recovered["alert"]["classification"], "ATTENTION_REQUIRED")
+        self.assertEqual(recovered["new_alerts"][0]["dedup_key"], expected["dedup_key"])
+        self.assertEqual(recovered["diff"]["classification"], "NO_MATERIAL_CHANGE")
+        self.assertEqual(validate_status_artifacts(self.root)["missing_alert_count"], 0)
+
+        alert_count = validate_status_artifacts(self.root)["alert_count"]
+        self.clock.instant += timedelta(seconds=1)
+        repeated = self.fake.service.collect()
+        self.assertEqual(repeated["new_alerts"], [])
+        self.assertEqual(validate_status_artifacts(self.root)["alert_count"], alert_count)
+        self._assert_no_execution_side_effects(ledger_before)
+
+    def test_alert_persistence_failure_leaves_snapshot_for_later_recovery(self):
+        ledger_before = self.ledger.read_bytes()
+        self.fake.service.collect()
+        self.clock.instant += timedelta(seconds=1)
+        self.fake.checks = dict(self.fake.checks, CLOCK_SKEW="UNAVAILABLE")
+        original_persist = self.fake.service.store.persist
+
+        def fail_alert(kind, artifact, *, run_id):
+            if kind is ArtifactType.PRODUCTION_STATUS_ALERT:
+                raise OSError("synthetic alert persistence interruption")
+            return original_persist(kind, artifact, run_id=run_id)
+
+        with patch.object(self.fake.service.store, "persist", side_effect=fail_alert):
+            with self.assertRaises(PersistenceIOError):
+                self.fake.service.collect()
+        self.assertEqual(len(self.fake.service.history(limit=10)), 2)
+        self.assertEqual(validate_status_artifacts(self.root)["status"], "incomplete")
+        self.assertFalse(list((self.root / "production_status_alerts").glob("*/*/*/*.json")))
+
+        self.clock.instant += timedelta(seconds=1)
+        recovered = self.fake.service.collect()
+        self.assertEqual(recovered["reconciled_alert_count"], 1)
+        self.assertEqual(validate_status_artifacts(self.root)["status"], "valid")
+        self.assertEqual(validate_status_artifacts(self.root)["alert_count"], 1)
+        self._assert_no_execution_side_effects(ledger_before)
+
+    def test_validator_reports_gap_then_reconciliation_restores_coverage(self):
+        ledger_before = self.ledger.read_bytes()
+        self._persist_material_snapshot_without_alert()
+        before = validate_status_artifacts(self.root)
+        self.assertEqual(before["status"], "incomplete")
+        self.assertEqual(before["missing_alert_count"], 1)
+        reconciled = self.fake.service.reconcile_status_alerts()
+        self.assertEqual(reconciled["created_count"], 1)
+        after = validate_status_artifacts(self.root)
+        self.assertEqual(after["status"], "valid")
+        self.assertEqual(after["missing_alert_count"], 0)
+        self._assert_no_execution_side_effects(ledger_before)
+
+    def test_status_validator_distinguishes_corrupt_artifact_from_coverage_gap(self):
+        collected = self.fake.service.collect()
+        path = Path(collected["snapshot_path"])
+        path.with_suffix(path.suffix + ".sha256").write_text("0" * 64 + "\n", encoding="ascii")
+        report = validate_status_artifacts(self.root)
+        self.assertEqual(report["status"], "CORRUPT")
+        self.assertEqual(report["missing_alert_count"], 0)
+
+    def test_telegram_failure_keeps_alert_and_is_not_retried_on_collection(self):
+        ledger_before = self.ledger.read_bytes()
+        self.fake.service.collect()
+        self.clock.instant += timedelta(seconds=1)
+        self.fake.checks = dict(self.fake.checks, CLOCK_SKEW="UNAVAILABLE")
+        factory = lambda **_: self.fake.service
+        notification = SimpleNamespace(
+            bot_token_env_var="TEST_TELEGRAM_TOKEN",
+            chat_id_env_var="TEST_TELEGRAM_CHAT",
+            http=SimpleNamespace(connect_timeout_seconds=1, read_timeout_seconds=1, retry_attempts=1, backoff_seconds=0),
+        )
+        output = __import__("io").StringIO()
+        with patch.object(cli, "_production_status_service_factory", side_effect=factory), \
+             patch.object(cli, "load_notification_config", return_value=notification), \
+             patch.object(cli, "TelegramNotifier") as notifier, \
+             patch.dict("os.environ", {"TEST_TELEGRAM_TOKEN": "synthetic-token", "TEST_TELEGRAM_CHAT": "synthetic-chat"}), \
+             patch("sys.stdout", output):
+            notifier.return_value.send.side_effect = RuntimeError("synthetic delivery failure")
+            result_code = cli.main(["collect-production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"])
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["notification_status"], "failed")
+        self.assertEqual(result_code, 2)
+        self.assertEqual(result["snapshot"]["production_readiness"], "NOT_READY")
+        self.assertEqual(validate_status_artifacts(self.root)["alert_count"], 1)
+        self.assertEqual(len(self.fake.service.history(limit=10)), 2)
+
+        self.clock.instant += timedelta(seconds=1)
+        output = __import__("io").StringIO()
+        with patch.object(cli, "_production_status_service_factory", side_effect=factory), \
+             patch.object(cli, "TelegramNotifier") as notifier_again, \
+             patch("sys.stdout", output):
+            cli.main(["collect-production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"])
+        repeated = json.loads(output.getvalue())
+        self.assertEqual(repeated["new_alerts"], [])
+        self.assertEqual(repeated["snapshot"]["production_readiness"], "NOT_READY")
+        notifier_again.assert_not_called()
+        self.assertEqual(validate_status_artifacts(self.root)["alert_count"], 1)
+        self._assert_no_execution_side_effects(ledger_before)
 
     def test_status_diff_classifications(self):
         baseline = self.fake.service.evaluate().to_dict()

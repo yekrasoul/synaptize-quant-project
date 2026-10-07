@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 from .artifacts import ArtifactStore, ArtifactType, make_run_id
 from .blocked_production import active_production_blockers, compare_contract_capabilities, contract_status
 from .config import load_execution_config
+from .errors import ArtifactAlreadyExistsError, ArtifactCorruptError, PersistenceIOError
 from .ledger import executions_for_month, read_executions
 from .operations import OperationsService
 from .paths import DATA_PATH, LEDGER_PATH
@@ -23,10 +24,6 @@ from .schemas import validate_artifact
 
 SNAPSHOT_SCHEMA_VERSION = "6.0.0"
 ALERT_SCHEMA_VERSION = "1.0.0"
-_MATERIAL_CLASSES = {
-    "INFO_CHANGE", "ATTENTION_REQUIRED", "SAFETY_REGRESSION",
-    "RECOVERY_PROGRESS", "EXTERNAL_DEPENDENCY_CHANGE",
-}
 
 
 @dataclass(frozen=True)
@@ -177,6 +174,43 @@ def format_production_status_alert(snapshot: Mapping[str, Any], diff: Production
         "Action: Observe only; resolve reconciliation if required.",
     ]
     return "\n".join(lines)
+
+
+def derive_transition_alert(
+    previous: Mapping[str, Any],
+    previous_sha256: str,
+    current: Mapping[str, Any],
+    current_sha256: str,
+) -> dict[str, Any] | None:
+    """Derive the one immutable alert implied by two persisted snapshots.
+
+    The supplied digests must be the verified canonical ArtifactStore digests.
+    No wall-clock, delivery, or mutable external state participates.
+    """
+    if not all(isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value) for value in (previous_sha256, current_sha256)):
+        raise ValueError("transition snapshots require canonical SHA-256 digests")
+    diff = compare_status_snapshots(previous, current)
+    if diff.classification == "NO_MATERIAL_CHANGE":
+        return None
+    changed_fields = sorted(diff.changed_fields)
+    dedup_key = hashlib.sha256("|".join((
+        previous_sha256,
+        current_sha256,
+        diff.classification,
+        ",".join(changed_fields),
+    )).encode("utf-8")).hexdigest()
+    return {
+        "schema_version": ALERT_SCHEMA_VERSION,
+        "alert_id": f"alert-{dedup_key}",
+        "dedup_key": dedup_key,
+        "created_at_utc": str(current["captured_at_utc"]),
+        "previous_snapshot_id": str(previous["snapshot_id"]),
+        "current_snapshot_id": str(current["snapshot_id"]),
+        "classification": diff.classification,
+        "alert_class": alert_class_for(diff.classification),
+        "changed_fields": changed_fields,
+        "message": format_production_status_alert(current, diff),
+    }
 
 
 class ProductionStatusService:
@@ -355,46 +389,131 @@ class ProductionStatusService:
         rows.sort(key=lambda pair: (pair[0]["captured_at_utc"], pair[0]["snapshot_id"]), reverse=True)
         return [{**payload, "sha256": digest} for payload, digest in rows[:limit]]
 
-    def _existing_alert_dedup_keys(self) -> set[str]:
+    def _existing_alerts(self) -> dict[str, dict[str, Any]]:
         root = self.data_root / "production_status_alerts"
-        keys: set[str] = set()
+        alerts: dict[str, dict[str, Any]] = {}
         for path in sorted(root.glob("*/*/*/*.json")):
             date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
             payload = self.store.read(ArtifactType.PRODUCTION_STATUS_ALERT, run_id=path.stem, artifact_date_utc=date)
-            keys.add(str(payload["dedup_key"]))
-        return keys
+            key = str(payload["dedup_key"])
+            if key in alerts:
+                raise ArtifactCorruptError("duplicate immutable production-status alert identity")
+            alerts[key] = payload
+        return alerts
+
+    @staticmethod
+    def _chronological_transitions(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        chronological = list(reversed(rows))
+        return list(zip(chronological, chronological[1:]))
+
+    def _persist_transition_alert(
+        self,
+        previous: Mapping[str, Any],
+        current: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        expected = derive_transition_alert(previous, str(previous["sha256"]), current, str(current["sha256"]))
+        if expected is None:
+            return None
+        alerts = self._existing_alerts()
+        existing = alerts.get(expected["dedup_key"])
+        if existing is not None:
+            if existing != expected:
+                raise ArtifactCorruptError("persisted production-status alert contradicts its immutable snapshots")
+            return None
+        created_at = datetime.fromisoformat(expected["created_at_utc"].replace("Z", "+00:00")).astimezone(UTC)
+        alert_run_id = make_run_id(created_at, f"prodalert_{expected['dedup_key'][:20]}")
+        try:
+            receipt = self.store.persist(ArtifactType.PRODUCTION_STATUS_ALERT, expected, run_id=alert_run_id)
+        except ArtifactAlreadyExistsError:
+            # Concurrent collectors may race on the same deterministic path. A
+            # read-back makes this idempotent; inconsistent bytes remain corruption.
+            existing = self._existing_alerts().get(expected["dedup_key"])
+            if existing != expected:
+                raise
+            return None
+        except OSError as exc:
+            raise PersistenceIOError("could not persist derived production-status alert; snapshot remains authoritative") from exc
+        return {**expected, "created": True, "path": str(receipt.path), "sha256": receipt.sha256}
+
+    def reconcile_status_alerts(self, *, limit: int = 1000) -> dict[str, Any]:
+        """Backfill absent derived alerts for bounded adjacent persisted snapshots."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 2 or limit > 1000:
+            raise ValueError("alert reconciliation limit must be within 2..1000 snapshots")
+        rows = self.history(limit=limit)
+        created: list[dict[str, Any]] = []
+        material_count = 0
+        for previous, current in self._chronological_transitions(rows):
+            expected = derive_transition_alert(previous, previous["sha256"], current, current["sha256"])
+            if expected is None:
+                continue
+            material_count += 1
+            persisted = self._persist_transition_alert(previous, current)
+            if persisted is not None:
+                created.append(persisted)
+        return {
+            "created_alerts": created,
+            "created_count": len(created),
+            "material_transition_count": material_count,
+        }
 
     def collect(self) -> dict[str, Any]:
+        # Recover derived records left behind by an earlier crash before adding
+        # a new point to the immutable timeline.
+        recovered = self.reconcile_status_alerts()
         previous_rows = self.history(limit=1)
         previous = previous_rows[0] if previous_rows else None
         current = self.evaluate().to_dict()
         diff = compare_status_snapshots(previous, current) if previous else ProductionStatusDiff("NO_MATERIAL_CHANGE", ())
         receipt = self.store.persist(ArtifactType.PRODUCTION_STATUS, current, run_id=current["snapshot_id"])
-        alert_result: dict[str, Any] = {"created": False, "classification": diff.classification, "alert_class": alert_class_for(diff.classification)}
-        if previous and diff.classification in _MATERIAL_CLASSES:
-            dedup_key = hashlib.sha256("|".join((previous["sha256"], receipt.sha256, diff.classification, ",".join(diff.changed_fields))).encode()).hexdigest()
-            if dedup_key not in self._existing_alert_dedup_keys():
-                message = format_production_status_alert(current, diff)
-                alert = {
-                    "schema_version": ALERT_SCHEMA_VERSION,
-                    "alert_id": f"alert-{dedup_key}",
-                    "dedup_key": dedup_key,
-                    "created_at_utc": current["captured_at_utc"],
-                    "previous_snapshot_id": previous["snapshot_id"],
-                    "current_snapshot_id": current["snapshot_id"],
-                    "classification": diff.classification,
-                    "alert_class": alert_class_for(diff.classification),
-                    "changed_fields": list(diff.changed_fields),
-                    "message": message,
-                }
-                alert_run_id = make_run_id(self.now().astimezone(UTC), f"prodalert_{dedup_key[:20]}")
-                alert_receipt = self.store.persist(ArtifactType.PRODUCTION_STATUS_ALERT, alert, run_id=alert_run_id)
-                alert_result.update({"created": True, "alert_id": alert["alert_id"], "path": str(alert_receipt.path), "message": message})
-        return {"snapshot": current, "snapshot_sha256": receipt.sha256, "snapshot_path": str(receipt.path), "diff": diff.to_dict(), "alert": alert_result}
+        created_alerts = list(recovered["created_alerts"])
+        if previous:
+            alert = self._persist_transition_alert({**previous, "sha256": previous["sha256"]}, {**current, "sha256": receipt.sha256})
+            if alert is not None:
+                created_alerts.append(alert)
+        if created_alerts:
+            latest_alert = created_alerts[-1]
+            alert_result: dict[str, Any] = {
+                "created": True,
+                "classification": latest_alert["classification"],
+                "alert_class": latest_alert["alert_class"],
+                **{key: latest_alert[key] for key in ("alert_id", "dedup_key", "path", "message") if key in latest_alert},
+            }
+        else:
+            alert_result = {"created": False, "classification": diff.classification, "alert_class": alert_class_for(diff.classification)}
+        return {
+            "snapshot": current,
+            "snapshot_sha256": receipt.sha256,
+            "snapshot_path": str(receipt.path),
+            "diff": diff.to_dict(),
+            "alert": alert_result,
+            "new_alerts": created_alerts,
+            "reconciled_alert_count": recovered["created_count"],
+        }
 
 
 def validate_status_artifacts(data_root: Path = DATA_PATH) -> dict[str, Any]:
     service = ProductionStatusService(data_root=data_root)
-    snapshots = service.history(limit=1000)
-    alerts = service._existing_alert_dedup_keys()
-    return {"status": "valid", "snapshot_count": len(snapshots), "alert_count": len(alerts)}
+    try:
+        snapshots = service.history(limit=1000)
+        alerts = service._existing_alerts()
+        material = 0
+        missing = 0
+        for previous, current in service._chronological_transitions(snapshots):
+            expected = derive_transition_alert(previous, previous["sha256"], current, current["sha256"])
+            if expected is None:
+                continue
+            material += 1
+            stored = alerts.get(expected["dedup_key"])
+            if stored is None:
+                missing += 1
+            elif stored != expected:
+                raise ArtifactCorruptError("persisted production-status alert contradicts its immutable snapshots")
+    except ArtifactCorruptError:
+        return {"status": "CORRUPT", "snapshot_count": 0, "alert_count": 0, "material_transition_count": 0, "missing_alert_count": 0}
+    return {
+        "status": "valid" if missing == 0 else "incomplete",
+        "snapshot_count": len(snapshots),
+        "alert_count": len(alerts),
+        "material_transition_count": material,
+        "missing_alert_count": missing,
+    }
