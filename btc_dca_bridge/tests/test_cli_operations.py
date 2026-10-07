@@ -150,6 +150,11 @@ class CliOperationsTests(unittest.TestCase):
         with self.assertRaises(OperationLockError): lock.recover_stale()
         payload = json.loads(lock.path.read_text()); payload["created_at_utc"] = (self.now - timedelta(minutes=16)).isoformat().replace("+00:00", "Z"); lock.path.write_text(json.dumps(payload))
         with self.assertRaises(OperationLockError): lock.recover_stale()
+        payload["hostname"] = "other-host"
+        lock.path.write_text(json.dumps(payload))
+        with self.assertRaises(OperationLockError): lock.recover_stale()
+        payload["hostname"] = __import__("socket").gethostname()
+        lock.path.write_text(json.dumps(payload))
         with patch("btc_dca_bridge.operations.os.kill", side_effect=ProcessLookupError):
             self.assertTrue(lock.recover_stale())
         service = OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now)
