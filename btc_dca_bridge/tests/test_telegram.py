@@ -12,16 +12,24 @@ from btc_dca_bridge.notifications.telegram import (
 )
 
 
-def completed_outcome():
+def completed_outcome(*, source="bybit_api", fallback_attempted=False):
     return {
         "run_id": "run_20261007T110000Z_scheduled_123456789abc",
         "process_started_at_utc": "2026-10-07T11:04:19Z",
         "status": "completed",
         "shadow_result": {
             "market_snapshot": {
-                "source": "bybit_api",
                 "current_price_usdt": 80000,
                 "rolling_7d_high_usdt": 100000,
+                "market_data_metadata": {
+                    "external_symbol": "BYBIT:BTCUSDT",
+                    "fallback_attempted": fallback_attempted,
+                    "primary_failure_category": (
+                        "SOURCE_UNAVAILABLE" if fallback_attempted else None
+                    ),
+                    "primary_source": "bybit_api",
+                    "source": source,
+                },
             },
             "sentiment_snapshot": {"value": 35},
             "decision": {
@@ -64,8 +72,10 @@ class SequenceTransport(TelegramTransport):
 
 
 class TelegramNotificationTest(unittest.TestCase):
-    def test_success_message_contains_every_required_v1_field(self):
-        message = format_success_message(completed_outcome())
+    def test_success_message_contains_every_required_current_schema_field(self):
+        message = format_success_message(
+            completed_outcome(source="tradingview", fallback_attempted=True)
+        )
         for expected in (
             "mode: SHADOW",
             "BTC price: $80000",
@@ -76,13 +86,31 @@ class TelegramNotificationTest(unittest.TestCase):
             "sentiment multiplier: x1.3",
             "calculated allocation: $98",
             "monthly spent: $60",
-            "remaining budget: $440",
+            "remaining monthly budget: $440",
             "FINAL PURCHASE: $98",
-            "market source: bybit_api",
+            "market source: tradingview",
             "NO ORDER EXECUTED",
             "SHADOW — BUY $98 BTC TODAY — NO ORDER EXECUTED",
         ):
             self.assertIn(expected, message)
+
+    def test_tradingview_fallback_snapshot_formats_without_key_error(self):
+        message = format_success_message(
+            completed_outcome(source="tradingview", fallback_attempted=True)
+        )
+        self.assertIn("market source: tradingview", message)
+        self.assertIn("SHADOW", message)
+        self.assertIn("NO ORDER EXECUTED", message)
+        self.assertIn("FINAL PURCHASE: $98", message)
+
+    def test_bybit_direct_snapshot_formats_without_key_error(self):
+        message = format_success_message(
+            completed_outcome(source="bybit_api", fallback_attempted=False)
+        )
+        self.assertIn("market source: bybit_api", message)
+        self.assertIn("SHADOW", message)
+        self.assertIn("NO ORDER EXECUTED", message)
+        self.assertIn("FINAL PURCHASE: $98", message)
 
     def test_failure_message_is_concise_typed_and_no_order(self):
         outcome = {

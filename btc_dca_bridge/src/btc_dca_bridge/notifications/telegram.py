@@ -196,12 +196,15 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
     """Format only canonical structured values; no calculations occur here."""
     shadow = _mapping(outcome.get("shadow_result"), "shadow_result")
     market = _mapping(shadow.get("market_snapshot"), "market_snapshot")
+    market_metadata = _mapping(
+        market.get("market_data_metadata"), "market_snapshot.market_data_metadata"
+    )
     sentiment = _mapping(shadow.get("sentiment_snapshot"), "sentiment_snapshot")
     decision = _mapping(shadow.get("decision"), "decision")
     lines = [
         "mode: SHADOW",
         f"run_id: {outcome['run_id']}",
-        f"market source: {market['source']}",
+        f"market source: {market_metadata['source']}",
         f"BTC price: ${market['current_price_usdt']}",
         f"rolling 7D high: ${market['rolling_7d_high_usdt']}",
         f"drawdown: {decision['drawdown_percent']}%",
@@ -210,7 +213,7 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
         f"sentiment multiplier: x{decision['sentiment_multiplier']}",
         f"calculated allocation: ${decision['calculated_allocation_usd']}",
         f"monthly spent: ${decision['monthly_spent_before_usd']}",
-        f"remaining budget: ${decision['remaining_budget_before_usd']}",
+        f"remaining monthly budget: ${decision['remaining_budget_before_usd']}",
         f"FINAL PURCHASE: ${decision['final_purchase_usd']}",
         "NO ORDER EXECUTED",
         f"SHADOW — BUY ${decision['final_purchase_usd']} BTC TODAY — NO ORDER EXECUTED",
