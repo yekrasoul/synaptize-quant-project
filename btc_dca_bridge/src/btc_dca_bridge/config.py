@@ -461,8 +461,11 @@ def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
     minute = root["scheduled_utc_minute"]
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23 or isinstance(minute, bool) or not isinstance(minute, int) or not 0 <= minute <= 59:
         raise ConfigurationError("runtime scheduled UTC slot must be minute-aligned")
-    if root["github_cron_utc"] != f"{minute} {hour} * * *":
-        raise ConfigurationError("runtime.github_cron_utc must match the scheduled UTC slot")
+    interval = _positive_int(root["scheduled_interval_hours"], "runtime.scheduled_interval_hours", maximum=24)
+    if 24 % interval != 0:
+        raise ConfigurationError("runtime.scheduled_interval_hours must divide 24")
+    if root["github_cron_utc"] != f"{minute} */{interval} * * *":
+        raise ConfigurationError("runtime.github_cron_utc must match the configured UTC cadence")
     if root["minute_alignment_required"] is not True or root["shadow_mode_enabled"] is not True or root["live_execution_enabled"] is not False:
         raise ConfigurationError("Phase 4 runtime must be minute-aligned shadow-only with live execution disabled")
     return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], hour, minute, interval, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360))
