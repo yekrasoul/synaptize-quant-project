@@ -22,11 +22,12 @@ from btc_dca_bridge.errors import (
     ShadowRunErrorCode,
 )
 from btc_dca_bridge.market_data.bybit import BYBIT_SOURCE
+from btc_dca_bridge.market_data.approved_spot import OrderedApprovedSpotProvider
 from btc_dca_bridge.market_data.provider import FallbackMarketDataProvider
 from btc_dca_bridge.market_data.tradingview import TRADINGVIEW_SOURCE
 from btc_dca_bridge.models import MarketSnapshot, StrategyDecision
 from btc_dca_bridge.sentiment.models import SentimentSnapshot
-from btc_dca_bridge.shadow import ShadowPipeline
+from btc_dca_bridge.shadow import ShadowPipeline, build_live_shadow_pipeline
 
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
@@ -126,6 +127,14 @@ class ShadowPipelineTest(unittest.TestCase):
             artifact_store=store or ArtifactStore(self.data_root),
             ledger_path=self.ledger_path,
             **kwargs,
+        )
+
+    def test_live_shadow_builder_uses_approved_ordered_spot_provider(self):
+        pipeline = build_live_shadow_pipeline(run_at_utc=NOW)
+        self.assertIsInstance(pipeline.market_provider, OrderedApprovedSpotProvider)
+        self.assertEqual(
+            tuple(source.source for source in pipeline.market_provider.sources),
+            ("bybit_api", "binance_api", "kucoin_api"),
         )
 
     def test_successful_direct_bybit_run_uses_ledger_and_exact_v1_result(self):
