@@ -24,10 +24,15 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      WATCH_STATE_DIR: ${{ runner.temp }}/bybit-contract-watch
     steps:
       - name: Check out canonical repository
         uses: actions/checkout@v5
+
+      - name: Initialize monitor runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "WATCH_STATE_DIR=${RUNNER_TEMP}/bybit-contract-watch" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v6
