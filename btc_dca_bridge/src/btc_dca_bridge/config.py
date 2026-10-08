@@ -430,10 +430,8 @@ def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataC
     if root["primary_provider"] != "bybit_api":
         raise ConfigurationError("the canonical primary provider must be bybit_api")
     fallbacks = root["fallback_providers"]
-    if fallbacks != ["tradingview"]:
-        raise ConfigurationError("the only approved fallback is tradingview")
-    if root["tradingview_external_symbol"] != "BYBIT:BTCUSDT" or ".P" in root["tradingview_external_symbol"]:
-        raise ConfigurationError("TradingView identity must be exact BYBIT:BTCUSDT Spot")
+    if fallbacks != ["binance_api", "kucoin_api"]:
+        raise ConfigurationError("approved fallback order must be binance_api then kucoin_api")
     return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
 
 
