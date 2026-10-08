@@ -1,0 +1,207 @@
+name: Bybit contract watch
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bybit-contract-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: Read-only Bybit contract monitor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      WATCH_STATE_DIR: ${{ runner.temp }}/bybit-contract-watch
+    steps:
+      - name: Check out canonical repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Verify Telegram secrets are wired
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$TELEGRAM_BOT_TOKEN" || -z "$TELEGRAM_CHAT_ID" ]]; then
+            echo "Required Telegram repository secrets are unavailable." >&2
+            exit 1
+          fi
+
+      - name: Locate previous monitor state
+        id: prior
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const candidates = artifacts
+              .filter(a => a.name === 'bybit-contract-watch-state' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const match = candidates[0];
+            core.setOutput('artifact_id', match ? String(match.id) : '');
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+
+      - name: Restore previous monitor state
+        if: steps.prior.outputs.artifact_id != ''
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ steps.prior.outputs.artifact_id }}
+          path: ${{ env.WATCH_STATE_DIR }}/previous
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.prior.outputs.run_id }}
+
+      - name: Evaluate read-only contract state
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$WATCH_STATE_DIR/current"
+          uv run python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from datetime import UTC, datetime
+          from pathlib import Path
+
+          from btc_dca_bridge.blocked_production import active_production_blockers, contract_status
+
+          root = Path(os.environ["WATCH_STATE_DIR"])
+          previous_candidates = sorted((root / "previous").glob("**/state.json"))
+          previous = None
+          if previous_candidates:
+              previous = json.loads(previous_candidates[-1].read_text(encoding="utf-8"))
+
+          now = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+          contract = contract_status()
+          blockers = active_production_blockers()
+          capabilities = contract["capabilities"]
+
+          stable = {
+              "blocker_ids": sorted(blocker.blocker_id for blocker in blockers),
+              "production_quote_limit_conclusion": contract["production_quote_limit_conclusion"],
+              "approved_quote_unit_limit_source_count": contract["approved_quote_unit_limit_source_count"],
+              "quote_unit_maximum_supported": capabilities["quote_unit_maximum_supported"],
+              "quote_unit_maximum_source": capabilities["quote_unit_maximum_source"],
+              "spot_quote_availability_supported": capabilities["spot_quote_availability_supported"],
+              "market_unit_quote_coin_supported": capabilities["market_unit_quote_coin_supported"],
+              "real_money_authorization_status": contract["real_money_authorization"]["status"],
+          }
+          canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
+          fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+          current = {
+              "schema_version": "1.0.0",
+              "observed_at_utc": now,
+              "fingerprint": fingerprint,
+              "state": stable,
+          }
+
+          current_path = root / "current" / "state.json"
+          current_path.write_text(json.dumps(current, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+          baseline = previous is None
+          changed = bool(previous and previous.get("fingerprint") != fingerprint)
+          notify = baseline or changed
+
+          message_path = root / "current" / "message.txt"
+          if notify:
+              heading = "BTC DCA BYBIT WATCH — BASELINE" if baseline else "BTC DCA BYBIT WATCH — CONTRACT CHANGE"
+              blocker = ", ".join(stable["blocker_ids"]) if stable["blocker_ids"] else "none"
+              message = "\n".join([
+                  heading,
+                  f"Observed: {now}",
+                  f"Blocker: {blocker}",
+                  f"Quote-limit conclusion: {stable['production_quote_limit_conclusion']}",
+                  f"Quote max supported: {stable['quote_unit_maximum_supported']}",
+                  f"Approved quote-limit sources: {stable['approved_quote_unit_limit_source_count']}",
+                  f"Authorization: {stable['real_money_authorization_status']}",
+                  "Action: Observe only. No execution authorization granted.",
+              ])
+              message_path.write_text(message + "\n", encoding="utf-8")
+
+          output = Path(os.environ["GITHUB_OUTPUT"])
+          with output.open("a", encoding="utf-8") as handle:
+              handle.write(f"notify={'true' if notify else 'false'}\n")
+              handle.write(f"baseline={'true' if baseline else 'false'}\n")
+              handle.write(f"changed={'true' if changed else 'false'}\n")
+              handle.write(f"fingerprint={fingerprint}\n")
+          PY
+
+      - name: Persist monitor state
+        uses: actions/upload-artifact@v6
+        with:
+          name: bybit-contract-watch-state
+          path: ${{ env.WATCH_STATE_DIR }}/current/state.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Send Telegram baseline or change alert
+        if: steps.evaluate.outputs.notify == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import os
+          from pathlib import Path
+
+          from btc_dca_bridge.config import load_notification_config
+          from btc_dca_bridge.notifications import TelegramNotifier, TelegramTransport
+
+          config = load_notification_config()
+          token = os.environ[config.bot_token_env_var]
+          chat_id = os.environ[config.chat_id_env_var]
+          message = (Path(os.environ["WATCH_STATE_DIR"]) / "current" / "message.txt").read_text(encoding="utf-8").strip()
+
+          TelegramNotifier(
+              token,
+              chat_id,
+              transport=TelegramTransport(
+                  connect_timeout_seconds=config.http.connect_timeout_seconds,
+                  read_timeout_seconds=config.http.read_timeout_seconds,
+                  max_attempts=config.http.retry_attempts,
+                  backoff_seconds=config.http.backoff_seconds,
+              ),
+          ).send(message)
+          PY
+
+      - name: Write workflow summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Bybit contract watch"
+            echo
+            echo "- Schedule: every 6 hours"
+            echo "- Read-only: yes"
+            echo "- Order submission path: not used"
+            echo "- Telegram baseline/change notification: ${{ steps.evaluate.outputs.notify }}"
+            echo "- Contract changed: ${{ steps.evaluate.outputs.changed }}"
+            echo "- Fingerprint: ${{ steps.evaluate.outputs.fingerprint }}"
+          } >> "$GITHUB_STEP_SUMMARY"
