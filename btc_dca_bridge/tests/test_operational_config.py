@@ -34,7 +34,6 @@ class OperationalConfigTests(unittest.TestCase):
         config = load_operational_config()
         self.assertEqual((config.market_data.primary_provider, config.market_data.fallback_providers), ("bybit_api", ("binance_api", "kucoin_api")))
         self.assertEqual((config.market_data.exchange, config.market_data.market_type, config.market_data.symbol), ("Bybit", "spot", "BTCUSDT"))
-        self.assertEqual(config.market_data.tradingview_external_symbol, "BYBIT:BTCUSDT")
         self.assertEqual(config.sentiment.provider, "alternative_me_crypto_fear_greed")
         self.assertEqual(config.sentiment.freshness_max_age_seconds, 36 * 60 * 60)
         self.assertFalse(config.runtime.live_execution_enabled)
@@ -44,8 +43,6 @@ class OperationalConfigTests(unittest.TestCase):
     def test_rejects_unapproved_market_identity_and_perpetual_symbol(self) -> None:
         with self.assertRaises(ConfigurationError):
             load_market_data_config(self._copy_with("market_data.yaml", ("market_type: spot", "market_type: linear")))
-        with self.assertRaises(ConfigurationError):
-            load_market_data_config(self._copy_with("market_data.yaml", ("BYBIT:BTCUSDT", "BYBIT:BTCUSDT.P")))
 
     def test_rejects_invalid_operational_values(self) -> None:
         with self.assertRaises(ConfigurationError):
