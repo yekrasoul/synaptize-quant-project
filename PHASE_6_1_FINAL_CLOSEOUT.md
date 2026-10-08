@@ -31,10 +31,15 @@ attempts, acknowledgements, notifications, and partial fills are not ledger
 rows. Only authoritative confirmed fills can produce a final execution that
 is appended exactly once; historical ledger records are not edited.
 
-Market data is constrained to the configured Bybit BTCUSDT Spot source, with
-the documented exact TradingView Spot fallback where applicable; the configured
-sentiment source is Crypto Fear & Greed Index. Missing, stale, or contradictory
-inputs fail closed rather than silently selecting another market.
+Primary market data uses Bybit Spot BTCUSDT. If Bybit Spot is unavailable,
+unreliable, stale, or contradictory, the approved fallback order is Binance
+Spot BTCUSDT, then KuCoin Spot BTC-USDT, then another reputable liquid BTC spot
+venue if necessary. Within a single run, current price and rolling 7-day high
+must come from the same spot-market source. Perpetuals, futures, mark/index
+prices, derivatives, leveraged products, and generic blended BTC prices are
+never approved substitutes. The configured sentiment source is Crypto Fear &
+Greed Index. Missing, stale, or contradictory inputs fail closed rather than
+silently changing market type or mixing sources.
 
 The execution chain preserves distinct artifacts:
 
