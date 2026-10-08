@@ -1,0 +1,26 @@
+name: Verify approved spot validator
+
+on:
+  push:
+    branches:
+      - fix/v1-approved-spot-validator
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run python -m compileall -q src tests
+      - run: uv run python -m unittest tests.test_engine.EngineTest.test_accepts_each_approved_spot_venue tests.test_engine.EngineTest.test_rejects_unapproved_market_identity -v
+      - run: uv run python -m unittest discover -s tests -v
