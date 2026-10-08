@@ -149,6 +149,30 @@ class EngineTest(unittest.TestCase):
     def test_market_snapshot_conforms_to_schema(self):
         validate_artifact("market_snapshot", snapshot_for_drawdown("-12").to_dict())
 
+    def test_accepts_each_approved_spot_venue(self):
+        for exchange in ("Bybit", "Binance", "KuCoin"):
+            snap = snapshot_for_drawdown("-6")
+            snap = MarketSnapshot(**{**snap.__dict__, "source_exchange": exchange})
+            with self.subTest(exchange=exchange):
+                decision = calculate_decision(snap, 64, 60, self.strategy).to_dict()
+                self.assertEqual(decision["base_allocation_usd"], 25)
+                self.assertEqual(decision["final_purchase_usd"], 25)
+
+    def test_rejects_unapproved_market_identity(self):
+        cases = (
+            {"source_exchange": "TradingView"},
+            {"source_exchange": "Kraken"},
+            {"market_type": "perpetual"},
+            {"symbol": "BTCUSD"},
+        )
+        for changes in cases:
+            snap = snapshot_for_drawdown("-6")
+            snap = MarketSnapshot(**{**snap.__dict__, **changes})
+            with self.subTest(changes=changes), self.assertRaisesRegex(
+                InputValidationError, "approved BTC/USDT Spot venue"
+            ):
+                calculate_decision(snap, 64, 60, self.strategy)
+
     def test_rejects_non_positive_price(self):
         for value in (Decimal("0"), Decimal("-1")):
             snap = snapshot_for_drawdown("0")
