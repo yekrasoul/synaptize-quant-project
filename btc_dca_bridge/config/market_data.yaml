@@ -4,10 +4,7 @@ market_type: spot
 symbol: BTCUSDT
 primary_provider: bybit_api
 fallback_providers: [binance_api, kucoin_api]
-tradingview_external_symbol: "BYBIT:BTCUSDT"
 freshness_max_age_seconds: 300
-tradingview_observation_max_age_seconds: 3900
-tradingview_timeout_seconds: 15
 candle_page_limit: 200
 candle_max_pages: 20
 http:
