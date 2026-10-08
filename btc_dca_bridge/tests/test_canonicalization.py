@@ -4,8 +4,7 @@ from pathlib import Path
 
 from btc_dca_bridge.cli import _parser
 from btc_dca_bridge.market_data.bybit import BYBIT_SOURCE
-from btc_dca_bridge.market_data.provider import FallbackMarketDataProvider
-from btc_dca_bridge.market_data.tradingview import TRADINGVIEW_SOURCE
+from btc_dca_bridge.market_data.approved_spot import BINANCE_SOURCE, KUCOIN_SOURCE, OrderedApprovedSpotProvider
 from btc_dca_bridge.sentiment.alternative_me import SOURCE as SENTIMENT_SOURCE
 
 
@@ -20,7 +19,7 @@ class CanonicalizationTest(unittest.TestCase):
         self.assertFalse((ROOT / "docs" / "MIGRATION_PLAN.md").exists())
 
     def test_canonical_runtime_has_no_legacy_import_or_alternate_exchange(self):
-        forbidden_text = ("binance", "kucoin", "btcusdt.p", "latest.json", "collect_bybit_spot")
+        forbidden_text = ("btcusdt.p", "latest.json", "collect_bybit_spot")
         for path in SOURCE_ROOT.rglob("*.py"):
             text = path.read_text(encoding="utf-8")
             tree = ast.parse(text, filename=str(path))
@@ -40,18 +39,22 @@ class CanonicalizationTest(unittest.TestCase):
                 for forbidden in forbidden_text:
                     self.assertNotIn(forbidden, lowered)
 
-    def test_canonical_market_source_order_is_unchanged_and_closed(self):
+    def test_canonical_market_source_order_is_approved_and_closed(self):
         class Source:
             def __init__(self, source):
                 self.source = source
 
-        provider = FallbackMarketDataProvider(
-            Source(BYBIT_SOURCE), Source(TRADINGVIEW_SOURCE)
+        provider = OrderedApprovedSpotProvider(
+            (Source(BYBIT_SOURCE), Source(BINANCE_SOURCE), Source(KUCOIN_SOURCE))
         )
-        self.assertEqual(provider.primary.source, "bybit_api")
-        self.assertEqual(provider.fallback.source, "tradingview")
+        self.assertEqual(
+            tuple(source.source for source in provider.sources),
+            ("bybit_api", "binance_api", "kucoin_api"),
+        )
         with self.assertRaises(ValueError):
-            FallbackMarketDataProvider(Source("other"), Source(TRADINGVIEW_SOURCE))
+            OrderedApprovedSpotProvider(
+                (Source(BINANCE_SOURCE), Source(BYBIT_SOURCE), Source(KUCOIN_SOURCE))
+            )
 
     def test_alternative_me_remains_the_only_sentiment_runtime_source(self):
         self.assertEqual(SENTIMENT_SOURCE, "alternative_me_crypto_fear_greed")
