@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "alert_id", "dedup_key", "created_at_utc", "previous_snapshot_id", "current_snapshot_id", "classification", "alert_class", "changed_fields", "message"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "alert_id": {"type": "string", "pattern": "^alert-[a-f0-9]{64}$"},
+    "dedup_key": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "previous_snapshot_id": {"type": "string"},
+    "current_snapshot_id": {"type": "string"},
+    "classification": {"enum": ["INFO_CHANGE", "ATTENTION_REQUIRED", "SAFETY_REGRESSION", "RECOVERY_PROGRESS", "EXTERNAL_DEPENDENCY_CHANGE"]},
+    "alert_class": {"enum": ["INFO", "WARNING", "CRITICAL", "RECOVERY", "EXTERNAL_CHANGE"]},
+    "changed_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "message": {"type": "string", "minLength": 1, "maxLength": 4096}
+  }
+}

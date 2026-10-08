@@ -39,6 +39,7 @@ from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, Operati
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 from .readiness import ProductionReadinessService, production_connectivity
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
+from .production_status import ProductionStatusService
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -47,6 +48,7 @@ from .production_evidence import ProductionEvidenceService, preauthorization_sta
 _private_read_client_factory = BybitPrivateReadClient.from_environment
 _submission_transport_factory = SignedBybitSubmissionTransport
 _post_ack_reconciler_factory = BybitPostAckReconciler
+_production_status_service_factory = ProductionStatusService
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -169,6 +171,12 @@ def _parser() -> argparse.ArgumentParser:
     blockers.add_argument("--json", action="store_true")
     contract = subparsers.add_parser("contract-status", help="read-only implemented Bybit contract assumptions")
     contract.add_argument("--json", action="store_true")
+    production_status = subparsers.add_parser("production-status", help="read-only aggregate production state")
+    production_status.add_argument("--data-root", type=Path, default=DATA_PATH); production_status.add_argument("--ledger", type=Path, default=LEDGER_PATH); production_status.add_argument("--json", action="store_true")
+    collect_status = subparsers.add_parser("collect-production-status", help="persist one immutable production status snapshot")
+    collect_status.add_argument("--data-root", type=Path, default=DATA_PATH); collect_status.add_argument("--ledger", type=Path, default=LEDGER_PATH); collect_status.add_argument("--json", action="store_true")
+    status_history = subparsers.add_parser("production-status-history", help="read immutable production status history")
+    status_history.add_argument("--data-root", type=Path, default=DATA_PATH); status_history.add_argument("--limit", type=int, default=20); status_history.add_argument("--json", action="store_true")
     return parser
 
 
@@ -600,6 +608,55 @@ def _contract_status() -> tuple[dict[str, object], int]:
     return contract_status(), 0
 
 
+def _status_service(args: argparse.Namespace) -> ProductionStatusService:
+    return _production_status_service_factory(data_root=args.data_root, ledger_path=args.ledger)
+
+
+def _production_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = _status_service(args).evaluate().to_dict()
+    code = 5 if result["overall_operator_state"] == "CORRUPT" else (3 if result["overall_operator_state"] == "RECONCILIATION_REQUIRED" else (2 if result["overall_operator_state"] == "ACTION_REQUIRED" else 0))
+    return result, code
+
+
+def _collect_production_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = _status_service(args).collect()
+    alerts = result.get("new_alerts", [])
+    notification_status = "not_sent"
+    delivery_results: list[dict[str, str]] = []
+    for alert in alerts:
+        try:
+            notification = load_notification_config()
+            token = os.environ.get(notification.bot_token_env_var, "")
+            chat_id = os.environ.get(notification.chat_id_env_var, "")
+            if not token or not chat_id:
+                delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "unavailable"})
+            else:
+                delivery = TelegramNotifier(token, chat_id, transport=TelegramTransport(
+                    connect_timeout_seconds=notification.http.connect_timeout_seconds,
+                    read_timeout_seconds=notification.http.read_timeout_seconds,
+                    max_attempts=notification.http.retry_attempts,
+                    backoff_seconds=notification.http.backoff_seconds,
+                )).send(str(alert["message"]))
+                delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "sent", "message_id": str(delivery.message_id), "attempts": str(delivery.attempts)})
+        except Exception:
+            # The alert is already durable. Do not retry or remove it here;
+            # later collections will see it as covered and won't resend it.
+            delivery_results.append({"alert_id": str(alert["alert_id"]), "status": "failed"})
+    if delivery_results:
+        statuses = {item["status"] for item in delivery_results}
+        notification_status = next(iter(statuses)) if len(statuses) == 1 else "partial_or_failed"
+        result["notification_deliveries"] = delivery_results
+    result["notification_status"] = notification_status
+    state = result["snapshot"]["overall_operator_state"]
+    code = 5 if state == "CORRUPT" else (3 if state == "RECONCILIATION_REQUIRED" else (2 if state == "ACTION_REQUIRED" else 0))
+    return result, code
+
+
+def _production_status_history(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    rows = _production_status_service_factory(data_root=args.data_root).history(limit=args.limit)
+    return {"snapshots": rows, "count": len(rows)}, 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -644,6 +701,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _production_blockers()
         elif args.command == "contract-status":
             result, exit_code = _contract_status()
+        elif args.command == "production-status":
+            result, exit_code = _production_status(args)
+        elif args.command == "collect-production-status":
+            result, exit_code = _collect_production_status(args)
+        elif args.command == "production-status-history":
+            result, exit_code = _production_status_history(args)
         elif args.command == "calculate":
             result = _calculate(args)
         elif args.command == "portfolio":
