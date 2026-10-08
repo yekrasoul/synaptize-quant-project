@@ -25,8 +25,8 @@ from .errors import (
 from .ledger import read_executions
 from .market_data.bybit import BybitSpotAdapter
 from .market_data.http import PublicHttpTransport
-from .market_data.provider import BybitSnapshotSource, FallbackMarketDataProvider, TradingViewSnapshotSource
-from .market_data.tradingview import TradingViewBybitSpotAdapter, WebSocketTradingViewTransport
+from .market_data.provider import BybitSnapshotSource
+from .market_data.approved_spot import OrderedApprovedSpotProvider, build_binance_source, build_kucoin_source
 from .models import Execution, MarketSnapshot, PortfolioState, StrategyDecision
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH, PROJECT_ROOT
 from .portfolio import derive_portfolio
