@@ -29,7 +29,7 @@
         "primary_source": {"const": "bybit_api"},
         "primary_failure_category": {
           "type": ["string", "null"],
-          "enum": [null, "SOURCE_UNAVAILABLE", "RATE_LIMITED", "INVALID_RESPONSE", "INSUFFICIENT_HISTORY"]
+          "enum": [null, "SOURCE_UNAVAILABLE", "DATA_UNAVAILABLE", "SOURCE_MISMATCH", "INVALID_MARKET_IDENTITY", "INVALID_RESPONSE", "DATA_STALE", "INSUFFICIENT_HISTORY", "RATE_LIMITED", "INVALID_WINDOW", "CONTRADICTORY_PRICE_DATA"]
         },
         "fallback_attempted": {"type": "boolean"}
       }
