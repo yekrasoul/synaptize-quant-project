@@ -39,7 +39,7 @@ class ProductionWorkflowTest(unittest.TestCase):
         workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
         triggers = workflow.get("on", workflow.get(True))
         self.assertEqual(workflow["name"], "Production shadow")
-        self.assertEqual(triggers["schedule"][0]["cron"], "0 11 * * *")
+        self.assertEqual(triggers["schedule"][0]["cron"], "23 */6 * * *")
         self.assertIn("workflow_dispatch", triggers)
         self.assertEqual(workflow["jobs"]["shadow"]["defaults"]["run"]["working-directory"], "btc_dca_bridge")
         text = WORKFLOW_PATH.read_text(encoding="utf-8")
