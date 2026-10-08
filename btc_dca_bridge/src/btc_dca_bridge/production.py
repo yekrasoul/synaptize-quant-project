@@ -71,8 +71,10 @@ def acquisition_minute(now_utc: datetime) -> datetime:
 def scheduled_run_id(slot_utc: datetime, *, runtime_config: RuntimeConfig | None = None) -> str:
     slot = _utc(slot_utc, "scheduled slot")
     runtime = runtime_config or load_runtime_config()
-    if slot.second or slot.microsecond or slot.minute != runtime.scheduled_utc_minute or slot.hour != runtime.scheduled_utc_hour:
+    if slot.second or slot.microsecond or slot.minute != runtime.scheduled_utc_minute:
         raise ValueError("scheduled slot must be aligned to the configured UTC minute")
+    if (slot.hour - runtime.scheduled_utc_hour) % runtime.scheduled_interval_hours != 0:
+        raise ValueError("scheduled slot must be aligned to the configured UTC cadence")
     digest = hashlib.sha256(f"scheduled|{iso_utc(slot)}".encode("utf-8")).hexdigest()[:12]
     return make_run_id(slot, f"scheduled_{digest}")
 
