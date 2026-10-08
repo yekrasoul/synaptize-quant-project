@@ -308,10 +308,7 @@ class MarketDataConfig:
     symbol: str
     primary_provider: str
     fallback_providers: tuple[str, ...]
-    tradingview_external_symbol: str
     freshness_max_age_seconds: int
-    tradingview_observation_max_age_seconds: int
-    tradingview_timeout_seconds: float
     candle_page_limit: int
     candle_max_pages: int
     http: HttpPolicy
@@ -334,6 +331,7 @@ class RuntimeConfig:
     github_cron_utc: str
     scheduled_utc_hour: int
     scheduled_utc_minute: int
+    scheduled_interval_hours: int
     minute_alignment_required: bool
     shadow_mode_enabled: bool
     live_execution_enabled: bool
@@ -424,7 +422,7 @@ def _http_policy(root: dict[str, Any], label: str) -> HttpPolicy:
 def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataConfig:
     root = _operational_yaml(path, "market_data")
     _version(root, "market_data")
-    required = {"config_version", "exchange", "market_type", "symbol", "primary_provider", "fallback_providers", "tradingview_external_symbol", "freshness_max_age_seconds", "tradingview_observation_max_age_seconds", "tradingview_timeout_seconds", "candle_page_limit", "candle_max_pages", "http"}
+    required = {"config_version", "exchange", "market_type", "symbol", "primary_provider", "fallback_providers", "freshness_max_age_seconds", "candle_page_limit", "candle_max_pages", "http"}
     if set(root) != required:
         raise ConfigurationError("market_data has unsupported or missing fields")
     if root["exchange"] != "Bybit" or root["market_type"] != "spot" or root["symbol"] != "BTCUSDT":
@@ -432,11 +430,9 @@ def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataC
     if root["primary_provider"] != "bybit_api":
         raise ConfigurationError("the canonical primary provider must be bybit_api")
     fallbacks = root["fallback_providers"]
-    if fallbacks != ["tradingview"]:
-        raise ConfigurationError("the only approved fallback is tradingview")
-    if root["tradingview_external_symbol"] != "BYBIT:BTCUSDT" or ".P" in root["tradingview_external_symbol"]:
-        raise ConfigurationError("TradingView identity must be exact BYBIT:BTCUSDT Spot")
-    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("tradingview",), "BYBIT:BTCUSDT", _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["tradingview_observation_max_age_seconds"], "market_data.tradingview_observation_max_age_seconds"), _positive_number(root["tradingview_timeout_seconds"], "market_data.tradingview_timeout_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
+    if fallbacks != ["binance_api", "kucoin_api"]:
+        raise ConfigurationError("approved fallback order must be binance_api then kucoin_api")
+    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
 
 
 def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig:
@@ -452,7 +448,7 @@ def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig
 def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
     root = _operational_yaml(path, "runtime")
     _version(root, "runtime")
-    required = {"config_version", "timezone", "intended_local_time", "github_cron_utc", "scheduled_utc_hour", "scheduled_utc_minute", "minute_alignment_required", "shadow_mode_enabled", "live_execution_enabled", "workflow_timeout_minutes"}
+    required = {"config_version", "timezone", "intended_local_time", "github_cron_utc", "scheduled_utc_hour", "scheduled_utc_minute", "scheduled_interval_hours", "minute_alignment_required", "shadow_mode_enabled", "live_execution_enabled", "workflow_timeout_minutes"}
     if set(root) != required:
         raise ConfigurationError("runtime has unsupported or missing fields")
     try:
@@ -465,11 +461,14 @@ def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
     minute = root["scheduled_utc_minute"]
     if isinstance(hour, bool) or not isinstance(hour, int) or not 0 <= hour <= 23 or isinstance(minute, bool) or not isinstance(minute, int) or not 0 <= minute <= 59:
         raise ConfigurationError("runtime scheduled UTC slot must be minute-aligned")
-    if root["github_cron_utc"] != f"{minute} {hour} * * *":
-        raise ConfigurationError("runtime.github_cron_utc must match the scheduled UTC slot")
+    interval = _positive_int(root["scheduled_interval_hours"], "runtime.scheduled_interval_hours", maximum=24)
+    if 24 % interval != 0:
+        raise ConfigurationError("runtime.scheduled_interval_hours must divide 24")
+    if root["github_cron_utc"] != f"{minute} */{interval} * * *":
+        raise ConfigurationError("runtime.github_cron_utc must match the configured UTC cadence")
     if root["minute_alignment_required"] is not True or root["shadow_mode_enabled"] is not True or root["live_execution_enabled"] is not False:
         raise ConfigurationError("Phase 4 runtime must be minute-aligned shadow-only with live execution disabled")
-    return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], hour, minute, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360))
+    return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], hour, minute, interval, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360))
 
 
 def load_notification_config(path: Path = NOTIFICATIONS_CONFIG_PATH) -> NotificationConfig:

@@ -47,7 +47,7 @@ class FakePipeline:
 
 class ProductionShadowTest(unittest.TestCase):
     def setUp(self):
-        self.started = datetime(2026, 10, 7, 11, 4, 19, tzinfo=UTC)
+        self.started = datetime(2026, 10, 7, 12, 24, 19, tzinfo=UTC)
         self.context = ProductionRunContext.create(
             trigger_type="scheduled",
             process_started_at_utc=self.started,
@@ -56,21 +56,21 @@ class ProductionShadowTest(unittest.TestCase):
 
     def test_scheduled_slot_and_run_id_are_deterministic_and_minute_aligned(self):
         slot = scheduled_slot(self.started)
-        self.assertEqual(slot, datetime(2026, 10, 7, 11, 0, tzinfo=UTC))
+        self.assertEqual(slot, datetime(2026, 10, 7, 12, 23, tzinfo=UTC))
         self.assertEqual(slot.second, 0)
         self.assertEqual(scheduled_run_id(slot), scheduled_run_id(slot))
-        self.assertTrue(scheduled_run_id(slot).startswith("run_20261007T110000Z_scheduled_"))
-        before_slot = datetime(2026, 10, 7, 10, 59, 59, tzinfo=UTC)
-        self.assertEqual(scheduled_slot(before_slot), datetime(2026, 10, 6, 11, 0, tzinfo=UTC))
+        self.assertTrue(scheduled_run_id(slot).startswith("run_20261007T122300Z_scheduled_"))
+        before_slot = datetime(2026, 10, 7, 12, 22, 59, tzinfo=UTC)
+        self.assertEqual(scheduled_slot(before_slot), datetime(2026, 10, 7, 6, 23, tzinfo=UTC))
 
     def test_manual_identity_is_isolated_from_schedule_and_other_dispatches(self):
-        logical = datetime(2026, 10, 7, 11, 4, tzinfo=UTC)
+        logical = datetime(2026, 10, 7, 12, 24, tzinfo=UTC)
         first = manual_run_id(logical, "github-run-1")
         second = manual_run_id(logical, "github-run-2")
         self.assertNotEqual(first, second)
         self.assertIn("_manual_", first)
-        self.assertNotEqual(first, scheduled_run_id(datetime(2026, 10, 7, 11, 0, tzinfo=UTC)))
-        created = datetime(2026, 10, 7, 11, 4, 19, tzinfo=UTC)
+        self.assertNotEqual(first, scheduled_run_id(datetime(2026, 10, 7, 12, 23, tzinfo=UTC)))
+        created = datetime(2026, 10, 7, 12, 24, 19, tzinfo=UTC)
         original = ProductionRunContext.create(
             trigger_type="manual",
             process_started_at_utc=created,
@@ -87,7 +87,7 @@ class ProductionShadowTest(unittest.TestCase):
 
     def test_acquisition_context_uses_next_minute_without_market_layer_rounding(self):
         self.assertEqual(
-            acquisition_minute(self.started), datetime(2026, 10, 7, 11, 5, tzinfo=UTC)
+            acquisition_minute(self.started), datetime(2026, 10, 7, 12, 25, tzinfo=UTC)
         )
         aligned = datetime(2026, 10, 7, 11, 5, tzinfo=UTC)
         self.assertEqual(acquisition_minute(aligned), aligned)
@@ -108,15 +108,15 @@ class ProductionShadowTest(unittest.TestCase):
             sleep=sleeps.append,
         ).to_dict()
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["logical_run_at_utc"], "2026-10-07T11:00:00Z")
-        self.assertEqual(result["process_started_at_utc"], "2026-10-07T11:04:19Z")
-        self.assertEqual(result["acquisition_at_utc"], "2026-10-07T11:05:00Z")
+        self.assertEqual(result["logical_run_at_utc"], "2026-10-07T12:23:00Z")
+        self.assertEqual(result["process_started_at_utc"], "2026-10-07T12:24:19Z")
+        self.assertEqual(result["acquisition_at_utc"], "2026-10-07T12:25:00Z")
         self.assertEqual(sleeps, [41.0])
         self.assertEqual(factory_calls[0]["run_at_utc"].second, 0)
         self.assertEqual(pipeline.calls[0]["run_id"], self.context.run_id)
         self.assertEqual(
             pipeline.calls[0]["run_identity_at_utc"],
-            datetime(2026, 10, 7, 11, 0, tzinfo=UTC),
+            datetime(2026, 10, 7, 12, 23, tzinfo=UTC),
         )
         self.assertTrue(result["no_order_executed"])
 

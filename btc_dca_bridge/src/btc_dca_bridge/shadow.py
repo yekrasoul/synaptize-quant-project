@@ -309,20 +309,14 @@ def build_live_shadow_pipeline(
         clock=clock,
         max_input_age=timedelta(seconds=market_config.freshness_max_age_seconds),
     )
-    fallback = TradingViewSnapshotSource(
-        TradingViewBybitSpotAdapter(
-            transport=WebSocketTradingViewTransport(
-                timeout_seconds=market_config.tradingview_timeout_seconds
-            ),
-            clock=clock,
-        ),
-        clock=clock,
-        max_input_age=timedelta(seconds=market_config.freshness_max_age_seconds),
-        max_observation_age=timedelta(
-            seconds=market_config.tradingview_observation_max_age_seconds
-        ),
+    max_input_age = timedelta(seconds=market_config.freshness_max_age_seconds)
+    market_provider = OrderedApprovedSpotProvider(
+        (
+            primary,
+            build_binance_source(clock=clock, max_input_age=max_input_age),
+            build_kucoin_source(clock=clock, max_input_age=max_input_age),
+        )
     )
-    market_provider = FallbackMarketDataProvider(primary, fallback, clock=clock)
     sentiment_transport = PublicHttpTransport(
         "https://api.alternative.me",
         connect_timeout_seconds=sentiment_config.http.connect_timeout_seconds,

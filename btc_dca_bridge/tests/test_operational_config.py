@@ -32,9 +32,8 @@ class OperationalConfigTests(unittest.TestCase):
 
     def test_all_committed_operational_config_parses_and_preserves_production_values(self) -> None:
         config = load_operational_config()
-        self.assertEqual((config.market_data.primary_provider, config.market_data.fallback_providers), ("bybit_api", ("tradingview",)))
+        self.assertEqual((config.market_data.primary_provider, config.market_data.fallback_providers), ("bybit_api", ("binance_api", "kucoin_api")))
         self.assertEqual((config.market_data.exchange, config.market_data.market_type, config.market_data.symbol), ("Bybit", "spot", "BTCUSDT"))
-        self.assertEqual(config.market_data.tradingview_external_symbol, "BYBIT:BTCUSDT")
         self.assertEqual(config.sentiment.provider, "alternative_me_crypto_fear_greed")
         self.assertEqual(config.sentiment.freshness_max_age_seconds, 36 * 60 * 60)
         self.assertFalse(config.runtime.live_execution_enabled)
@@ -44,8 +43,6 @@ class OperationalConfigTests(unittest.TestCase):
     def test_rejects_unapproved_market_identity_and_perpetual_symbol(self) -> None:
         with self.assertRaises(ConfigurationError):
             load_market_data_config(self._copy_with("market_data.yaml", ("market_type: spot", "market_type: linear")))
-        with self.assertRaises(ConfigurationError):
-            load_market_data_config(self._copy_with("market_data.yaml", ("BYBIT:BTCUSDT", "BYBIT:BTCUSDT.P")))
 
     def test_rejects_invalid_operational_values(self) -> None:
         with self.assertRaises(ConfigurationError):
@@ -62,7 +59,7 @@ class OperationalConfigTests(unittest.TestCase):
     def test_runtime_slot_comes_from_validated_config(self) -> None:
         runtime = load_runtime_config()
         started = datetime(2026, 10, 7, 11, 20, tzinfo=UTC)
-        self.assertEqual(scheduled_slot(started, runtime_config=runtime), datetime(2026, 10, 7, 11, 0, tzinfo=UTC))
+        self.assertEqual(scheduled_slot(started, runtime_config=runtime), datetime(2026, 10, 7, 6, 23, tzinfo=UTC))
         context = ProductionRunContext.create(trigger_type="scheduled", process_started_at_utc=started, trigger_id="1", runtime_config=runtime)
         self.assertIn("scheduled", context.run_id)
 
