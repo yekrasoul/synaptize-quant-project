@@ -308,10 +308,7 @@ class MarketDataConfig:
     symbol: str
     primary_provider: str
     fallback_providers: tuple[str, ...]
-    tradingview_external_symbol: str
     freshness_max_age_seconds: int
-    tradingview_observation_max_age_seconds: int
-    tradingview_timeout_seconds: float
     candle_page_limit: int
     candle_max_pages: int
     http: HttpPolicy
@@ -425,7 +422,7 @@ def _http_policy(root: dict[str, Any], label: str) -> HttpPolicy:
 def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataConfig:
     root = _operational_yaml(path, "market_data")
     _version(root, "market_data")
-    required = {"config_version", "exchange", "market_type", "symbol", "primary_provider", "fallback_providers", "tradingview_external_symbol", "freshness_max_age_seconds", "tradingview_observation_max_age_seconds", "tradingview_timeout_seconds", "candle_page_limit", "candle_max_pages", "http"}
+    required = {"config_version", "exchange", "market_type", "symbol", "primary_provider", "fallback_providers", "freshness_max_age_seconds", "candle_page_limit", "candle_max_pages", "http"}
     if set(root) != required:
         raise ConfigurationError("market_data has unsupported or missing fields")
     if root["exchange"] != "Bybit" or root["market_type"] != "spot" or root["symbol"] != "BTCUSDT":
@@ -437,7 +434,7 @@ def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataC
         raise ConfigurationError("the only approved fallback is tradingview")
     if root["tradingview_external_symbol"] != "BYBIT:BTCUSDT" or ".P" in root["tradingview_external_symbol"]:
         raise ConfigurationError("TradingView identity must be exact BYBIT:BTCUSDT Spot")
-    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), "BYBIT:BTCUSDT", _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["tradingview_observation_max_age_seconds"], "market_data.tradingview_observation_max_age_seconds"), _positive_number(root["tradingview_timeout_seconds"], "market_data.tradingview_timeout_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
+    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
 
 
 def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig:
