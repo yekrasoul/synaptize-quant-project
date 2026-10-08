@@ -48,13 +48,17 @@ def scheduled_slot(
     """Return the latest validated configured UTC slot at process start."""
     started = _utc(process_started_at_utc, "process_started_at_utc")
     runtime = runtime_config or load_runtime_config()
-    candidate = started.replace(
+    anchor = started.replace(
         hour=runtime.scheduled_utc_hour,
         minute=runtime.scheduled_utc_minute,
         second=0,
         microsecond=0,
     )
-    return candidate if candidate <= started else candidate - timedelta(days=1)
+    if anchor > started:
+        anchor -= timedelta(days=1)
+    elapsed_hours = int((started - anchor).total_seconds() // 3600)
+    steps = elapsed_hours // runtime.scheduled_interval_hours
+    return anchor + timedelta(hours=steps * runtime.scheduled_interval_hours)
 
 
 def acquisition_minute(now_utc: datetime) -> datetime:
