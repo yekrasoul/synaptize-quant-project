@@ -216,6 +216,8 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
         f"remaining monthly budget: ${decision['remaining_budget_before_usd']}",
         f"FINAL PURCHASE: ${decision['final_purchase_usd']}",
         "NO ORDER EXECUTED",
+        "MULTIPLE CHECKS MAY ARRIVE PER DAY — EXECUTE AT MOST ONE DAILY V1 PURCHASE.",
+        "If you already bought today, treat later checks as informational until the ledger is updated.",
         f"SHADOW — BUY ${decision['final_purchase_usd']} BTC TODAY — NO ORDER EXECUTED",
     ]
     return "\n".join(lines)
