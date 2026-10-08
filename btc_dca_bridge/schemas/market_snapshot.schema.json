@@ -9,7 +9,7 @@
     "schema_version": {"const": "1.0.0"},
     "snapshot_id": {"type": "string", "pattern": "^market_[A-Za-z0-9_-]+$"},
     "captured_at_utc": {"type": "string", "format": "date-time"},
-    "source_exchange": {"const": "Bybit"},
+    "source_exchange": {"enum": ["Bybit", "Binance", "KuCoin"]},
     "market_type": {"const": "spot"},
     "symbol": {"const": "BTCUSDT"},
     "current_price_usdt": {"type": "number", "exclusiveMinimum": 0},
@@ -24,8 +24,8 @@
       "properties": {
         "observation_resolution_seconds": {"type": "integer", "enum": [60, 3600]},
         "trade_level_exact": {"const": false},
-        "source": {"enum": ["bybit_api", "tradingview"]},
-        "external_symbol": {"const": "BYBIT:BTCUSDT"},
+        "source": {"enum": ["bybit_api", "binance_api", "kucoin_api"]},
+        "external_symbol": {"enum": ["BYBIT:BTCUSDT", "BINANCE:BTCUSDT", "KUCOIN:BTC-USDT"]},
         "primary_source": {"const": "bybit_api"},
         "primary_failure_category": {
           "type": ["string", "null"],
