@@ -15,6 +15,7 @@ from .models import MarketSnapshot, StrategyDecision
 
 
 _SNAPSHOT_ID = re.compile(r"^market_[A-Za-z0-9_-]+$")
+_APPROVED_SPOT_IDENTITIES = {("Bybit", "BTCUSDT"), ("Binance", "BTCUSDT"), ("KuCoin", "BTCUSDT")}
 
 
 def _parse_datetime(value: Any, label: str) -> datetime:
@@ -53,12 +54,13 @@ def validate_calculation_inputs(
         raise InputValidationError("unexpected MarketSnapshot schema version")
     if not _SNAPSHOT_ID.fullmatch(snapshot.snapshot_id):
         raise InputValidationError("invalid MarketSnapshot ID")
-    if (
-        snapshot.source_exchange != "Bybit"
-        or snapshot.market_type != "spot"
-        or snapshot.symbol != "BTCUSDT"
-    ):
-        raise InputValidationError("MarketSnapshot must represent Bybit BTCUSDT Spot")
+    if snapshot.market_type != "spot" or (
+        snapshot.source_exchange,
+        snapshot.symbol,
+    ) not in _APPROVED_SPOT_IDENTITIES:
+        raise InputValidationError(
+            "MarketSnapshot must represent an approved BTC/USDT Spot venue"
+        )
     if not all(
         value is True
         for value in (
