@@ -19,12 +19,12 @@ from ..errors import (
     InvalidWindowError,
     RateLimitedError,
     SourceMismatchError,
+    MarketDataError,
 )
 from ..models import MarketSnapshot
 from ..schemas import validate_artifact
 from .http import HttpResponse, PublicHttpTransport, TransportConnectionError, TransportTimeout
 from .models import Candle, CandleHistory, Ticker
-from .provider import BybitSnapshotSource, FALLBACK_FAILURES, HARD_FAILURES
 
 SPOT_MARKET = "spot"
 CANONICAL_SYMBOL = "BTCUSDT"
@@ -448,9 +448,7 @@ class OrderedApprovedSpotProvider:
         for index, source in enumerate(self.sources):
             try:
                 snapshot = source.get_market_snapshot(captured_at_utc=captured_at_utc)
-            except HARD_FAILURES:
-                raise
-            except FALLBACK_FAILURES as exc:
+            except MarketDataError as exc:
                 failures.append(exc)
                 continue
             if index == 0:
