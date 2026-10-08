@@ -47,7 +47,7 @@
     "market_snapshot_id": {"type": "string", "pattern": "^market_[A-Za-z0-9_-]+$"},
     "sentiment_snapshot_id": {"type": "string", "pattern": "^sentiment_[A-Za-z0-9_-]+$"},
     "decision_id": {"type": "string", "pattern": "^decision_[A-Za-z0-9_-]+$"},
-    "selected_market_source": {"enum": ["bybit_api", "binance_api", "kucoin_api"]},
+    "selected_market_source": {"enum": ["bybit_api", "binance_api", "kucoin_api", "tradingview"]},
     "primary_market_source": {"const": "bybit_api"},
     "primary_failure_category": {"type": ["string", "null"]},
     "fallback_attempted": {"type": "boolean"},
