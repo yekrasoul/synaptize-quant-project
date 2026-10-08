@@ -1,6 +1,8 @@
 name: Production shadow
 
 on:
+  schedule:
+    - cron: "23 */6 * * *"
   workflow_dispatch:
 
 permissions:
