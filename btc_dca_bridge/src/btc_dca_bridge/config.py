@@ -436,7 +436,7 @@ def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataC
         raise ConfigurationError("the only approved fallback is tradingview")
     if root["tradingview_external_symbol"] != "BYBIT:BTCUSDT" or ".P" in root["tradingview_external_symbol"]:
         raise ConfigurationError("TradingView identity must be exact BYBIT:BTCUSDT Spot")
-    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("tradingview",), "BYBIT:BTCUSDT", _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["tradingview_observation_max_age_seconds"], "market_data.tradingview_observation_max_age_seconds"), _positive_number(root["tradingview_timeout_seconds"], "market_data.tradingview_timeout_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
+    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), "BYBIT:BTCUSDT", _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["tradingview_observation_max_age_seconds"], "market_data.tradingview_observation_max_age_seconds"), _positive_number(root["tradingview_timeout_seconds"], "market_data.tradingview_timeout_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
 
 
 def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig:
