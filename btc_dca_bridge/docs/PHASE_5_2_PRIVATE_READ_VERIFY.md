@@ -27,7 +27,16 @@ or exception messages. Credential information is classified as
 `READ_ONLY`, `TRADE_CAPABLE`, `UNSAFE_PERMISSION_SCOPE`, or `INVALID`.
 Withdrawal, transfer, borrow, and repay permissions are unsafe. Permissions
 are never changed automatically; use a dedicated key with no withdrawal or
-transfer scope.
+transfer scope. Empty unrelated permission groups returned by Bybit are
+ignored only when their action lists are empty; non-empty unknown groups fail
+closed. A minimal Spot-only key with `SpotTrade` is trade-capable, while
+dangerous derivative and wallet scopes remain blocked.
+
+For this Spot-only architecture, both UTA 2.0 (`unifiedMarginStatus=5`) and
+UTA 2.0 Pro (`unifiedMarginStatus=6`) are supported when `marginMode` is
+`REGULAR_MARGIN`, `spotHedgingStatus` is `OFF`, and account metadata is fresh.
+Pro is not required for correctness, and no account upgrade is required or
+triggered.
 
 ## Verification and ambiguity
 

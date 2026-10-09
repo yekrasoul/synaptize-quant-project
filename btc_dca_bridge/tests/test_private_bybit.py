@@ -58,6 +58,22 @@ class PrivateBybitTests(unittest.TestCase):
         malformed = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"UnknownGroup": ["UnknownAction"]}})}).credential_info()
         self.assertEqual(malformed.classification, CredentialClassification.INVALID)
 
+    def test_spot_trade_with_unrelated_empty_bybit_groups_is_trade_capable(self):
+        permissions = {"Spot": ["SpotTrade"], "Affiliate": [], "BitCard": [], "BlockTrade": [], "CopyTrading": [], "Earn": [], "Exchange": [], "Wallet": [], "Unrelated": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.TRADE_CAPABLE)
+
+    def test_safe_read_actions_with_empty_groups_are_read_only(self):
+        permissions = {"Spot": ["SpotRead"], "Wallet": ["WalletRead"], "Affiliate": [], "Exchange": [], "UnknownEmpty": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 1, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.READ_ONLY)
+
+    def test_non_empty_unknown_group_and_read_only_trade_fail_closed(self):
+        unknown = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"UnknownGroup": ["UnknownAction"]}})}).credential_info()
+        self.assertEqual(unknown.classification, CredentialClassification.INVALID)
+        read_only_trade = self.client({"/v5/user/query-api": response({"readOnly": 1, "permission": {"Spot": ["SpotTrade"]}})}).credential_info()
+        self.assertEqual(read_only_trade.classification, CredentialClassification.INVALID)
+
     def test_account_and_wallet_parse_decimal_liabilities(self):
         client = self.client({
             "/v5/account/info": response({"unifiedMarginStatus": 6, "marginMode": "REGULAR_MARGIN", "spotHedgingStatus": "ON", "updatedTime": "1"}),

@@ -169,6 +169,11 @@ def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_
     for raw_group, raw_actions in permissions.items():
         group = _permission_token(raw_group)
         actions = {_permission_token(action) for action in raw_actions}
+        # Bybit returns many unrelated permission groups with no actions. An
+        # empty group grants no scope and is intentionally ignored; any
+        # non-empty unknown group still fails closed below.
+        if not actions:
+            continue
         if group in dangerous_groups:
             return CredentialClassification.UNSAFE_PERMISSION_SCOPE
         if group == "wallet":
@@ -177,7 +182,7 @@ def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_
             if not actions.issubset(known_read): return CredentialClassification.INVALID
             has_read = True
         elif group == "spot":
-            if not actions or not actions.issubset(known_read | known_spot_trade): return CredentialClassification.INVALID
+            if not actions.issubset(known_read | known_spot_trade): return CredentialClassification.INVALID
             has_trade |= bool(actions & known_spot_trade)
             has_read |= bool(actions & known_read)
         else:
