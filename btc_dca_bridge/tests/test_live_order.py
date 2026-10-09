@@ -186,6 +186,29 @@ class LiveOrderHardeningTests(unittest.TestCase):
                 self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
                 self.assertEqual(self.ledger.read_text(), "")
 
+    def test_explicit_http_and_bybit_api_rejections_are_recorded_without_retry(self):
+        responses = (
+            HttpResponse(400, {}, b"request rejected"),
+            HttpResponse(200, {}, json.dumps({"retCode": 10001, "retMsg": "bad parameter", "result": {}}).encode()),
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                self.setUp()
+                transport = FakeTransport(response=response)
+                reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1", (), self.intent.client_order_id))
+
+                result = self.submit(transport=transport, post_ack_reconciler=reconciler)
+
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(reconciler.calls, [])
+                self.assertEqual(result.outcome.outcome_category, "exchange_rejected")
+                self.assertEqual(result.outcome.state, "rejected_by_exchange")
+                self.assertEqual(self.ledger.read_text(), "")
+                attempts = list((self.data / "order_submission_attempts").rglob("*.json"))
+                outcomes = list((self.data / "order_submission_outcomes").rglob("*.json"))
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(len(outcomes), 1)
+
     def test_ack_order_id_must_match_reconciled_order_id(self):
         reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "different-order", (), self.intent.client_order_id))
         result = self.submit(post_ack_reconciler=reconciler)
