@@ -99,11 +99,21 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(clock["status"], "UNAVAILABLE")
         self.assertNotEqual(result["status"], "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION")
 
-    def test_account_mode_requires_exact_supported_shape_and_fresh_timestamp(self):
+    def test_account_mode_accepts_uta_2_and_uta_2_pro_with_fresh_timestamp(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-        self.assertTrue(classify_production_account_mode(AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)[0])
+        uta2_ok, uta2_reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
+        pro_ok, pro_reason = classify_production_account_mode(AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
+        self.assertTrue(uta2_ok)
+        self.assertIn("UTA 2.0 status 5", uta2_reason)
+        self.assertTrue(pro_ok)
+        self.assertIn("UTA 2.0 Pro status 6", pro_reason)
+
+    def test_account_mode_rejects_unsupported_shapes_and_timestamps(self):
+        now = datetime(2026, 10, 7, 12, tzinfo=UTC)
         for account in (
-            AccountInfo(5, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
+            AccountInfo(3, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
+            AccountInfo(4, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
+            AccountInfo(1, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
             AccountInfo(6, "PORTFOLIO_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
             AccountInfo(6, "REGULAR_MARGIN", "ON", "2026-10-07T11:59:00Z"),
             AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:00:00Z"),

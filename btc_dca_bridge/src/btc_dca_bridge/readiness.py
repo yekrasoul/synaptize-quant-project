@@ -64,9 +64,10 @@ def measure_server_time(server_time_ms: Callable[[], int], *, clock: Callable[[]
 
 
 def classify_production_account_mode(account: AccountInfo, *, now: datetime, max_age: timedelta = timedelta(minutes=5)) -> tuple[bool, str]:
-    """Accept only the one account shape supported by the Spot execution architecture."""
-    if account.unified_margin_status not in (6, "6"):
-        return False, "unsupported unifiedMarginStatus; only Unified status 6 is supported"
+    """Accept fresh UTA 2.0 or UTA 2.0 Pro in the Spot architecture."""
+    status = str(account.unified_margin_status)
+    if status not in {"5", "6"}:
+        return False, "unsupported unifiedMarginStatus; only UTA 2.0 status 5 or UTA 2.0 Pro status 6 is supported"
     if account.margin_mode != "REGULAR_MARGIN":
         return False, "unsupported marginMode; only REGULAR_MARGIN is supported"
     if account.spot_hedging_status != "OFF":
@@ -86,7 +87,8 @@ def classify_production_account_mode(account: AccountInfo, *, now: datetime, max
             return False, "account metadata is stale or future-dated"
     except (TypeError, ValueError, OverflowError) as exc:
         return False, f"account updatedTime is invalid: {exc}"
-    return True, "supported Unified status 6 / REGULAR_MARGIN / spotHedgingStatus OFF"
+    status_name = "UTA 2.0" if status == "5" else "UTA 2.0 Pro"
+    return True, f"supported {status_name} status {status} / REGULAR_MARGIN / spotHedgingStatus OFF"
 
 
 class ProductionReadinessService:
