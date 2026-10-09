@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Iterable
 
 from .errors import LedgerValidationError
-from .ledger import confirmed_executions, executions_for_month
+from .ledger import confirmed_executions, validate_calendar_month
 from .models import Execution, PortfolioState
 
 
@@ -20,7 +20,12 @@ def derive_portfolio(
     ):
         raise LedgerValidationError("monthly cap must be a positive finite Decimal")
     confirmed = confirmed_executions(tuple(executions))
-    monthly = executions_for_month(confirmed, calendar_month)
+    validate_calendar_month(calendar_month)
+    monthly = tuple(
+        execution
+        for execution in confirmed
+        if execution.executed_at_utc[:7] == calendar_month
+    )
     total_spend = sum((item.executed_usd for item in confirmed), Decimal(0))
     monthly_spend = sum((item.executed_usd for item in monthly), Decimal(0))
     remaining = monthly_cap_usd - monthly_spend
