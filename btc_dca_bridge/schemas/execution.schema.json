@@ -4,24 +4,332 @@
   "title": "Execution",
   "type": "object",
   "additionalProperties": false,
-  "properties": {"schema_version": {}, "execution_id": {}, "executed_at_utc": {}, "asset": {}, "quote_currency": {}, "executed_usd": {}, "reference_price_usdt": {}, "btc_quantity": {}, "status": {}, "reconciliation": {}, "decision_id": {}, "canary_id": {}, "approval_id": {}, "order_id": {}, "order_link_id": {}, "execution_id_bybit": {}, "fee": {}, "fee_asset": {}},
+  "properties": {
+    "schema_version": {},
+    "execution_id": {},
+    "executed_at_utc": {},
+    "asset": {},
+    "quote_currency": {},
+    "executed_usd": {},
+    "reference_price_usdt": {},
+    "btc_quantity": {},
+    "status": {},
+    "reconciliation": {},
+    "supersedes_execution_id": {},
+    "decision_id": {},
+    "canary_id": {},
+    "approval_id": {},
+    "order_id": {},
+    "order_link_id": {},
+    "execution_id_bybit": {},
+    "fee": {},
+    "fee_asset": {}
+  },
   "oneOf": [
     {
-      "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "execution_id", "executed_at_utc", "asset", "quote_currency", "executed_usd", "reference_price_usdt", "status", "reconciliation"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "execution_id",
+        "executed_at_utc",
+        "asset",
+        "quote_currency",
+        "executed_usd",
+        "reference_price_usdt",
+        "status",
+        "reconciliation"
+      ],
       "properties": {
-        "schema_version": {"const": "1.0.0"}, "execution_id": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}, "executed_at_utc": {"type": "string", "format": "date-time"}, "asset": {"const": "BTC"}, "quote_currency": {"const": "USDT"}, "executed_usd": {"type": "number", "exclusiveMinimum": 0}, "reference_price_usdt": {"type": "number", "exclusiveMinimum": 0}, "btc_quantity": {"type": ["number", "null"], "exclusiveMinimum": 0}, "status": {"const": "reconciled"},
-        "reconciliation": {"type": "object", "additionalProperties": false, "required": ["source", "note"], "properties": {"source": {"enum": ["Chat 03 — Portfolio & Budget Tracker", "Project conversation — user-confirmed execution"]}, "note": {"type": "string", "minLength": 1}}}
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^execution_[A-Za-z0-9_-]+$"
+        },
+        "executed_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "asset": {
+          "const": "BTC"
+        },
+        "quote_currency": {
+          "const": "USDT"
+        },
+        "executed_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "reference_price_usdt": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "btc_quantity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "status": {
+          "const": "reconciled"
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "note"
+          ],
+          "properties": {
+            "source": {
+              "enum": [
+                "Chat 03 — Portfolio & Budget Tracker",
+                "Project conversation — user-confirmed execution"
+              ]
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
       }
     },
     {
-      "type": "object", "additionalProperties": false,
-      "required": ["schema_version", "execution_id", "executed_at_utc", "asset", "quote_currency", "executed_usd", "reference_price_usdt", "btc_quantity", "status", "reconciliation", "decision_id", "canary_id", "approval_id", "order_id", "order_link_id", "execution_id_bybit", "fee", "fee_asset"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "execution_id",
+        "executed_at_utc",
+        "asset",
+        "quote_currency",
+        "executed_usd",
+        "reference_price_usdt",
+        "btc_quantity",
+        "status",
+        "reconciliation",
+        "decision_id",
+        "canary_id",
+        "approval_id",
+        "order_id",
+        "order_link_id",
+        "execution_id_bybit",
+        "fee",
+        "fee_asset"
+      ],
       "properties": {
-        "schema_version": {"const": "1.1.0"}, "execution_id": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}, "executed_at_utc": {"type": "string", "format": "date-time"}, "asset": {"const": "BTC"}, "quote_currency": {"const": "USDT"}, "executed_usd": {"type": "number", "exclusiveMinimum": 0}, "reference_price_usdt": {"type": "number", "exclusiveMinimum": 0}, "btc_quantity": {"type": "number", "exclusiveMinimum": 0}, "status": {"const": "reconciled"},
-        "reconciliation": {"type": "object", "additionalProperties": false, "required": ["source", "note"], "properties": {"source": {"const": "Bybit private order/fill reconciliation"}, "note": {"type": "string", "minLength": 1}}},
-        "decision_id": {"type": "string", "minLength": 1}, "canary_id": {"type": "string", "pattern": "^canary-[a-f0-9]{32}$"}, "approval_id": {"type": "string", "pattern": "^approval-[a-f0-9]{32}$"}, "order_id": {"type": "string", "minLength": 1}, "order_link_id": {"type": "string", "pattern": "^dca-[a-f0-9]{32}$"}, "execution_id_bybit": {"type": "string", "minLength": 1}, "fee": {"type": "number", "minimum": 0}, "fee_asset": {"type": "string", "minLength": 1}
+        "schema_version": {
+          "const": "1.1.0"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^execution_[A-Za-z0-9_-]+$"
+        },
+        "executed_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "asset": {
+          "const": "BTC"
+        },
+        "quote_currency": {
+          "const": "USDT"
+        },
+        "executed_usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "reference_price_usdt": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "btc_quantity": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "status": {
+          "const": "reconciled"
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "note"
+          ],
+          "properties": {
+            "source": {
+              "const": "Bybit private order/fill reconciliation"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canary_id": {
+          "type": "string",
+          "pattern": "^canary-[a-f0-9]{32}$"
+        },
+        "approval_id": {
+          "type": "string",
+          "pattern": "^approval-[a-f0-9]{32}$"
+        },
+        "order_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "order_link_id": {
+          "type": "string",
+          "pattern": "^dca-[a-f0-9]{32}$"
+        },
+        "execution_id_bybit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fee": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fee_asset": {
+          "type": "string",
+          "minLength": 1
+        }
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "execution_id",
+        "executed_at_utc",
+        "asset",
+        "quote_currency",
+        "executed_usd",
+        "reference_price_usdt",
+        "btc_quantity",
+        "status",
+        "reconciliation",
+        "supersedes_execution_id"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "1.2.0"
+        },
+        "execution_id": {
+          "type": "string",
+          "pattern": "^execution_[A-Za-z0-9_-]+$"
+        },
+        "executed_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "asset": {
+          "const": "BTC"
+        },
+        "quote_currency": {
+          "const": "USDT"
+        },
+        "executed_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reference_price_usdt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "btc_quantity": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "status": {
+          "enum": [
+            "reconciled",
+            "voided"
+          ]
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source",
+            "note"
+          ],
+          "properties": {
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "supersedes_execution_id": {
+          "type": "string",
+          "pattern": "^execution_[A-Za-z0-9_-]+$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "reconciled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "executed_usd": {
+                "exclusiveMinimum": 0
+              },
+              "reference_price_usdt": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "voided"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "executed_usd": {
+                "const": 0
+              },
+              "reference_price_usdt": {
+                "type": "null"
+              },
+              "btc_quantity": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }
