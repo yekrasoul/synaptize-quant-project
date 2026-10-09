@@ -4,7 +4,7 @@ This is a stable governance/bootstrap template, not an operational state source.
 
 For any BTC DCA project interface:
 
-1. Access the live canonical GitHub repository and read `config/project_manifest.yaml` first.
+1. Access the live canonical GitHub repository and read `btc_dca_bridge/config/project_manifest.yaml` first.
 2. Read the `PROJECT_CHAT_CONTRACT` path declared by that manifest.
 3. Resolve the active strategy and config only through the repository-declared manifest and reviewed supported loader. Fail closed if resources are unavailable, contradictory, or unsupported.
 4. Before portfolio, DCA, monthly-budget, or execution-history answers, freshly read the manifest-declared canonical ledger and derive state through its parser and active projection. Do not use chat memory as execution state.
