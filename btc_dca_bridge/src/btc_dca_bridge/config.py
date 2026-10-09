@@ -89,6 +89,7 @@ class StrategyConfig:
     monthly_cap_usd: Decimal
     drawdown_bands: tuple[DrawdownBand, ...]
     sentiment_bands: tuple[SentimentBand, ...]
+    approved_spot_exchanges: tuple[str, ...] = ("Bybit", "Binance", "KuCoin")
     allocation_rounding: str = ROUND_HALF_UP
 
     def base_allocation(self, drawdown: Decimal) -> Decimal:
@@ -184,6 +185,11 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         or market.get("symbol") != "BTCUSDT"
     ):
         raise ConfigurationError("V1 market policy must be Bybit BTCUSDT Spot")
+    approved_spot_exchanges = market.get("approved_spot_source_order")
+    if approved_spot_exchanges != ["Bybit", "Binance", "KuCoin"]:
+        raise ConfigurationError(
+            "V1 approved Spot source order must be Bybit, Binance, KuCoin"
+        )
     if market.get("same_source_price_and_high_required") is not True:
         raise ConfigurationError("price and rolling high must use the same source")
 
@@ -275,14 +281,15 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         raise ConfigurationError("V1 must remain recommendation-only")
 
     return StrategyConfig(
-        EXPECTED_STRATEGY_ID,
-        EXPECTED_STRATEGY_VERSION,
-        core,
-        minimum,
-        cap,
-        drawdown_bands,
-        tuple(sentiment_bands),
-        ROUND_HALF_UP,
+        strategy_id=EXPECTED_STRATEGY_ID,
+        strategy_version=EXPECTED_STRATEGY_VERSION,
+        core_daily_usd=core,
+        minimum_purchase_usd=minimum,
+        monthly_cap_usd=cap,
+        drawdown_bands=drawdown_bands,
+        sentiment_bands=tuple(sentiment_bands),
+        approved_spot_exchanges=tuple(approved_spot_exchanges),
+        allocation_rounding=ROUND_HALF_UP,
     )
 
 
