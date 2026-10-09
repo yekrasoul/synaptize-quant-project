@@ -17,24 +17,24 @@ class LedgerTest(unittest.TestCase):
     def setUpClass(cls):
         cls.executions = read_executions()
 
-    def test_canonical_ledger_has_eleven_confirmed_executions(self):
-        self.assertEqual(len(self.executions), 11)
+    def test_canonical_ledger_has_twelve_confirmed_executions(self):
+        self.assertEqual(len(self.executions), 12)
 
-    def test_canonical_ledger_total_is_280(self):
+    def test_canonical_ledger_total_is_315(self):
         total = sum((item.executed_usd for item in self.executions), Decimal(0))
-        self.assertEqual(total, Decimal("280"))
+        self.assertEqual(total, Decimal("315"))
 
     def test_september_confirmed_spend_is_220(self):
         rows = executions_for_month(self.executions, "2026-09")
         self.assertEqual(sum((row.executed_usd for row in rows), Decimal(0)), Decimal("220"))
 
-    def test_october_confirmed_spend_is_60(self):
+    def test_october_confirmed_spend_is_95(self):
         rows = executions_for_month(self.executions, "2026-10")
-        self.assertEqual(sum((row.executed_usd for row in rows), Decimal(0)), Decimal("60"))
+        self.assertEqual(sum((row.executed_usd for row in rows), Decimal(0)), Decimal("95"))
 
     def test_calendar_month_filtering_excludes_other_months(self):
         rows = executions_for_month(self.executions, "2026-10")
-        self.assertEqual([row.execution_id for row in rows], ["execution_20261005_01"])
+        self.assertEqual([row.execution_id for row in rows], ["execution_20261005_01", "execution_20261008_01"])
 
     def test_rejects_invalid_calendar_month(self):
         for value in ("2026-00", "2026-13", "2026-1", "October"):
@@ -81,22 +81,22 @@ class PortfolioTest(unittest.TestCase):
         state = derive_portfolio(
             self.executions, "2026-10", self.strategy.monthly_cap_usd
         )
-        self.assertEqual(state.total_confirmed_usd_deployed, Decimal("280"))
-        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("60"))
-        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("440"))
-        self.assertEqual(state.confirmed_execution_count, 11)
-        self.assertEqual(state.monthly_confirmed_execution_count, 1)
+        self.assertEqual(state.total_confirmed_usd_deployed, Decimal("315"))
+        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("95"))
+        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("405"))
+        self.assertEqual(state.confirmed_execution_count, 12)
+        self.assertEqual(state.monthly_confirmed_execution_count, 2)
         self.assertEqual(state.schema_version, "1.1.0")
-        self.assertEqual(state.as_of_utc, "2026-10-05T00:00:00Z")
+        self.assertEqual(state.as_of_utc, "2026-10-08T00:00:00Z")
 
     def test_derived_portfolio_is_a_schema_valid_v1_1_state(self):
         state = derive_portfolio(
             self.executions, "2026-10", self.strategy.monthly_cap_usd
         ).to_dict()
         validate_artifact("portfolio_state", state)
-        self.assertEqual(state["monthly_spent_usd"], 60)
-        self.assertEqual(state["monthly_remaining_usd"], 440)
-        self.assertEqual(state["executions_count"], 11)
+        self.assertEqual(state["monthly_spent_usd"], 95)
+        self.assertEqual(state["monthly_remaining_usd"], 405)
+        self.assertEqual(state["executions_count"], 12)
 
     def test_empty_portfolio_has_deterministic_as_of_timestamp(self):
         state = derive_portfolio((), "2026-10", self.strategy.monthly_cap_usd)
