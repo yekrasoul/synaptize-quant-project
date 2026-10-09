@@ -79,13 +79,12 @@ class CanonicalizationTest(unittest.TestCase):
         shadow = (ROOT / "docs" / "SHADOW_PIPELINE.md").read_text(encoding="utf-8")
         combined = "\n".join((readme, project, shadow)).lower()
         self.assertIn("bybit btcusdt spot", combined)
-        self.assertIn("bybit:btcusdt", combined)
+        self.assertIn("binance btcusdt spot", combined)
+        self.assertIn("kucoin btc-usdt spot", combined)
         self.assertIn("alternative.me", combined)
         self.assertIn("ledger/executions.jsonl", combined)
-        self.assertNotIn("api.binance", combined)
-        self.assertNotIn("api.kucoin", combined)
-        self.assertNotIn("fallback to binance", combined)
-        self.assertNotIn("fallback to kucoin", combined)
+        self.assertNotIn("tradingview exact bybit:btcusdt spot fallback", combined)
+        self.assertNotIn("btcusdt.p", combined)
 
 
 if __name__ == "__main__":
