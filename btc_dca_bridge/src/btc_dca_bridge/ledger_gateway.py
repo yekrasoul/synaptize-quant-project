@@ -135,7 +135,7 @@ class LedgerGateway:
             "reconciliation": {"source": source, "note": note},
             "supersedes_execution_id": supersedes_execution_id,
         }
-        return execution_id, append_execution_once(self.ledger_path, payload)
+        return execution_id, self._append_semantically_once(payload)
 
     def cancel_execution(
         self,
@@ -165,7 +165,7 @@ class LedgerGateway:
             "reconciliation": {"source": source, "note": note},
             "supersedes_execution_id": supersedes_execution_id,
         }
-        return execution_id, append_execution_once(self.ledger_path, payload)
+        return execution_id, self._append_semantically_once(payload)
 
     def get_portfolio_state(self, calendar_month: str) -> PortfolioState:
         config = load_strategy_config(self.config_path)
