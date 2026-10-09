@@ -1,0 +1,25 @@
+name: Verify project contract sync
+
+on:
+  push:
+    branches:
+      - verify/project-contract-sync
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run python -m compileall -q src tests
+      - run: uv run python -m unittest discover -s tests -v
