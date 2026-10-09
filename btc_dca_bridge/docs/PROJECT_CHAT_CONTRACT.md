@@ -4,11 +4,11 @@ This contract defines mandatory behavior for **every ChatGPT conversation/interf
 
 ## Canonical source of truth
 
-The only authoritative execution-history source is:
+The only authoritative execution-history source is the repository-declared ledger in:
 
-`btc_dca_bridge/ledger/executions.jsonl`
+`btc_dca_bridge/config/project_manifest.yaml`
 
-accessed through the repository's `LedgerGateway`.
+accessed through the repository's `LedgerGateway` and versioned compare-and-swap contract.
 
 Chat memory, previous chat summaries, scheduled-task prompts, assistant memory, and copied portfolio totals are **not** authoritative execution state.
 
@@ -24,7 +24,7 @@ Before answering any question involving:
 - weighted reference acquisition price;
 - whether a purchase has already been recorded;
 
-the interface MUST freshly read the canonical GitHub ledger and derive state through the active ledger projection / `LedgerGateway.get_portfolio_state`.
+the interface MUST freshly read the canonical GitHub ledger and derive state through canonical parsing, correction/void active projection, and `LedgerGateway.get_portfolio_state`. Raw JSONL rows are history events, not necessarily active purchases.
 
 If the ledger cannot be read, parsed, validated, or projected safely, state that portfolio state is unavailable. Do not fall back to chat memory.
 
@@ -69,10 +69,12 @@ If a chat summary conflicts with the ledger, the ledger wins until a valid corre
 
 ## Idempotency and conflict handling
 
-The same economic execution reported through multiple interfaces must not be double-counted.
+The same economic execution reported through multiple interfaces must not be double-counted. Local deterministic IDs are not sufficient synchronization across independent writers: adapters must compare-and-swap against a fresh immutable version (GitHub Contents blob SHA for a GitHub adapter; current canonical content digest/Git state for local adapters), re-read after conflict, and replay the same semantic operation within a bounded retry count. Never force-overwrite.
 
 For a repeated execution:
-- if economic identity matches, treat it as idempotent;
+- if exact canonical economic identity matches, treat it as idempotent;
+- if same-day economic details match but timestamp normalization differs, stop with a possible-duplicate ambiguity; explicit resolution is required;
+- a genuinely separate same-details purchase requires explicit distinct-execution intent and a distinct execution ID;
 - if the same identity conflicts on amount, price, quantity, or timestamp, stop and surface the conflict;
 - do not auto-merge conflicting evidence.
 
@@ -85,7 +87,7 @@ After every successful record, correction, or cancellation:
 
 ## Daily DCA execution rule
 
-The daily BTC Adaptive DCA V1 calculation MUST derive current-calendar-month spend from the canonical ledger at runtime.
+The daily BTC Adaptive DCA V1 calculation MUST derive current-calendar-month spend from the fresh canonical ledger's active projection at runtime.
 
 No hard-coded monthly-spend checkpoint may override a readable, valid ledger.
 

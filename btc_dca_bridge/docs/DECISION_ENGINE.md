@@ -4,7 +4,7 @@
 
 The Phase 2 engine is an offline, deterministic transformation. It does not retrieve market data, contact an exchange, submit an order, schedule work, or send a notification. The strategy engine is pure business logic; ledger reading, portfolio derivation, and the CLI are separate adapters.
 
-`config/strategy_v1.yaml` is the sole source of strategy constants. This document describes how the engine interprets that configuration and does not supersede it.
+The active strategy config declared in `config/project_manifest.yaml` is the sole source of strategy constants. This document describes how the engine interprets that config and does not supersede it.
 
 ## Inputs
 

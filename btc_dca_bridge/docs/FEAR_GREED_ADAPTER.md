@@ -6,4 +6,4 @@ The read-only adapter uses Alternative.me's public [Crypto Fear & Greed API](htt
 
 The transport is HTTPS-only with explicit connect/read timeouts and at most three attempts (the existing public transport policy). HTTP 429 is `RATE_LIMITED`; connectivity failures are `SOURCE_UNAVAILABLE`; invalid payload/value/timestamp and stale data have distinct typed error codes. There is no fallback sentiment source in this phase.
 
-The adapter returns only validated sentiment data. It does not calculate a multiplier, allocation, buy recommendation, BTC price, or rolling high. V1 multiplier bands remain exclusively in `config/strategy_v1.yaml`; the deterministic engine consumes the integer `SentimentSnapshot.value` at a later orchestration boundary.
+The adapter returns only validated sentiment data. It does not calculate a multiplier, allocation, buy recommendation, BTC price, or rolling high. V1 multiplier bands remain exclusively in the active strategy config declared by `config/project_manifest.yaml`; the deterministic engine consumes the integer `SentimentSnapshot.value` at a later orchestration boundary.

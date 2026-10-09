@@ -1,12 +1,12 @@
 # Execution ledger and reconciliation
 
-`../ledger/executions.jsonl` is the canonical, append-only execution ledger. Each line is one `Execution` object conforming to `../schemas/execution.schema.json`.
+The ledger path is declared in `../config/project_manifest.yaml`. It is canonical, append-only execution event history; each line is one `Execution` object conforming to `../schemas/execution.schema.json`. Spend and portfolio state are computed from the active projection after correction/void events, never by summing historical rows.
 
 The current 12 reconciled records total **$220 in September 2026** and **$95 in October 2026 through 8 October**. `btc_quantity` is intentionally `null`: the available historical evidence provides a BTC reference price but not a verified filled BTC quantity. It must not be inferred from USD ÷ reference price.
 
 Only confirmed executed purchases supported by explicit user evidence enter the ledger. **Chat 03 — Portfolio & Budget Tracker is the preferred/manual intake surface, but it is not the only admissible intake surface.** A purchase explicitly confirmed by the user in any conversation within the BTC ADAPTIVE DCA project is eligible for reconciliation into the same canonical ledger. The ledger, not any individual chat summary, is the runtime source of truth.
 
-Cross-chat synchronization rule: when the user confirms, corrects, or cancels an execution in any project chat, reconcile that fact into `ledger/executions.jsonl` as soon as repository access is available. Chat 03 summaries must be derived from that ledger and must not overwrite or discard valid executions confirmed elsewhere. If Chat 03 is stale, the ledger wins until Chat 03 is refreshed from it.
+Cross-interface synchronization rule: when a user confirms, corrects, or cancels an execution, synchronize with fresh-read/compare-and-swap using the immutable current version (GitHub blob SHA for a GitHub Contents adapter; exact content digest/current Git state locally). On conflict, reread and replay the same semantic operation with bounded retries; never force overwrite. Chat 03 summaries must be derived from the active projection. A possible timestamp-normalization duplicate is an explicit ambiguity requiring resolution, not an automatic merge.
 
 Recommendations, schedules, and superseded intended purchases do not enter the ledger. A later correction is represented by its confirmed record and a reconciliation note; do not add the replaced intended entry.
 

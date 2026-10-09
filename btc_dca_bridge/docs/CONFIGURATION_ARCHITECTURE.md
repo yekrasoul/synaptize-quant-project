@@ -5,7 +5,8 @@ shadow run begins.  Secrets are intentionally excluded.
 
 | Owner | File | Examples |
 |---|---|---|
-| V1 strategy | `config/strategy_v1.yaml` | drawdown bands, Fear & Greed multipliers, monthly cap, rounding |
+| Project bootstrap / active strategy | `config/project_manifest.yaml` | active identity and canonical strategy/resource paths |
+| V1 strategy | manifest-declared strategy config | drawdown bands, Fear & Greed multipliers, monthly cap, rounding |
 | Market operations | `config/market_data.yaml` | approved provider order, exact Spot identity, freshness, HTTP policy |
 | Sentiment operations | `config/sentiment.yaml` | Alternative.me index, 36-hour freshness, HTTP policy |
 | Runtime operations | `config/runtime.yaml` | London operational intent, UTC slot, minute alignment |
@@ -30,8 +31,8 @@ artifacts, no shadow-ledger mutation, no monthly-cap bypass, and no live order
 execution. `runtime.live_execution_enabled` must be false and cannot enable a
 nonexistent Phase 5 path.
 
-The current provider order is Bybit public Spot API, then TradingView exact
-`BYBIT:BTCUSDT`, then fail closed. Alternative.me is the sole sentiment source.
+The currently approved provider order is Bybit public Spot API, Binance Spot,
+then KuCoin Spot, then fail closed. Alternative.me is the sole sentiment source.
 Changing an exchange, external symbol, provider, or sentiment source is a
 **DATA-SOURCE CHANGE**: implement an adapter, define identity/provenance,
 extend typed validation, add offline contract tests, review schemas, and approve
@@ -52,7 +53,7 @@ static YAML and is tested against runtime config.
 
 A timeout or notification retry change is a normal operational configuration
 change. Monthly cap, drawdown bands, multiplier bands, and rounding are **LIVE
-STRATEGY CHANGES** and remain solely in `strategy_v1.yaml`. RSI, moving averages,
+STRATEGY CHANGES** and remain solely in the manifest-declared strategy config. RSI, moving averages,
 funding, OI, ETF flows, macro and related flags are disabled research-only
 concepts; they must write separate research reports/artifacts and cannot affect
 V1 Decisions without an explicitly approved V2 strategy.
