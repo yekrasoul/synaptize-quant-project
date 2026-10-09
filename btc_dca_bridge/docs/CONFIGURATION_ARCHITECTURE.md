@@ -5,7 +5,7 @@ shadow run begins.  Secrets are intentionally excluded.
 
 | Owner | File | Examples |
 |---|---|---|
-| Project bootstrap / active strategy | `config/project_manifest.yaml` | active identity and canonical strategy/resource paths |
+| Project bootstrap / active strategy | `config/project_manifest.yaml` | active identity, approved exact strategy-file SHA-256, and canonical strategy/resource paths |
 | V1 strategy | manifest-declared strategy config | drawdown bands, Fear & Greed multipliers, monthly cap, rounding |
 | Market operations | `config/market_data.yaml` | approved provider order, exact Spot identity, freshness, HTTP policy |
 | Sentiment operations | `config/sentiment.yaml` | Alternative.me index, 36-hour freshness, HTTP policy |
@@ -21,6 +21,13 @@ configuration is authoritative. Environment variables supply only the Telegram
 secrets named by `notifications.yaml`. An explicit local CLI `--data-root` is a
 developer/test output-location override; it does not alter persistence safety or
 any production source, strategy, or execution policy.
+
+The active strategy config is hashed as exact repository file bytes and must
+match `active_strategy.content_sha256` before the reviewed strategy/version
+loader runs. A content edit without a corresponding deliberate manifest digest
+change is rejected. Updating that digest is a reviewed code/config change and
+still requires the normal branch, tests, PR, and human-approval process; a hash
+match by itself is not authorization to alter strategy economics.
 
 ## Safety boundaries
 

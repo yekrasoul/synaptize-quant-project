@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Mapping
@@ -24,6 +25,7 @@ class ProjectManifest:
     strategy_id: str
     strategy_version: str
     strategy_config: Path
+    strategy_content_sha256: str
     resources: Mapping[str, Path]
 
     def resource(self, name: str) -> Path:
@@ -71,6 +73,11 @@ def load_project_manifest(
         raise ConfigurationError(f"project manifest schema violation at {location}: {error.message}")
     strategy = raw["active_strategy"]
     strategy_path = _resolve(resolved_root, strategy["config_path"], "active_strategy.config_path")
+    actual_strategy_sha256 = hashlib.sha256(strategy_path.read_bytes()).hexdigest()
+    if actual_strategy_sha256 != strategy["content_sha256"]:
+        raise ConfigurationError(
+            "active strategy config digest does not match the repository-approved manifest digest"
+        )
     resources = {
         name: _resolve(resolved_root, value, f"canonical_resources.{name}")
         for name, value in raw["canonical_resources"].items()
@@ -83,5 +90,6 @@ def load_project_manifest(
         str(strategy["id"]),
         str(strategy["version"]),
         strategy_path,
+        actual_strategy_sha256,
         resources,
     )
