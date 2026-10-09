@@ -41,7 +41,7 @@ Execution evidence ─> reconciliation ─> Execution ledger ─> PortfolioState
 
 - **Collector:** obtains and validates data; it never changes allocation rules or sends an order.
 - **Decision engine:** pure, deterministic transformation of a valid snapshot, the strategy config, and derived monthly state. It has no network, Telegram, or exchange-order dependency.
-- **Ledger/reconciliation:** stores only confirmed executions and exposes derived `PortfolioState`.
+- **Ledger/reconciliation:** stores only confirmed executions and exposes derived `PortfolioState`. Chat 03 is the preferred manual intake surface, but explicit user-confirmed executions/corrections from any BTC DCA project conversation are valid reconciliation evidence. Once reconciled, the GitHub execution ledger is authoritative for runtime monthly spend and portfolio state.
 - **Notifier:** transports an already-created event to Telegram and records delivery status. It must not be treated as execution confirmation.
 - **Orchestrator:** assigns run/correlation IDs, invokes components, persists artifacts, and applies failure policy.
 
@@ -78,7 +78,7 @@ Strategy and contract versions are independent semantic versions. A V1 rule chan
 |---|---|---|
 | Chat 01 | strategy mandate and approved operating rules | approves changes to the strategy mandate; not a runtime data store |
 | Chat 02 | daily market/sentiment research and calculation input review | research only; cannot override config |
-| Chat 03 | portfolio and budget reconciliation | authoritative human evidence for ledger entries |
+| Chat 03 | preferred manual portfolio/budget entry and reconciliation surface | preferred intake surface; canonical runtime truth is the GitHub execution ledger, and explicit execution confirmations from any BTC DCA project chat must be reconciled into it |
 | Chat 04 | architecture, backtest, and controlled evolution | proposes/validates architecture; cannot silently change live V1 |
 | GitHub | versioned code/config/contracts/automation and audit history | no secret or manual-execution substitute |
 | Telegram | delivery channel for notification events | notification is not order confirmation |
