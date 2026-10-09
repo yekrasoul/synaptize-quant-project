@@ -13,11 +13,14 @@ import yaml
 
 from .errors import ConfigurationError
 from .paths import (
-    CONFIG_PATH, MARKET_DATA_CONFIG_PATH, NOTIFICATIONS_CONFIG_PATH,
+    MARKET_DATA_CONFIG_PATH, NOTIFICATIONS_CONFIG_PATH,
     PERSISTENCE_CONFIG_PATH, RESEARCH_CONFIG_PATH, RUNTIME_CONFIG_PATH,
     SENTIMENT_CONFIG_PATH,
     EXECUTION_CONFIG_PATH,
+    PROJECT_ROOT,
+    PROJECT_MANIFEST_PATH,
 )
+from .project_manifest import load_project_manifest
 
 
 EXPECTED_STRATEGY_ID = "btc_adaptive_dca_v1"
@@ -162,7 +165,7 @@ def _validate_drawdown_coverage(bands: tuple[DrawdownBand, ...]) -> None:
             )
 
 
-def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
+def _load_v1_strategy_config(path: Path) -> StrategyConfig:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -291,6 +294,44 @@ def load_strategy_config(path: Path = CONFIG_PATH) -> StrategyConfig:
         approved_spot_exchanges=tuple(approved_spot_exchanges),
         allocation_rounding=ROUND_HALF_UP,
     )
+
+
+SUPPORTED_STRATEGY_LOADERS = {
+    (EXPECTED_STRATEGY_ID, EXPECTED_STRATEGY_VERSION): _load_v1_strategy_config,
+}
+
+
+def load_active_strategy_config(
+    *, root: Path = PROJECT_ROOT, manifest_path: Path = PROJECT_MANIFEST_PATH
+) -> StrategyConfig:
+    """Resolve only a reviewed strategy/version declared by the repository manifest."""
+    manifest = load_project_manifest(root=root, manifest_path=manifest_path)
+    identity = (manifest.strategy_id, manifest.strategy_version)
+    loader = SUPPORTED_STRATEGY_LOADERS.get(identity)
+    if loader is None:
+        raise ConfigurationError(
+            f"unsupported active strategy {identity[0]} {identity[1]}; no reviewed loader is registered"
+        )
+    strategy = loader(manifest.strategy_config)
+    if (strategy.strategy_id, strategy.strategy_version) != identity:
+        raise ConfigurationError("active strategy manifest identity does not match its config")
+    return strategy
+
+
+def load_strategy_config(path: Path | None = None) -> StrategyConfig:
+    """Load the manifest-declared strategy, or an explicit supported V1 fixture.
+
+    The explicit path form remains for tests and reviewed callers that validate a
+    particular V1 config. Passing the active manifest path still performs the
+    complete manifest identity check.
+    """
+    if path is None:
+        return load_active_strategy_config()
+    explicit = Path(path).resolve()
+    manifest = load_project_manifest(root=PROJECT_ROOT, manifest_path=PROJECT_MANIFEST_PATH)
+    if explicit == manifest.strategy_config:
+        return load_active_strategy_config()
+    return _load_v1_strategy_config(Path(path))
 
 
 # Operational configuration is deliberately separate from the V1 strategy

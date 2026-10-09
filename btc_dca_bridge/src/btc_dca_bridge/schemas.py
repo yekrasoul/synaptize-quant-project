@@ -20,6 +20,7 @@ SCHEMA_FILES = {
     "notification_event": "notification_event.schema.json",
     "portfolio_state": "portfolio_state.schema.json",
     "portfolio_state_1_0": "portfolio_state_v1_0.schema.json",
+    "portfolio_state_1_1": "portfolio_state_v1_1.schema.json",
     "sentiment_snapshot": "sentiment_snapshot.schema.json",
     "shadow_run": "shadow_run.schema.json",
     "order_intent": "order_intent.schema.json",
@@ -33,6 +34,7 @@ SCHEMA_FILES = {
     "production_evidence": "production_evidence.schema.json",
     "production_status": "production_status.schema.json",
     "production_status_alert": "production_status_alert.schema.json",
+    "project_manifest": "project_manifest.schema.json",
 }
 
 
@@ -75,6 +77,8 @@ def validate_artifact(
     schema_name = name
     if name == "portfolio_state" and artifact.get("schema_version") == "1.0.0":
         schema_name = "portfolio_state_1_0"
+    elif name == "portfolio_state" and artifact.get("schema_version") == "1.1.0":
+        schema_name = "portfolio_state_1_1"
     if name == "production_evidence":
         version = artifact.get("schema_version")
         filename = PRODUCTION_EVIDENCE_SCHEMA_FILES.get(version)

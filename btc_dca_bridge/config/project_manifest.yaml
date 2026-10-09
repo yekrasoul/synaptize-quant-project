@@ -1,0 +1,14 @@
+schema_version: 1.0.0
+project:
+  id: btc_adaptive_dca
+active_strategy:
+  id: btc_adaptive_dca_v1
+  version: 1.0.0
+  config_path: config/strategy_v1.yaml
+canonical_resources:
+  ledger: ledger/executions.jsonl
+  chat_contract: docs/PROJECT_CHAT_CONTRACT.md
+  market_data: config/market_data.yaml
+  runtime: config/runtime.yaml
+  execution: config/execution.yaml
+  sentiment: config/sentiment.yaml
