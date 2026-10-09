@@ -11,7 +11,7 @@
       "required": ["schema_version", "execution_id", "executed_at_utc", "asset", "quote_currency", "executed_usd", "reference_price_usdt", "status", "reconciliation"],
       "properties": {
         "schema_version": {"const": "1.0.0"}, "execution_id": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}, "executed_at_utc": {"type": "string", "format": "date-time"}, "asset": {"const": "BTC"}, "quote_currency": {"const": "USDT"}, "executed_usd": {"type": "number", "exclusiveMinimum": 0}, "reference_price_usdt": {"type": "number", "exclusiveMinimum": 0}, "btc_quantity": {"type": ["number", "null"], "exclusiveMinimum": 0}, "status": {"const": "reconciled"},
-        "reconciliation": {"type": "object", "additionalProperties": false, "required": ["source", "note"], "properties": {"source": {"const": "Chat 03 — Portfolio & Budget Tracker"}, "note": {"type": "string", "minLength": 1}}}
+        "reconciliation": {"type": "object", "additionalProperties": false, "required": ["source", "note"], "properties": {"source": {"enum": ["Chat 03 — Portfolio & Budget Tracker", "Project conversation — user-confirmed execution"]}, "note": {"type": "string", "minLength": 1}}}
       }
     },
     {
