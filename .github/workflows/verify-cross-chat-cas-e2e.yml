@@ -1,0 +1,29 @@
+name: Verify cross-chat CAS E2E
+
+on:
+  push:
+    branches:
+      - e2e/cross-chat-cas-20261009
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Validate synthetic ledger schema/projection
+        run: |
+          uv run python -m btc_dca_bridge ledger-state \
+            --month 2099-01 \
+            --ledger data/e2e/cross_chat_cas.jsonl \
+            --json
