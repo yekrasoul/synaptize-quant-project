@@ -99,16 +99,16 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(clock["status"], "UNAVAILABLE")
         self.assertNotEqual(result["status"], "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION")
 
-    def test_account_mode_accepts_uta_2_and_uta_2_pro_with_fresh_timestamp(self):
+    def test_account_mode_accepts_uta_2_and_uta_2_pro_with_old_or_recent_update_timestamp(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-        uta2_ok, uta2_reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
+        uta2_ok, uta2_reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", "2026-09-01T00:00:00Z"), now=now)
         pro_ok, pro_reason = classify_production_account_mode(AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
         self.assertTrue(uta2_ok)
         self.assertIn("UTA 2.0 status 5", uta2_reason)
         self.assertTrue(pro_ok)
         self.assertIn("UTA 2.0 Pro status 6", pro_reason)
 
-    def test_account_mode_rejects_unsupported_shapes_and_timestamps(self):
+    def test_account_mode_rejects_unsupported_shapes_and_invalid_or_future_timestamp(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
         for account in (
             AccountInfo(3, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
@@ -116,8 +116,9 @@ class ReadinessTests(unittest.TestCase):
             AccountInfo(1, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
             AccountInfo(6, "PORTFOLIO_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
             AccountInfo(6, "REGULAR_MARGIN", "ON", "2026-10-07T11:59:00Z"),
-            AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:00:00Z"),
+            AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T12:00:03Z"),
             AccountInfo(6, "REGULAR_MARGIN", "OFF", "future"),
+            AccountInfo(6, "REGULAR_MARGIN", "OFF", None),
         ):
             self.assertFalse(classify_production_account_mode(account, now=now)[0])
 
