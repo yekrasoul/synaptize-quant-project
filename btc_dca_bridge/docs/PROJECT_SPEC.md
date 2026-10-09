@@ -15,7 +15,7 @@ no custody logic, no leverage, and no V2 indicator or rule changes.
 |---|---|---|
 | V1 allocation rules | `config/strategy_v1.yaml` | One definition; code and automation read it rather than duplicate thresholds. |
 | Contract shapes | `schemas/*.schema.json` | Versioned JSON Schema contracts. |
-| Executed-purchase history | `ledger/executions.jsonl` | Reconciled facts only; monthly spend is derived. |
+| Executed-purchase history | `ledger/executions.jsonl` via `LedgerGateway` | Single canonical cross-interface ledger; reconciled facts only; corrections/voids are append-only events; monthly spend is derived. |
 | Market snapshot | validated `MarketSnapshot` generated from Bybit BTC/USDT Spot | Prefer Bybit direct; use only TradingView exact `BYBIT:BTCUSDT` Spot when the complete direct path is unavailable. Price and 168h high always come from one source path. |
 | Sentiment snapshot | validated Alternative.me Crypto Fear & Greed observation | One independent public source; no substitute sentiment signal. |
 | Completed run state | immutable component artifacts plus schema-valid shadow-run manifest | A run is complete only when its final digest-verified manifest exists. Mutable `latest.json` state is prohibited. |
@@ -41,7 +41,7 @@ Execution evidence ─> reconciliation ─> Execution ledger ─> PortfolioState
 
 - **Collector:** obtains and validates data; it never changes allocation rules or sends an order.
 - **Decision engine:** pure, deterministic transformation of a valid snapshot, the strategy config, and derived monthly state. It has no network, Telegram, or exchange-order dependency.
-- **Ledger/reconciliation:** stores only confirmed executions and exposes derived `PortfolioState`. Chat 03 is the preferred manual intake surface, but explicit user-confirmed executions/corrections from any BTC DCA project conversation are valid reconciliation evidence. Once reconciled, the GitHub execution ledger is authoritative for runtime monthly spend and portfolio state.
+- **Ledger/reconciliation:** all manual/project interfaces use `LedgerGateway` for `record_execution`, `correct_execution`, `cancel_execution`, and `get_portfolio_state`. Chat 03 is the preferred manual intake surface, but explicit user-confirmed executions/corrections from any BTC DCA project conversation are valid reconciliation evidence. Once reconciled, the GitHub execution ledger is authoritative for runtime monthly spend and portfolio state; chat memory and summaries are never authoritative.
 - **Notifier:** transports an already-created event to Telegram and records delivery status. It must not be treated as execution confirmation.
 - **Orchestrator:** assigns run/correlation IDs, invokes components, persists artifacts, and applies failure policy.
 
@@ -78,7 +78,7 @@ Strategy and contract versions are independent semantic versions. A V1 rule chan
 |---|---|---|
 | Chat 01 | strategy mandate and approved operating rules | approves changes to the strategy mandate; not a runtime data store |
 | Chat 02 | daily market/sentiment research and calculation input review | research only; cannot override config |
-| Chat 03 | preferred manual portfolio/budget entry and reconciliation surface | preferred intake surface; canonical runtime truth is the GitHub execution ledger, and explicit execution confirmations from any BTC DCA project chat must be reconciled into it |
+| Chat 03 | preferred manual portfolio/budget entry and reconciliation surface | uses the same Ledger Gateway as every other project interface; no independent portfolio state |
 | Chat 04 | architecture, backtest, and controlled evolution | proposes/validates architecture; cannot silently change live V1 |
 | GitHub | versioned code/config/contracts/automation and audit history | no secret or manual-execution substitute |
 | Telegram | delivery channel for notification events | notification is not order confirmation |
