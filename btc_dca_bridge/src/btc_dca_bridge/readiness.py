@@ -63,8 +63,8 @@ def measure_server_time(server_time_ms: Callable[[], int], *, clock: Callable[[]
     return ServerTimeMeasurement(delta, max(0.0, (finished - started) * 1000))
 
 
-def classify_production_account_mode(account: AccountInfo, *, now: datetime, max_age: timedelta = timedelta(minutes=5)) -> tuple[bool, str]:
-    """Accept fresh UTA 2.0 or UTA 2.0 Pro in the Spot architecture."""
+def classify_production_account_mode(account: AccountInfo, *, now: datetime) -> tuple[bool, str]:
+    """Accept supported UTA 2.0 account state from a live authenticated read.\n\n    Bybit updatedTime is when account data last changed, not this response\n    timestamp. It must parse and not be future-dated, but it need not be\n    recent. Live-read freshness is established by authenticated GET and\n    server-clock checks.\n    """
     status = str(account.unified_margin_status)
     if status not in {"5", "6"}:
         return False, "unsupported unifiedMarginStatus; only UTA 2.0 status 5 or UTA 2.0 Pro status 6 is supported"
@@ -83,8 +83,8 @@ def classify_production_account_mode(account: AccountInfo, *, now: datetime, max
             if observed.tzinfo is None:
                 raise ValueError("updatedTime is not timezone-aware")
             observed = observed.astimezone(UTC)
-        if observed > now + timedelta(seconds=2) or now - observed > max_age:
-            return False, "account metadata is stale or future-dated"
+        if observed > now + timedelta(seconds=2):
+            return False, "account updatedTime is future-dated"
     except (TypeError, ValueError, OverflowError) as exc:
         return False, f"account updatedTime is invalid: {exc}"
     status_name = "UTA 2.0" if status == "5" else "UTA 2.0 Pro"
@@ -235,7 +235,7 @@ class ProductionReadinessService:
             add("BYBIT_CREDENTIAL_SCOPE", "credentials", "PASS" if cred_ok else "FAIL", True, "classification and explicit permission groups inspected", "credential scope is Spot trade-capable and excludes unsafe permissions" if cred_ok else "credential scope cannot prove approved Spot-only permissions", "Use a dedicated least-privilege Spot credential")
             account = client.account_info()
             account_ok, account_reason = classify_production_account_mode(account, now=self.now())
-            add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use supported Unified status 6 / REGULAR_MARGIN / OFF with fresh metadata")
+            add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use UTA 2.0 status 5 or 6 with REGULAR_MARGIN / OFF and valid non-future account metadata")
             balances = {row.coin: row for row in client.wallet_balances()}
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
