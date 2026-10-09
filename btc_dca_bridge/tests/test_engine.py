@@ -149,6 +149,12 @@ class EngineTest(unittest.TestCase):
     def test_market_snapshot_conforms_to_schema(self):
         validate_artifact("market_snapshot", snapshot_for_drawdown("-12").to_dict())
 
+    def test_strategy_exposes_canonical_approved_spot_order(self):
+        self.assertEqual(
+            self.strategy.approved_spot_exchanges,
+            ("Bybit", "Binance", "KuCoin"),
+        )
+
     def test_accepts_each_approved_spot_venue(self):
         for exchange in ("Bybit", "Binance", "KuCoin"):
             snap = snapshot_for_drawdown("-6")
@@ -220,6 +226,17 @@ class ConfigurationTest(unittest.TestCase):
     def test_rejects_unexpected_strategy_version(self):
         with self.assertRaises(ConfigurationError):
             self.load_modified(lambda data: data["strategy"].update(version="2.0.0"))
+
+    def test_rejects_changed_approved_spot_source_order(self):
+        def mutate(data):
+            data["market_policy"]["approved_spot_source_order"] = [
+                "Bybit",
+                "KuCoin",
+                "Binance",
+            ]
+
+        with self.assertRaises(ConfigurationError):
+            self.load_modified(mutate)
 
     def test_rejects_malformed_drawdown_condition(self):
         def mutate(data):
