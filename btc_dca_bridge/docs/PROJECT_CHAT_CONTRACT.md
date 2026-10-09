@@ -75,7 +75,7 @@ The same economic execution reported through multiple interfaces must not be dou
 
 For a ledger mutation initiated in a ChatGPT project conversation:
 
-1. Fetch `config/project_manifest.yaml` from current `main`; resolve the ledger path from that manifest.
+1. Fetch `btc_dca_bridge/config/project_manifest.yaml` from current `main`; resolve the ledger path from that manifest.
 2. Fetch the latest complete ledger file and its current GitHub blob/content SHA. **That SHA is the CAS version token.** Never use a cached copy.
 3. Parse and validate the complete ledger; apply the same semantic record/correct/cancel operation against its active projection.
 4. Validate the complete resulting ledger, active projection, and derived `PortfolioState` before writing.
