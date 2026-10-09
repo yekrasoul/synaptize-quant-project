@@ -11,13 +11,18 @@ market_policy:
   primary_exchange: Bybit
   market_type: spot
   symbol: BTCUSDT
-  price_source_requirement: Bybit BTC/USDT Spot only
+  approved_spot_source_order:
+    - Bybit
+    - Binance
+    - KuCoin
+  price_source_requirement: Same approved BTC/USDT Spot venue for current price and rolling 168h high
   prohibited_primary_sources:
     - perpetual
     - futures
     - options
     - index_price
-    - other_exchange
+    - unapproved_exchange
+    - mixed_exchange_price_and_high
   unavailable_data_action: no_decision
   freshness_required: true
   same_source_price_and_high_required: true
