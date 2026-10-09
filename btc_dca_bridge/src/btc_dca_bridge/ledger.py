@@ -25,12 +25,22 @@ def validate_calendar_month(calendar_month: str) -> None:
 
 
 def read_executions(path: Path = LEDGER_PATH) -> tuple[Execution, ...]:
-    executions: list[Execution] = []
-    seen_ids: set[str] = set()
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        content = path.read_bytes()
     except OSError as exc:
         raise LedgerValidationError(f"cannot read ledger {path}: {exc}") from exc
+    return parse_executions(content, source=str(path))
+
+
+def parse_executions(content: bytes | str, *, source: str = "ledger") -> tuple[Execution, ...]:
+    """Parse canonical ledger bytes and reject malformed/duplicate history."""
+    try:
+        text = content.decode("utf-8") if isinstance(content, bytes) else content
+    except UnicodeDecodeError as exc:
+        raise LedgerValidationError(f"ledger {source} is not UTF-8") from exc
+    executions: list[Execution] = []
+    seen_ids: set[str] = set()
+    lines = text.splitlines()
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue

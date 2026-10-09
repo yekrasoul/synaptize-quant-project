@@ -330,6 +330,36 @@
           }
         }
       ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "execution_id", "executed_at_utc", "asset", "quote_currency", "executed_usd", "reference_price_usdt", "btc_quantity", "status", "reconciliation"],
+      "properties": {
+        "schema_version": {"const": "1.3.0"},
+        "execution_id": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"},
+        "executed_at_utc": {"type": "string", "format": "date-time"},
+        "asset": {"const": "BTC"},
+        "quote_currency": {"const": "USDT"},
+        "executed_usd": {"type": "number", "minimum": 0},
+        "reference_price_usdt": {"type": ["number", "null"]},
+        "btc_quantity": {"type": ["number", "null"]},
+        "status": {"enum": ["reconciled", "voided"]},
+        "reconciliation": {
+          "type": "object", "additionalProperties": false,
+          "required": ["source", "note", "intake_interface"],
+          "properties": {
+            "source": {"const": "Project user-confirmed execution"},
+            "note": {"type": "string", "minLength": 1},
+            "intake_interface": {"enum": ["chat_01", "chat_02", "chat_03", "chat_04", "project_chat", "codex_cli", "github_connector", "automation"]}
+          }
+        },
+        "supersedes_execution_id": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "reconciled"}}}, "then": {"properties": {"executed_usd": {"exclusiveMinimum": 0}, "reference_price_usdt": {"type": "number", "exclusiveMinimum": 0}}}},
+        {"if": {"properties": {"status": {"const": "voided"}}}, "then": {"required": ["supersedes_execution_id"], "properties": {"executed_usd": {"const": 0}, "reference_price_usdt": {"type": "null"}, "btc_quantity": {"type": "null"}}}}
+      ]
     }
   ]
 }

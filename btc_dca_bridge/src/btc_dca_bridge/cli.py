@@ -16,7 +16,7 @@ from .config import load_notification_config, load_operational_config, load_stra
 from .artifacts import ArtifactStore, ArtifactType
 from .errors import ArtifactCorruptError, BtcDcaError
 from .engine import calculate_decision
-from .ledger import read_executions
+from .ledger import confirmed_executions, read_executions
 from .models import MarketSnapshot
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
 from .portfolio import derive_portfolio
@@ -257,6 +257,8 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
         "strategy_version": strategy.strategy_version,
         "schemas": schemas,
         "execution_records": len(executions),
+        "ledger_event_count": len(executions),
+        "active_execution_count": len(confirmed_executions(executions)),
         "validated_portfolio_months": portfolio_states,
     }
 

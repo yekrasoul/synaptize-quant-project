@@ -4,7 +4,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from btc_dca_bridge.ledger import confirmed_executions, read_executions
+from btc_dca_bridge.errors import AmbiguousManualExecutionError, LedgerValidationError
 from btc_dca_bridge.ledger_gateway import LedgerGateway
+from btc_dca_bridge.ledger_sync import InMemoryVersionedLedgerStore, LedgerReconciliationService, LedgerVersionConflict
 
 
 class LedgerGatewayTest(unittest.TestCase):
@@ -34,6 +36,34 @@ class LedgerGatewayTest(unittest.TestCase):
         self.assertTrue(first_created)
         self.assertFalse(second_created)
         self.assertEqual(len(read_executions(self.ledger)), 1)
+
+    def test_timestamp_normalization_is_idempotent(self):
+        first = self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:00Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Chat 03", note="one")
+        again = self.gateway.record_execution(executed_at_utc="2026-10-09T13:00:00+01:00", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Codex CLI", note="same")
+        self.assertEqual(first[0], again[0]); self.assertTrue(first[1]); self.assertFalse(again[1])
+
+    def test_timestamp_only_economic_repeat_is_ambiguous(self):
+        self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:00Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Chat 03", note="first")
+        before = self.ledger.read_bytes()
+        with self.assertRaises(AmbiguousManualExecutionError):
+            self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:01Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Codex CLI", note="possibly same")
+        self.assertEqual(self.ledger.read_bytes(), before)
+
+    def test_explicit_distinct_same_details_requires_and_accepts_distinct_identity(self):
+        self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:00Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Chat 03", note="first")
+        with self.assertRaises(LedgerValidationError):
+            self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:01Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Codex CLI", note="second", explicit_distinct_execution=True)
+        result = self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:01Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Codex CLI", note="separate purchase", execution_id="execution_manual_second", explicit_distinct_execution=True)
+        self.assertTrue(result[1]); self.assertEqual(len(confirmed_executions(read_executions(self.ledger))), 2)
+
+    def test_conflicting_economics_are_not_merged(self):
+        self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:00Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="Chat 03", note="first")
+        with self.assertRaises(LedgerValidationError):
+            self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:02Z", executed_usd=Decimal("26"), reference_price_usdt=Decimal("82000"), source="Codex CLI", note="conflicting")
+
+    def test_unknown_provenance_is_rejected(self):
+        with self.assertRaises(LedgerValidationError):
+            self.gateway.record_execution(executed_at_utc="2026-10-09T12:00:00Z", executed_usd=Decimal("25"), reference_price_usdt=Decimal("82000"), source="arbitrary source", note="x")
 
     def test_correction_supersedes_without_double_counting(self):
         original_id, _ = self.gateway.record_execution(

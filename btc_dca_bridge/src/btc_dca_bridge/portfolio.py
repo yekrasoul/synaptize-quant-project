@@ -19,7 +19,8 @@ def derive_portfolio(
         or monthly_cap_usd <= 0
     ):
         raise LedgerValidationError("monthly cap must be a positive finite Decimal")
-    confirmed = confirmed_executions(tuple(executions))
+    history = tuple(executions)
+    confirmed = confirmed_executions(history)
     validate_calendar_month(calendar_month)
     monthly = tuple(
         execution
@@ -58,7 +59,7 @@ def derive_portfolio(
         default=f"{calendar_month}-01T00:00:00Z",
     )
     return PortfolioState(
-        schema_version="1.1.0",
+        schema_version="1.2.0",
         as_of_utc=as_of_utc,
         calendar_month=calendar_month,
         monthly_cap_usd=monthly_cap_usd,
@@ -70,4 +71,5 @@ def derive_portfolio(
         reference_price_derived_nominal_btc=nominal_btc,
         weighted_reference_acquisition_price_usdt=weighted_price,
         derived_from_execution_ids=tuple(item.execution_id for item in confirmed),
+        ledger_event_count=len(history),
     )

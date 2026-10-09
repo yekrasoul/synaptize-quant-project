@@ -14,7 +14,7 @@ from .artifacts import ArtifactStore, ArtifactType, make_run_id
 from .blocked_production import active_production_blockers, compare_contract_capabilities, contract_status
 from .config import load_execution_config
 from .errors import ArtifactAlreadyExistsError, ArtifactCorruptError, PersistenceIOError
-from .ledger import executions_for_month, read_executions
+from .ledger import confirmed_executions, executions_for_month, read_executions
 from .operations import OperationsService
 from .paths import DATA_PATH, LEDGER_PATH
 from .private_bybit import BybitPrivateReadClient
@@ -293,7 +293,7 @@ class ProductionStatusService:
             spent = sum((Decimal(str(row.payload["executed_usd"])) for row in month_rows), Decimal("0"))
             remaining = Decimal("500") - spent
             ledger_status = "VALID"
-            execution_count = len(executions)
+            execution_count = len(confirmed_executions(executions))
         except Exception:
             spent, remaining, ledger_status, execution_count = Decimal("0"), Decimal("0"), "CORRUPT", 0
         try:

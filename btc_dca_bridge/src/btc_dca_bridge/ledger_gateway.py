@@ -1,205 +1,134 @@
 """Single canonical interface for manual/project execution reconciliation."""
-
 from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 from .config import load_strategy_config
-from .errors import LedgerValidationError
-from .ledger import append_execution_once, confirmed_executions, read_executions
+from .errors import AmbiguousManualExecutionError, LedgerValidationError
+from .ledger import confirmed_executions, read_executions
+from .ledger_sync import FileVersionedLedgerStore, LedgerReconciliationService
 from .models import PortfolioState
-from .paths import CONFIG_PATH, LEDGER_PATH
+from .paths import LEDGER_PATH
 from .portfolio import derive_portfolio
 
 
-class LedgerGateway:
-    """Canonical write/read boundary shared by every BTC DCA interface."""
+_SOURCE_MAP = {
+    "chat 01": "chat_01", "chat 02": "chat_02", "chat 04": "chat_04",
+    "chat 03 — portfolio & budget tracker": "chat_03", "chat 03": "chat_03",
+    "this project chat": "project_chat", "project chat correction": "project_chat",
+    "any btc dca project chat": "project_chat", "another project chat": "project_chat",
+    "another chat": "project_chat", "project conversation": "project_chat",
+    "codex cli": "codex_cli", "github connector": "github_connector", "automation": "automation",
+}
 
-    def __init__(
-        self,
-        ledger_path: Path = LEDGER_PATH,
-        config_path: Path = CONFIG_PATH,
-    ) -> None:
-        self.ledger_path = ledger_path
+
+def _canonical_time(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise LedgerValidationError("execution timestamp must be an ISO UTC timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise LedgerValidationError("execution timestamp must include an explicit timezone")
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _interface(source: str) -> str:
+    normalized = " ".join(source.strip().lower().split())
+    if normalized not in _SOURCE_MAP:
+        raise LedgerValidationError("intake interface is not in the bounded provenance vocabulary")
+    return _SOURCE_MAP[normalized]
+
+
+def _economic_match(left: dict, right: dict, *, calendar_date: bool = False) -> bool:
+    keys = ("asset", "quote_currency", "executed_usd", "reference_price_usdt", "btc_quantity")
+    if any(left.get(key) != right.get(key) for key in keys):
+        return False
+    if calendar_date:
+        return left["executed_at_utc"][:10] == right["executed_at_utc"][:10]
+    return left["executed_at_utc"] == right["executed_at_utc"]
+
+
+class LedgerGateway:
+    """Shared ledger boundary; every write uses latest-read/validate/CAS semantics."""
+    def __init__(self, ledger_path: Path = LEDGER_PATH, config_path: Path | None = None, *, max_retries: int = 3) -> None:
+        self.ledger_path = Path(ledger_path)
         self.config_path = config_path
+        self.service = LedgerReconciliationService(FileVersionedLedgerStore(self.ledger_path), max_retries=max_retries)
 
     @staticmethod
-    def _manual_id(
-        executed_at_utc: str,
-        executed_usd: Decimal,
-        reference_price_usdt: Decimal,
-        btc_quantity: Decimal | None,
-    ) -> str:
-        identity = {
-            "executed_at_utc": executed_at_utc,
-            "executed_usd": str(executed_usd),
-            "reference_price_usdt": str(reference_price_usdt),
-            "btc_quantity": None if btc_quantity is None else str(btc_quantity),
-        }
-        digest = hashlib.sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()[:24]
+    def _manual_id(executed_at_utc: str, executed_usd: Decimal, reference_price_usdt: Decimal, btc_quantity: Decimal | None) -> str:
+        identity = {"executed_at_utc": executed_at_utc, "executed_usd": str(executed_usd), "reference_price_usdt": str(reference_price_usdt), "btc_quantity": None if btc_quantity is None else str(btc_quantity)}
+        digest = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:24]
         return f"execution_manual_{digest}"
 
-    def _append_semantically_once(self, payload: dict) -> bool:
-        """Treat cross-interface repeats of the same economic event as idempotent."""
-        if self.ledger_path.exists():
-            for existing in read_executions(self.ledger_path):
-                if existing.execution_id != payload["execution_id"]:
-                    continue
-                keys = (
-                    "executed_at_utc",
-                    "asset",
-                    "quote_currency",
-                    "executed_usd",
-                    "reference_price_usdt",
-                    "btc_quantity",
-                    "status",
-                    "supersedes_execution_id",
-                )
-                for key in keys:
-                    if existing.payload.get(key) != payload.get(key):
-                        raise LedgerValidationError(
-                            f"execution identity already exists with conflicting economic evidence: {payload['execution_id']}"
-                        )
-                return False
-        return append_execution_once(self.ledger_path, payload)
+    def _write(self, builder, identity: str):
+        result = self.service.apply(builder)
+        return result.payload.get("execution_id", identity), result.created
 
-    def record_execution(
-        self,
-        *,
-        executed_at_utc: str,
-        executed_usd: Decimal,
-        reference_price_usdt: Decimal,
-        source: str,
-        note: str,
-        btc_quantity: Decimal | None = None,
-        execution_id: str | None = None,
-    ) -> tuple[str, bool]:
-        execution_id = execution_id or self._manual_id(
-            executed_at_utc, executed_usd, reference_price_usdt, btc_quantity
-        )
-        payload = {
-            "schema_version": "1.0.0",
-            "execution_id": execution_id,
-            "executed_at_utc": executed_at_utc,
-            "asset": "BTC",
-            "quote_currency": "USDT",
-            "executed_usd": float(executed_usd),
-            "reference_price_usdt": float(reference_price_usdt),
-            "btc_quantity": None if btc_quantity is None else float(btc_quantity),
-            "status": "reconciled",
-            "reconciliation": {
-                "source": (
-                    "Chat 03 — Portfolio & Budget Tracker"
-                    if source == "Chat 03 — Portfolio & Budget Tracker"
-                    else "Project conversation — user-confirmed execution"
-                ),
-                "note": note,
-            },
-        }
-        return execution_id, self._append_semantically_once(payload)
+    def record_execution(self, *, executed_at_utc: str, executed_usd: Decimal, reference_price_usdt: Decimal, source: str, note: str, btc_quantity: Decimal | None = None, execution_id: str | None = None, explicit_distinct_execution: bool = False) -> tuple[str, bool]:
+        timestamp = _canonical_time(executed_at_utc)
+        interface = _interface(source)
+        deterministic_id = self._manual_id(timestamp, executed_usd, reference_price_usdt, btc_quantity)
+        if explicit_distinct_execution and (not execution_id or execution_id == deterministic_id):
+            raise LedgerValidationError("explicit distinct execution requires a distinct caller-provided execution_id")
+        chosen_id = execution_id or deterministic_id
+        requested = {"execution_id": chosen_id, "executed_at_utc": timestamp, "asset": "BTC", "quote_currency": "USDT", "executed_usd": float(executed_usd), "reference_price_usdt": float(reference_price_usdt), "btc_quantity": None if btc_quantity is None else float(btc_quantity), "status": "reconciled"}
 
-    def correct_execution(
-        self,
-        *,
-        supersedes_execution_id: str,
-        executed_at_utc: str,
-        executed_usd: Decimal,
-        reference_price_usdt: Decimal,
-        source: str,
-        note: str,
-        btc_quantity: Decimal | None = None,
-        execution_id: str | None = None,
-    ) -> tuple[str, bool]:
-        if execution_id is None:
-            base = self._manual_id(
-                executed_at_utc, executed_usd, reference_price_usdt, btc_quantity
-            )
-            digest = hashlib.sha256(
-                f"{supersedes_execution_id}|{base}|correct".encode("utf-8")
-            ).hexdigest()[:24]
-            execution_id = f"execution_corr_{digest}"
+        def build(history, active):
+            for existing in history:
+                if existing.execution_id == chosen_id:
+                    if not _economic_match(existing.payload, requested):
+                        raise LedgerValidationError(f"execution identity already exists with conflicting economic evidence: {chosen_id}")
+                    return existing.payload
+            if not explicit_distinct_execution:
+                for existing in active:
+                    same_day = existing.executed_at_utc[:10] == timestamp[:10]
+                    same_pair = existing.payload.get("asset") == "BTC" and existing.payload.get("quote_currency") == "USDT"
+                    if same_day and same_pair:
+                        if _economic_match(existing.payload, requested, calendar_date=True):
+                            if existing.executed_at_utc != timestamp:
+                                raise AmbiguousManualExecutionError("possible duplicate manual execution: same date and economics but timestamp differs; explicitly reconcile to existing or provide a distinct identity")
+                            return existing.payload
+                        raise LedgerValidationError("same-day manual execution conflicts with or may be distinct from existing evidence; explicit distinct identity and intent are required")
+            return {"schema_version": "1.3.0", **requested, "reconciliation": {"source": "Project user-confirmed execution", "note": note, "intake_interface": interface}}
+        return self._write(build, chosen_id)
 
-        for existing in read_executions(self.ledger_path):
-            if existing.execution_id == execution_id:
-                payload = {
-                    "schema_version": "1.2.0",
-                    "execution_id": execution_id,
-                    "executed_at_utc": executed_at_utc,
-                    "asset": "BTC",
-                    "quote_currency": "USDT",
-                    "executed_usd": float(executed_usd),
-                    "reference_price_usdt": float(reference_price_usdt),
-                    "btc_quantity": None if btc_quantity is None else float(btc_quantity),
-                    "status": "reconciled",
-                    "reconciliation": {"source": source, "note": note},
-                    "supersedes_execution_id": supersedes_execution_id,
-                }
-                return execution_id, self._append_semantically_once(payload)
+    def correct_execution(self, *, supersedes_execution_id: str, executed_at_utc: str, executed_usd: Decimal, reference_price_usdt: Decimal, source: str, note: str, btc_quantity: Decimal | None = None, execution_id: str | None = None) -> tuple[str, bool]:
+        timestamp = _canonical_time(executed_at_utc)
+        interface = _interface(source)
+        base = self._manual_id(timestamp, executed_usd, reference_price_usdt, btc_quantity)
+        identity = execution_id or "execution_corr_" + hashlib.sha256(f"{supersedes_execution_id}|{base}|correct".encode()).hexdigest()[:24]
+        row = {"schema_version": "1.3.0", "execution_id": identity, "executed_at_utc": timestamp, "asset": "BTC", "quote_currency": "USDT", "executed_usd": float(executed_usd), "reference_price_usdt": float(reference_price_usdt), "btc_quantity": None if btc_quantity is None else float(btc_quantity), "status": "reconciled", "reconciliation": {"source": "Project user-confirmed execution", "note": note, "intake_interface": interface}, "supersedes_execution_id": supersedes_execution_id}
+        def build(history, active):
+            for item in history:
+                if item.execution_id == identity:
+                    if item.payload != row:
+                        comparable = dict(item.payload); candidate = dict(row)
+                        for payload in (comparable, candidate):
+                            payload.get("reconciliation", {}).pop("note", None); payload.get("reconciliation", {}).pop("intake_interface", None)
+                        if comparable != candidate: raise LedgerValidationError("correction identity conflicts with existing evidence")
+                    return item.payload
+            if supersedes_execution_id not in {item.execution_id for item in active}:
+                raise LedgerValidationError(f"cannot correct inactive execution: {supersedes_execution_id}")
+            return row
+        return self._write(build, identity)
 
-        current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
-        if supersedes_execution_id not in current:
-            raise ValueError(f"cannot correct inactive execution: {supersedes_execution_id}")
-
-        payload = {
-            "schema_version": "1.2.0",
-            "execution_id": execution_id,
-            "executed_at_utc": executed_at_utc,
-            "asset": "BTC",
-            "quote_currency": "USDT",
-            "executed_usd": float(executed_usd),
-            "reference_price_usdt": float(reference_price_usdt),
-            "btc_quantity": None if btc_quantity is None else float(btc_quantity),
-            "status": "reconciled",
-            "reconciliation": {"source": source, "note": note},
-            "supersedes_execution_id": supersedes_execution_id,
-        }
-        return execution_id, self._append_semantically_once(payload)
-
-    def cancel_execution(
-        self,
-        *,
-        supersedes_execution_id: str,
-        cancelled_at_utc: str,
-        source: str,
-        note: str,
-        execution_id: str | None = None,
-    ) -> tuple[str, bool]:
-        existing_rows = read_executions(self.ledger_path)
-        for existing in existing_rows:
-            if (
-                existing.payload.get("status") == "voided"
-                and existing.payload.get("supersedes_execution_id") == supersedes_execution_id
-            ):
-                return existing.execution_id, False
-
-        if execution_id is None:
-            raw = f"{supersedes_execution_id}|void"
-            execution_id = "execution_void_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
-
-        current = {item.execution_id for item in confirmed_executions(existing_rows)}
-        if supersedes_execution_id not in current:
-            raise ValueError(f"cannot cancel inactive execution: {supersedes_execution_id}")
-        payload = {
-            "schema_version": "1.2.0",
-            "execution_id": execution_id,
-            "executed_at_utc": cancelled_at_utc,
-            "asset": "BTC",
-            "quote_currency": "USDT",
-            "executed_usd": 0,
-            "reference_price_usdt": None,
-            "btc_quantity": None,
-            "status": "voided",
-            "reconciliation": {"source": source, "note": note},
-            "supersedes_execution_id": supersedes_execution_id,
-        }
-        return execution_id, self._append_semantically_once(payload)
+    def cancel_execution(self, *, supersedes_execution_id: str, cancelled_at_utc: str, source: str, note: str, execution_id: str | None = None) -> tuple[str, bool]:
+        timestamp = _canonical_time(cancelled_at_utc); interface = _interface(source)
+        identity = execution_id or "execution_void_" + hashlib.sha256(f"{supersedes_execution_id}|void".encode()).hexdigest()[:24]
+        row = {"schema_version": "1.3.0", "execution_id": identity, "executed_at_utc": timestamp, "asset": "BTC", "quote_currency": "USDT", "executed_usd": 0, "reference_price_usdt": None, "btc_quantity": None, "status": "voided", "reconciliation": {"source": "Project user-confirmed execution", "note": note, "intake_interface": interface}, "supersedes_execution_id": supersedes_execution_id}
+        def build(history, active):
+            for item in history:
+                if item.execution_id == identity or (item.payload.get("status") == "voided" and item.payload.get("supersedes_execution_id") == supersedes_execution_id): return item.payload
+            if supersedes_execution_id not in {item.execution_id for item in active}: raise LedgerValidationError(f"cannot cancel inactive execution: {supersedes_execution_id}")
+            return row
+        return self._write(build, identity)
 
     def get_portfolio_state(self, calendar_month: str) -> PortfolioState:
-        config = load_strategy_config(self.config_path)
+        config = load_strategy_config(self.config_path) if self.config_path else load_strategy_config()
         executions = read_executions(self.ledger_path)
         return derive_portfolio(executions, calendar_month, config.monthly_cap_usd)
