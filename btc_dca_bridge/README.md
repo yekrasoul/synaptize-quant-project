@@ -12,6 +12,7 @@ Start with [the project specification](docs/PROJECT_SPEC.md). It defines source 
 - [`docs/SHADOW_PIPELINE.md`](docs/SHADOW_PIPELINE.md): canonical read-only Phase 3 composition.
 - [`docs/PRODUCTION_SHADOW.md`](docs/PRODUCTION_SHADOW.md): Phase 4 schedule, retention, and Telegram operations.
 - [`docs/LEGACY_RETIREMENT.md`](docs/LEGACY_RETIREMENT.md): retired collector and mutable-output history.
+- [`docs/PROJECT_CHAT_CONTRACT.md`](docs/PROJECT_CHAT_CONTRACT.md): mandatory cross-interface ledger synchronization contract for every BTC DCA project chat.
 
 The legacy cross-exchange collector and mutable `latest.json` output have been
 removed. They are not compatibility entrypoints and must not be recreated or
