@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from .config import load_strategy_config
+from .errors import LedgerValidationError
 from .ledger import append_execution_once, confirmed_executions, read_executions
 from .models import PortfolioState
 from .paths import CONFIG_PATH, LEDGER_PATH
@@ -43,6 +44,30 @@ class LedgerGateway:
         ).hexdigest()[:24]
         return f"execution_manual_{digest}"
 
+    def _append_semantically_once(self, payload: dict) -> bool:
+        """Treat cross-interface repeats of the same economic event as idempotent."""
+        if self.ledger_path.exists():
+            for existing in read_executions(self.ledger_path):
+                if existing.execution_id != payload["execution_id"]:
+                    continue
+                keys = (
+                    "executed_at_utc",
+                    "asset",
+                    "quote_currency",
+                    "executed_usd",
+                    "reference_price_usdt",
+                    "btc_quantity",
+                    "status",
+                    "supersedes_execution_id",
+                )
+                for key in keys:
+                    if existing.payload.get(key) != payload.get(key):
+                        raise LedgerValidationError(
+                            f"execution identity already exists with conflicting economic evidence: {payload['execution_id']}"
+                        )
+                return False
+        return append_execution_once(self.ledger_path, payload)
+
     def record_execution(
         self,
         *,
@@ -76,7 +101,7 @@ class LedgerGateway:
                 "note": note,
             },
         }
-        return execution_id, append_execution_once(self.ledger_path, payload)
+        return execution_id, self._append_semantically_once(payload)
 
     def correct_execution(
         self,
