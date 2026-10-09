@@ -62,8 +62,8 @@ Fear & Greed: 35
 base allocation: $75
 sentiment multiplier: x1.3
 calculated allocation: $98
-monthly spent: $60
-remaining budget: $440
+monthly spent: (freshly derived from the active canonical ledger projection)
+remaining budget: (monthly cap minus freshly derived confirmed active spend)
 FINAL PURCHASE: $98
 SHADOW — BUY $98 BTC TODAY — NO ORDER EXECUTED
 ```

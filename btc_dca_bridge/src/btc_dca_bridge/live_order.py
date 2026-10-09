@@ -21,7 +21,7 @@ from .artifacts import ArtifactStore, ArtifactType
 from . import availability
 from .blocked_production import QUOTE_LIMIT_BLOCKED_MESSAGE
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
-from .config import ExecutionConfig
+from .config import ExecutionConfig, load_strategy_config
 from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
 from .ledger import append_execution_once
@@ -320,7 +320,8 @@ class LiveOrderEngine:
             validate_artifact("canary_manifest", dict(manifest))
         except Exception as exc:
             raise LiveOrderSafetyError(f"canary manifest schema validation failed: {exc}") from exc
-        required = {"canary_status": "READY_FOR_MANUAL_APPROVAL", "strategy_id": "btc_adaptive_dca_v1", "strategy_version": "1.0.0", "exchange": "Bybit", "market_type": "spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "decision_id": intent.decision_id, "order_intent_id": intent.order_intent_id, "client_order_id": intent.client_order_id}
+        active_strategy = load_strategy_config()
+        required = {"canary_status": "READY_FOR_MANUAL_APPROVAL", "strategy_id": active_strategy.strategy_id, "strategy_version": active_strategy.strategy_version, "exchange": "Bybit", "market_type": "spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "decision_id": intent.decision_id, "order_intent_id": intent.order_intent_id, "client_order_id": intent.client_order_id}
         if any(manifest.get(k) != v for k, v in required.items()): raise LiveOrderSafetyError("canary manifest identity or status is invalid")
         if manifest.get("live_execution_enabled") is not False or manifest.get("kill_switch") is not True: raise LiveOrderSafetyError("manifest production guards do not match approved execution mode")
         try:

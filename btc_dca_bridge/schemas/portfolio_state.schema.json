@@ -1,49 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://synaptize-quant-project/schemas/portfolio_state/1.1.0",
-  "title": "PortfolioState 1.1.0",
-  "description": "Additive evolution of PortfolioState 1.0.0 with derived portfolio fields.",
+  "$id": "https://synaptize-quant-project/schemas/portfolio_state/1.2.0",
+  "title": "PortfolioState 1.2.0",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "as_of_utc",
-    "calendar_month",
-    "monthly_spent_usd",
-    "monthly_remaining_usd",
-    "executions_count",
-    "monthly_cap_usd",
-    "total_confirmed_usd_deployed",
-    "monthly_confirmed_usd_deployed",
-    "remaining_monthly_budget_usd",
-    "confirmed_execution_count",
-    "monthly_confirmed_execution_count",
-    "reference_price_derived_nominal_btc",
-    "weighted_reference_acquisition_price_usdt",
-    "reference_price_quantity_disclaimer",
-    "derived_from_execution_ids"
-  ],
+  "required": ["schema_version", "as_of_utc", "calendar_month", "monthly_spent_usd", "monthly_remaining_usd", "executions_count", "monthly_cap_usd", "total_confirmed_usd_deployed", "monthly_confirmed_usd_deployed", "remaining_monthly_budget_usd", "confirmed_execution_count", "monthly_confirmed_execution_count", "reference_price_derived_nominal_btc", "weighted_reference_acquisition_price_usdt", "reference_price_quantity_disclaimer", "derived_from_execution_ids", "active_execution_count", "ledger_event_count"],
   "properties": {
-    "schema_version": {"const": "1.1.0"},
-    "as_of_utc": {"type": "string", "format": "date-time"},
-    "calendar_month": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
-    "monthly_spent_usd": {"type": "number", "minimum": 0, "maximum": 500},
-    "monthly_remaining_usd": {"type": "number", "minimum": 0, "maximum": 500},
-    "executions_count": {"type": "integer", "minimum": 0},
-    "monthly_cap_usd": {"type": "number", "exclusiveMinimum": 0},
-    "total_confirmed_usd_deployed": {"type": "number", "minimum": 0},
-    "monthly_confirmed_usd_deployed": {"type": "number", "minimum": 0},
-    "remaining_monthly_budget_usd": {"type": "number", "minimum": 0},
-    "confirmed_execution_count": {"type": "integer", "minimum": 0},
-    "monthly_confirmed_execution_count": {"type": "integer", "minimum": 0},
-    "reference_price_derived_nominal_btc": {"type": "number", "minimum": 0},
-    "weighted_reference_acquisition_price_usdt": {
-      "type": ["number", "null"],
-      "exclusiveMinimum": 0
-    },
-    "reference_price_quantity_disclaimer": {
-      "const": "Nominal BTC is derived from USD/reference price and is not actual exchange fill quantity."
-    },
-    "derived_from_execution_ids": {"type": "array", "items": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}}
+    "schema_version": {"const": "1.2.0"}, "as_of_utc": {"type": "string", "format": "date-time"}, "calendar_month": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"},
+    "monthly_spent_usd": {"type": "number", "minimum": 0, "maximum": 500}, "monthly_remaining_usd": {"type": "number", "minimum": 0, "maximum": 500}, "executions_count": {"type": "integer", "minimum": 0}, "monthly_cap_usd": {"type": "number", "exclusiveMinimum": 0}, "total_confirmed_usd_deployed": {"type": "number", "minimum": 0}, "monthly_confirmed_usd_deployed": {"type": "number", "minimum": 0}, "remaining_monthly_budget_usd": {"type": "number", "minimum": 0}, "confirmed_execution_count": {"type": "integer", "minimum": 0}, "monthly_confirmed_execution_count": {"type": "integer", "minimum": 0}, "active_execution_count": {"type": "integer", "minimum": 0}, "ledger_event_count": {"type": "integer", "minimum": 0}, "reference_price_derived_nominal_btc": {"type": "number", "minimum": 0}, "weighted_reference_acquisition_price_usdt": {"type": ["number", "null"], "exclusiveMinimum": 0}, "reference_price_quantity_disclaimer": {"const": "Nominal BTC is derived from USD/reference price and is not actual exchange fill quantity."}, "derived_from_execution_ids": {"type": "array", "items": {"type": "string", "pattern": "^execution_[A-Za-z0-9_-]+$"}}
   }
 }

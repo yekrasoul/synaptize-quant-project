@@ -20,6 +20,7 @@ SCHEMA_FILES = {
     "notification_event": "notification_event.schema.json",
     "portfolio_state": "portfolio_state.schema.json",
     "portfolio_state_1_0": "portfolio_state_v1_0.schema.json",
+    "portfolio_state_1_1": "portfolio_state_v1_1.schema.json",
     "sentiment_snapshot": "sentiment_snapshot.schema.json",
     "shadow_run": "shadow_run.schema.json",
     "order_intent": "order_intent.schema.json",
@@ -32,7 +33,9 @@ SCHEMA_FILES = {
     "submission_reconciliation": "submission_reconciliation.schema.json",
     "production_evidence": "production_evidence.schema.json",
     "production_status": "production_status.schema.json",
+    "production_status_6_0": "production_status_v6_0.schema.json",
     "production_status_alert": "production_status_alert.schema.json",
+    "project_manifest": "project_manifest.schema.json",
 }
 
 
@@ -42,6 +45,10 @@ class UnsupportedProductionEvidenceSchemaError(SchemaValidationError):
 PRODUCTION_EVIDENCE_SCHEMA_FILES = {
     "5.7.0": "production_evidence_v5_7.schema.json",
     "5.8.0": "production_evidence.schema.json",
+}
+PRODUCTION_STATUS_SCHEMA_FILES = {
+    "6.0.0": "production_status_v6_0.schema.json",
+    "6.1.0": "production_status.schema.json",
 }
 
 def validate_live_approval(artifact: dict[str, Any], schemas_path: Path = SCHEMAS_PATH) -> None:
@@ -75,11 +82,19 @@ def validate_artifact(
     schema_name = name
     if name == "portfolio_state" and artifact.get("schema_version") == "1.0.0":
         schema_name = "portfolio_state_1_0"
+    elif name == "portfolio_state" and artifact.get("schema_version") == "1.1.0":
+        schema_name = "portfolio_state_1_1"
     if name == "production_evidence":
         version = artifact.get("schema_version")
         filename = PRODUCTION_EVIDENCE_SCHEMA_FILES.get(version)
         if filename is None:
             raise UnsupportedProductionEvidenceSchemaError(f"unsupported production evidence schema version: {version}")
+        schema = _load_schema_file(filename, schemas_path)
+    elif name == "production_status":
+        version = artifact.get("schema_version")
+        filename = PRODUCTION_STATUS_SCHEMA_FILES.get(version)
+        if filename is None:
+            raise SchemaValidationError(f"unsupported production status schema version: {version}")
         schema = _load_schema_file(filename, schemas_path)
     else:
         schema = load_schema(schema_name, schemas_path)

@@ -12,9 +12,10 @@ All ChatGPT/project interfaces must also follow [`PROJECT_CHAT_CONTRACT.md`](PRO
 
 | Concern | Canonical source | Rule |
 |---|---|---|
-| V1 allocation rules | `config/strategy_v1.yaml` | One definition; code and automation read it rather than duplicate thresholds. |
+| Project bootstrap and active strategy | `config/project_manifest.yaml` | Declares the active strategy identity/config and canonical resource paths; only registered strategy/version loaders are accepted. |
+| V1 allocation rules | manifest-declared strategy config | One definition; code and automation resolve it through the reviewed active-strategy loader. |
 | Contract shapes | `schemas/*.schema.json` | Versioned JSON Schema contracts. |
-| Executed-purchase history | `ledger/executions.jsonl` via `LedgerGateway` | Single canonical cross-interface ledger; reconciled facts only; corrections/voids are append-only events; monthly spend is derived. |
+| Executed-purchase history | manifest-declared ledger via `LedgerGateway` | Single canonical cross-interface event history; portfolio/budget always use the active execution projection, never raw historical event sums. |
 | Market snapshot | validated `MarketSnapshot` from the approved Spot source chain | Source order is Bybit BTCUSDT Spot -> Binance BTCUSDT Spot -> KuCoin BTC-USDT Spot. Current price and rolling 168h high must come atomically from the same selected venue. If all approved venues fail validation, no decision is produced. |
 | Sentiment snapshot | validated Alternative.me Crypto Fear & Greed observation | One independent public source; no substitute sentiment signal. |
 | Completed run state | immutable component artifacts plus schema-valid shadow-run manifest | A run is complete only when its final digest-verified manifest exists. Mutable `latest.json` state is prohibited. |
@@ -39,7 +40,7 @@ Execution evidence ─> LedgerGateway ─> execution ledger ─> PortfolioState 
 
 - **Collector:** obtains and validates data; it never changes allocation rules or sends an order.
 - **Decision engine:** pure, deterministic transformation of a valid snapshot, the strategy config, and derived monthly state. It has no network, Telegram, or exchange-order dependency.
-- **Ledger/reconciliation:** all manual/project interfaces use `LedgerGateway` for `record_execution`, `correct_execution`, `cancel_execution`, and `get_portfolio_state`. Chat 03 is the preferred manual intake surface, but explicit user-confirmed executions/corrections from any BTC DCA project conversation are valid reconciliation evidence. Once reconciled, the GitHub execution ledger is authoritative for runtime monthly spend and portfolio state; chat memory and summaries are never authoritative.
+- **Ledger/reconciliation:** all manual/project interfaces use `LedgerGateway` for `record_execution`, `correct_execution`, `cancel_execution`, and `get_portfolio_state`. Writes use a transport-neutral optimistic compare-and-swap contract. Chat 03 is a preferred intake surface only; it has no elevated authority. The GitHub repository ledger is canonical. Active portfolio state is derived from canonical events after correction/void projection; chat memory and summaries are never authoritative.
 - **Notifier:** transports an already-created event to Telegram and records delivery status. It must not be treated as execution confirmation.
 - **Orchestrator:** assigns run/correlation IDs, invokes components, persists artifacts, and applies failure policy.
 
@@ -69,7 +70,7 @@ API credentials, Telegram bot tokens, and exchange credentials are secrets: use 
 
 Strategy and contract versions are independent semantic versions. A V1 rule change is not an in-place edit: create a proposed version, document migration impact, obtain explicit approval, and retain old artifacts with their original version. New optional schema fields can be minor-compatible; removals, changed meanings, or stricter required fields require a major version. IDs (`snapshot_id`, `decision_id`, `execution_id`, `event_id`) are immutable and correlation IDs connect a run’s artifacts.
 
-`PortfolioState` 1.1.0 is an additive contract evolution over 1.0.0. It retains every 1.0.0 field and adds the derived totals, counts, cap, nominal BTC, weighted reference price, and explicit quantity disclaimer already produced by the offline portfolio derivation. The original 1.0.0 schema remains archived and boundary validation dispatches by the declared version; producers must never label expanded output as 1.0.0. `PortfolioSummary` remains a source-compatible alias for the `PortfolioState` model. `as_of_utc` is the newest confirmed execution timestamp in the source ledger; for an empty ledger it is deterministically the first instant of the requested calendar month.
+`PortfolioState` 1.2.0 adds explicit `active_execution_count` and `ledger_event_count`; earlier 1.0.0 and 1.1.0 contracts remain readable. `executions_count`/confirmed counts refer to active execution projection, never historical correction/void rows. `as_of_utc` is the newest active execution timestamp; for an empty active projection it is deterministically the first instant of the requested month.
 
 ## 8. Operating roles
 

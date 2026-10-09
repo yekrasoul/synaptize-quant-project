@@ -15,7 +15,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .artifacts import ArtifactStore, ArtifactType
 from . import availability
-from .config import ExecutionConfig, load_execution_config
+from .config import ExecutionConfig, load_execution_config, load_strategy_config
 from .errors import ArtifactAlreadyExistsError
 from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
@@ -201,7 +201,8 @@ class CanaryPreparer:
         if config.order_submission != "not_implemented": reasons.append("production order submission mode is not_implemented invariant")
         if now.strftime("%Y-%m") != calendar_month: reasons.append("requested month is not the current UTC calendar month")
         if intent.created_at_utc[:7] != calendar_month: reasons.append("Decision/run month does not match requested calendar month")
-        if intent.strategy_id != "btc_adaptive_dca_v1" or intent.strategy_version != "1.0.0": reasons.append("only V1 Decision is eligible")
+        active_strategy = load_strategy_config()
+        if intent.strategy_id != active_strategy.strategy_id or intent.strategy_version != active_strategy.strategy_version: reasons.append("Decision does not match repository-declared active strategy")
         if decision["status"] != "approved": reasons.append("Decision status must be approved")
         if amount != intent.quote_amount_usdt: reasons.append("Decision amount does not exactly match OrderIntent")
         if amount != amount.to_integral_value() or amount <= 0: reasons.append("V1 amount is not a positive whole-dollar amount")

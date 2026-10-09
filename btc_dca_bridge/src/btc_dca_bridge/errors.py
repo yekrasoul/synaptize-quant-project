@@ -21,6 +21,10 @@ class LedgerValidationError(BtcDcaError):
     """The canonical execution ledger cannot be safely interpreted."""
 
 
+class AmbiguousManualExecutionError(LedgerValidationError):
+    """A manual report may be a duplicate but identity evidence is not exact."""
+
+
 class SchemaValidationError(BtcDcaError):
     """An artifact does not conform to its canonical JSON Schema."""
 

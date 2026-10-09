@@ -101,7 +101,8 @@ class PortfolioSummary:
     reference_price_derived_nominal_btc: Decimal
     weighted_reference_acquisition_price_usdt: Decimal | None
     derived_from_execution_ids: tuple[str, ...]
-    schema_version: str = "1.1.0"
+    ledger_event_count: int = 0
+    schema_version: str = "1.2.0"
     as_of_utc: str = "1970-01-01T00:00:00Z"
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,7 +113,7 @@ class PortfolioSummary:
             "schema_version": self.schema_version,
             "as_of_utc": self.as_of_utc,
             "calendar_month": self.calendar_month,
-            # 1.0.0 field names remain present in 1.1.0 for tolerant consumers.
+            # Legacy field names remain present for tolerant consumers.
             "monthly_spent_usd": number(self.monthly_confirmed_usd_deployed),
             "monthly_remaining_usd": number(self.remaining_monthly_budget_usd),
             "executions_count": self.confirmed_execution_count,
@@ -134,6 +135,8 @@ class PortfolioSummary:
                 "Nominal BTC is derived from USD/reference price and is not actual exchange fill quantity."
             ),
             "derived_from_execution_ids": list(self.derived_from_execution_ids),
+            "active_execution_count": self.confirmed_execution_count,
+            "ledger_event_count": self.ledger_event_count,
         }
 
 

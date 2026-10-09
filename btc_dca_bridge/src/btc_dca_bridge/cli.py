@@ -16,7 +16,7 @@ from .config import load_notification_config, load_operational_config, load_stra
 from .artifacts import ArtifactStore, ArtifactType
 from .errors import ArtifactCorruptError, BtcDcaError
 from .engine import calculate_decision
-from .ledger import read_executions
+from .ledger import confirmed_executions, read_executions
 from .models import MarketSnapshot
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH
 from .portfolio import derive_portfolio
@@ -40,6 +40,7 @@ from .notifications import TelegramNotifier, TelegramTransport, format_failure_m
 from .readiness import ProductionReadinessService, production_connectivity
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
 from .production_status import ProductionStatusService
+from .ledger_gateway import LedgerGateway
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -52,7 +53,7 @@ _production_status_service_factory = ProductionStatusService
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m btc_dca_bridge")
+    parser = argparse.ArgumentParser(prog="btc-dca")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate = subparsers.add_parser("validate", help="validate config, schemas, and ledger")
@@ -63,6 +64,31 @@ def _parser() -> argparse.ArgumentParser:
     portfolio.add_argument("--month", required=True, help="calendar month in YYYY-MM form")
     portfolio.add_argument("--config", type=Path, default=CONFIG_PATH)
     portfolio.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+
+    ledger_state = subparsers.add_parser("ledger-state", help="derive active ledger state without mutation")
+    ledger_state.add_argument("--month", required=True)
+    ledger_state.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    ledger_state.add_argument("--json", action="store_true")
+
+    ledger_record = subparsers.add_parser("ledger-record", help="record an explicitly user-confirmed manual execution")
+    _add_ledger_execution_fields(ledger_record)
+    ledger_record.add_argument("--execution-id")
+    ledger_record.add_argument("--distinct-execution-intent", action="store_true")
+
+    ledger_correct = subparsers.add_parser("ledger-correct", help="append a correction to an explicit active execution")
+    _add_ledger_execution_fields(ledger_correct)
+    ledger_correct.add_argument("--target-execution-id", required=True)
+    ledger_correct.add_argument("--execution-id")
+
+    ledger_cancel = subparsers.add_parser("ledger-cancel", help="append a cancellation for an explicit active execution")
+    ledger_cancel.add_argument("--target-execution-id", required=True)
+    ledger_cancel.add_argument("--cancelled-at", required=True)
+    ledger_cancel.add_argument("--source", default="Codex CLI")
+    ledger_cancel.add_argument("--note", required=True)
+    ledger_cancel.add_argument("--execution-id")
+    ledger_cancel.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    ledger_cancel.add_argument("--month", help="derive post-write state for this month")
+    ledger_cancel.add_argument("--json", action="store_true")
 
     calculate = subparsers.add_parser("calculate", help="calculate an offline V1 decision")
     calculate.add_argument("--price", required=True)
@@ -180,6 +206,18 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_ledger_execution_fields(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--executed-at", required=True)
+    command.add_argument("--usd", required=True)
+    command.add_argument("--reference-price", required=True)
+    command.add_argument("--btc-quantity")
+    command.add_argument("--source", default="Codex CLI")
+    command.add_argument("--note", required=True)
+    command.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    command.add_argument("--month", help="derive post-write state for this month")
+    command.add_argument("--json", action="store_true")
+
+
 def _run_time(value: str | None) -> datetime:
     if value is None:
         return datetime.now(UTC)
@@ -239,6 +277,66 @@ def _portfolio(args: argparse.Namespace) -> dict[str, object]:
     return state
 
 
+def _ledger_state(args: argparse.Namespace) -> dict[str, object]:
+    gateway = LedgerGateway(ledger_path=args.ledger)
+    state = gateway.get_portfolio_state(args.month).to_dict()
+    validate_artifact("portfolio_state", state)
+    return {
+        "status": "valid",
+        "ledger_event_count": state["ledger_event_count"],
+        "active_execution_count": state["active_execution_count"],
+        "portfolio_state": state,
+    }
+
+
+def _ledger_write(args: argparse.Namespace, operation: str) -> dict[str, object]:
+    gateway = LedgerGateway(ledger_path=args.ledger)
+    if operation == "record":
+        execution_id, created = gateway.record_execution(
+            executed_at_utc=args.executed_at,
+            executed_usd=Decimal(args.usd),
+            reference_price_usdt=Decimal(args.reference_price),
+            btc_quantity=Decimal(args.btc_quantity) if args.btc_quantity is not None else None,
+            source=args.source,
+            note=args.note,
+            execution_id=args.execution_id,
+            explicit_distinct_execution=args.distinct_execution_intent,
+        )
+        state_month = args.month or datetime.fromisoformat(args.executed_at.replace("Z", "+00:00")).astimezone(UTC).strftime("%Y-%m")
+    elif operation == "correct":
+        execution_id, created = gateway.correct_execution(
+            supersedes_execution_id=args.target_execution_id,
+            executed_at_utc=args.executed_at,
+            executed_usd=Decimal(args.usd),
+            reference_price_usdt=Decimal(args.reference_price),
+            btc_quantity=Decimal(args.btc_quantity) if args.btc_quantity is not None else None,
+            source=args.source,
+            note=args.note,
+            execution_id=args.execution_id,
+        )
+        state_month = args.month or datetime.fromisoformat(args.executed_at.replace("Z", "+00:00")).astimezone(UTC).strftime("%Y-%m")
+    else:
+        execution_id, created = gateway.cancel_execution(
+            supersedes_execution_id=args.target_execution_id,
+            cancelled_at_utc=args.cancelled_at,
+            source=args.source,
+            note=args.note,
+            execution_id=args.execution_id,
+        )
+        state_month = args.month or datetime.fromisoformat(args.cancelled_at.replace("Z", "+00:00")).astimezone(UTC).strftime("%Y-%m")
+    state = gateway.get_portfolio_state(state_month).to_dict()
+    validate_artifact("portfolio_state", state)
+    return {
+        "status": "created" if created else "idempotent",
+        "execution_id": execution_id,
+        "created": created,
+        "ledger_event_count": state["ledger_event_count"],
+        "active_execution_count": state["active_execution_count"],
+        "portfolio_state": state,
+        "message": "Manual ledger reconciliation only — no order submitted",
+    }
+
+
 def _validate(args: argparse.Namespace) -> dict[str, object]:
     schemas = validate_all_schemas()
     strategy = load_strategy_config(args.config)
@@ -257,6 +355,8 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
         "strategy_version": strategy.strategy_version,
         "schemas": schemas,
         "execution_records": len(executions),
+        "ledger_event_count": len(executions),
+        "active_execution_count": len(confirmed_executions(executions)),
         "validated_portfolio_months": portfolio_states,
     }
 
@@ -711,6 +811,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _calculate(args)
         elif args.command == "portfolio":
             result = _portfolio(args)
+        elif args.command == "ledger-state":
+            result = _ledger_state(args)
+        elif args.command == "ledger-record":
+            result = _ledger_write(args, "record")
+        elif args.command == "ledger-correct":
+            result = _ledger_write(args, "correct")
+        elif args.command == "ledger-cancel":
+            result = _ledger_write(args, "cancel")
         else:
             result = _validate(args)
     except ArtifactCorruptError as exc:

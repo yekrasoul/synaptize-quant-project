@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synaptize-quant-project/schemas/project_manifest",
+  "title": "BTC Adaptive DCA Project Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "project", "active_strategy", "canonical_resources"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {"id": {"const": "btc_adaptive_dca"}}
+    },
+    "active_strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "config_path", "content_sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "config_path": {"type": "string", "minLength": 1},
+        "content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "canonical_resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ledger", "chat_contract", "market_data", "runtime", "execution", "sentiment"],
+      "properties": {
+        "ledger": {"type": "string", "minLength": 1},
+        "chat_contract": {"type": "string", "minLength": 1},
+        "market_data": {"type": "string", "minLength": 1},
+        "runtime": {"type": "string", "minLength": 1},
+        "execution": {"type": "string", "minLength": 1},
+        "sentiment": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

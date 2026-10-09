@@ -192,7 +192,9 @@ class ProductionReadinessService:
             strategy = load_strategy_config()
             add("STRATEGY_IDENTITY", "strategy", "PASS", True, f"{strategy.strategy_id} {strategy.strategy_version}", "canonical V1 strategy loaded")
             executions = read_executions(self.ledger_path)
-            add("CANONICAL_LEDGER", "ledger", "PASS", True, f"{len(executions)} schema-valid executions", "canonical ledger readable and valid")
+            from .ledger import confirmed_executions
+            active = confirmed_executions(executions)
+            add("CANONICAL_LEDGER", "ledger", "PASS", True, f"{len(executions)} historical events; {len(active)} active confirmed executions", "canonical ledger readable and active projection valid")
             operations = OperationsService(data_root=self.data_root, ledger_path=self.ledger_path, now=self.now)
             health = operations.health()
             add("ARTIFACT_INTEGRITY", "artifacts", "PASS" if health["status"] in {"HEALTHY", "HEALTHY_WITH_UNRESOLVED_RECONCILIATION", "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY"} else "FAIL", True, health["status"], "artifact and operations integrity is trusted" if health["status"] != "CORRUPT" else "artifact integrity is corrupt", "Repair immutable artifacts and digests")

@@ -19,10 +19,11 @@ from typing import Any, Mapping, Protocol
 from .ledger import confirmed_executions, read_executions
 from .models import Execution
 from .schemas import validate_artifact
-from .config import ExecutionConfig, load_execution_config
+from .config import ExecutionConfig, load_execution_config, load_strategy_config
 
-APPROVED_STRATEGY = "btc_adaptive_dca_v1"
-APPROVED_VERSION = "1.0.0"
+_ACTIVE_STRATEGY = load_strategy_config()
+APPROVED_STRATEGY = _ACTIVE_STRATEGY.strategy_id
+APPROVED_VERSION = _ACTIVE_STRATEGY.strategy_version
 MIN_REMAINING = Decimal("10")
 CLIENT_ID_RE = re.compile(r"^dca-[a-f0-9]{32}$")
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from btc_dca_bridge.config import load_strategy_config
 from btc_dca_bridge.errors import LedgerValidationError, SchemaValidationError
-from btc_dca_bridge.ledger import executions_for_month, read_executions
+from btc_dca_bridge.ledger import confirmed_executions, executions_for_month, read_executions
 from btc_dca_bridge.paths import LEDGER_PATH
 from btc_dca_bridge.portfolio import derive_portfolio
 from btc_dca_bridge.schemas import validate_artifact
@@ -21,7 +21,7 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual(len(self.executions), 12)
 
     def test_canonical_ledger_total_is_315(self):
-        total = sum((item.executed_usd for item in self.executions), Decimal(0))
+        total = sum((item.executed_usd for item in confirmed_executions(self.executions)), Decimal(0))
         self.assertEqual(total, Decimal("315"))
 
     def test_september_confirmed_spend_is_220(self):
@@ -86,10 +86,11 @@ class PortfolioTest(unittest.TestCase):
         self.assertEqual(state.remaining_monthly_budget_usd, Decimal("405"))
         self.assertEqual(state.confirmed_execution_count, 12)
         self.assertEqual(state.monthly_confirmed_execution_count, 2)
-        self.assertEqual(state.schema_version, "1.1.0")
+        self.assertEqual(state.schema_version, "1.2.0")
+        self.assertEqual(state.ledger_event_count, 12)
         self.assertEqual(state.as_of_utc, "2026-10-08T00:00:00Z")
 
-    def test_derived_portfolio_is_a_schema_valid_v1_1_state(self):
+    def test_derived_portfolio_is_a_schema_valid_v1_2_state(self):
         state = derive_portfolio(
             self.executions, "2026-10", self.strategy.monthly_cap_usd
         ).to_dict()
@@ -97,6 +98,8 @@ class PortfolioTest(unittest.TestCase):
         self.assertEqual(state["monthly_spent_usd"], 95)
         self.assertEqual(state["monthly_remaining_usd"], 405)
         self.assertEqual(state["executions_count"], 12)
+        self.assertEqual(state["active_execution_count"], 12)
+        self.assertEqual(state["ledger_event_count"], 12)
 
     def test_empty_portfolio_has_deterministic_as_of_timestamp(self):
         state = derive_portfolio((), "2026-10", self.strategy.monthly_cap_usd)

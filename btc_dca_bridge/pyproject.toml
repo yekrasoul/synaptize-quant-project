@@ -13,6 +13,9 @@ dependencies = [
   "websocket-client>=1.8,<2",
 ]
 
+[project.scripts]
+btc-dca = "btc_dca_bridge.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
