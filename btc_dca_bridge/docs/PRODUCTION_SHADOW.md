@@ -1,17 +1,18 @@
 # Scheduled production shadow (Phase 4)
 
-Phase 4 operates the existing read-only pipeline on GitHub Actions and sends a
-Telegram message from its structured result. It does not add an exchange order
-client, authenticated exchange endpoint, ledger write, or portfolio mutation.
+Phase 4 operates the read-only recommendation pipeline on GitHub Actions and
+sends a Telegram message from its structured result. Later guarded Phase 5
+execution components exist in the repository, but they are not invoked by this
+workflow; the production-shadow workflow remains read-only and never writes the
+execution ledger.
 
 ## Schedule and run time
 
-`.github/workflows/production-shadow.yml` runs at `0 11 * * *` and also supports
-`workflow_dispatch`. This workflow deliberately uses GitHub cron's default UTC
-semantics rather than configuring a timezone: 11:00 UTC is 12:00 in London
-while BST is active and 11:00 in London during GMT. Phase 4 accepts this
-one-hour winter shift and does not claim that the fixed UTC schedule follows
-Europe/London wall time.
+`.github/workflows/production-shadow.yml` runs every six hours at minute 23
+using the canonical cron `23 */6 * * *`, and also supports
+`workflow_dispatch`. GitHub cron is UTC, so scheduled slots are 00:23, 06:23,
+12:23, and 18:23 UTC. The runtime configuration, not prose documentation, is
+authoritative for cadence and logical-slot validation.
 
 GitHub exposes scheduled triggering and the Actions UI manual-dispatch entry
 only when the workflow file exists on the default branch. This feature branch
@@ -22,7 +23,7 @@ The scheduled slot is logical identity, not a fabricated retrieval time. The
 application records the exact GitHub process start separately, then selects the
 next minute boundary for acquisition and waits at most 60 seconds. That
 minute-aligned acquisition context is passed to the unchanged market and
-sentiment adapters. A late runner therefore retains the 11:00 logical slot and
+sentiment adapters. A late runner therefore retains its configured six-hour logical slot and
 deterministic run ID while its snapshots record the later canonical acquisition
 minute. The market-data layer does not round timestamps.
 
@@ -50,13 +51,18 @@ ledger are validated before public acquisition.
 The production command composes the existing path only:
 
 ```text
-Bybit BTCUSDT Spot direct
-→ TradingView exact BYBIT:BTCUSDT Spot fallback
+Bybit BTCUSDT Spot
+→ Binance BTCUSDT Spot fallback
+→ KuCoin BTC-USDT Spot fallback
 → Alternative.me Crypto Fear & Greed
 → reconciled execution ledger
 → deterministic V1 engine
 → immutable artifacts and completed manifest
 ```
+
+Each venue is an atomic snapshot candidate: current price and complete rolling
+168-hour high must come from that same venue. The pipeline advances to the next
+approved venue only after the preceding complete source path fails validation.
 
 All decision values used by Telegram and the GitHub summary come from the
 structured production result. Neither YAML nor the notification adapter
