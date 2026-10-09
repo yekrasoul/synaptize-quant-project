@@ -57,7 +57,44 @@ def read_executions(path: Path = LEDGER_PATH) -> tuple[Execution, ...]:
 def confirmed_executions(
     executions: tuple[Execution, ...] | list[Execution],
 ) -> tuple[Execution, ...]:
-    return tuple(execution for execution in executions if execution.payload["status"] == "reconciled")
+    """Project append-only reconciliation events into the active execution set.
+
+    Legacy 1.0/1.1 reconciled rows remain active unless superseded by a 1.2
+    correction/void event. A 1.2 reconciled event replaces exactly one active
+    execution; a 1.2 voided event removes exactly one active execution.
+    """
+    active: dict[str, Execution] = {}
+    for execution in executions:
+        payload = execution.payload
+        status = payload["status"]
+        supersedes = payload.get("supersedes_execution_id")
+
+        if supersedes is None:
+            if status != "reconciled":
+                raise LedgerValidationError(
+                    f"non-reconciled execution without supersedes target: {execution.execution_id}"
+                )
+            active[execution.execution_id] = execution
+            continue
+
+        if supersedes == execution.execution_id:
+            raise LedgerValidationError(
+                f"execution cannot supersede itself: {execution.execution_id}"
+            )
+        if supersedes not in active:
+            raise LedgerValidationError(
+                f"supersedes target is not active: {supersedes}"
+            )
+        del active[supersedes]
+
+        if status == "reconciled":
+            active[execution.execution_id] = execution
+        elif status != "voided":
+            raise LedgerValidationError(
+                f"unsupported reconciliation status: {status}"
+            )
+
+    return tuple(active.values())
 
 
 def executions_for_month(
