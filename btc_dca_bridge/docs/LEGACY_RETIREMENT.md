@@ -9,7 +9,7 @@ The transition-era `docs/MIGRATION_PLAN.md` was also removed because every relev
 - BTC market data: Bybit BTCUSDT Spot direct, then TradingView exact `BYBIT:BTCUSDT` Spot, otherwise fail closed.
 - Sentiment: Alternative.me Crypto Fear & Greed only.
 - Monthly spend: derived from confirmed reconciled records in `ledger/executions.jsonl`.
-- Strategy: unchanged deterministic V1 engine reading `config/strategy_v1.yaml`.
+- Strategy: unchanged deterministic V1 engine resolved from the repository bootstrap manifest, including the approved content digest.
 - Run state: immutable market, sentiment, and decision artifacts plus the final schema-valid completed-run manifest.
 - Operator entrypoint: `uv run python -m btc_dca_bridge run --mode shadow`.
 

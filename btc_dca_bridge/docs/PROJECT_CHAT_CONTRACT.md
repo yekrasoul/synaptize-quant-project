@@ -71,6 +71,21 @@ If a chat summary conflicts with the ledger, the ledger wins until a valid corre
 
 The same economic execution reported through multiple interfaces must not be double-counted. Local deterministic IDs are not sufficient synchronization across independent writers: adapters must compare-and-swap against a fresh immutable version (GitHub Contents blob SHA for a GitHub adapter; current canonical content digest/Git state for local adapters), re-read after conflict, and replay the same semantic operation within a bounded retry count. Never force-overwrite.
 
+### Required GitHub Contents CAS procedure
+
+For a ledger mutation initiated in a ChatGPT project conversation:
+
+1. Fetch `config/project_manifest.yaml` from current `main`; resolve the ledger path from that manifest.
+2. Fetch the latest complete ledger file and its current GitHub blob/content SHA. **That SHA is the CAS version token.** Never use a cached copy.
+3. Parse and validate the complete ledger; apply the same semantic record/correct/cancel operation against its active projection.
+4. Validate the complete resulting ledger, active projection, and derived `PortfolioState` before writing.
+5. Update through GitHub Contents using the previously-read SHA as the expected version.
+6. If GitHub rejects a stale SHA, fetch the newest ledger and SHA, re-apply the **same semantic operation**, and let idempotency/conflict rules decide. Retry at most 3 times; then stop without writing.
+7. Never force-overwrite, replace without expected-SHA semantics, or discard another writer's events.
+8. After successful write, re-read canonical state; only then report portfolio/monthly spend.
+
+Never calculate spend before that post-write re-read. If the connector cannot provide expected-SHA conditional update semantics, fail closed and report that reconciliation could not be persisted safely.
+
 For a repeated execution:
 - if exact canonical economic identity matches, treat it as idempotent;
 - if same-day economic details match but timestamp normalization differs, stop with a possible-duplicate ambiguity; explicit resolution is required;

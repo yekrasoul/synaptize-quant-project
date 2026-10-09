@@ -16,6 +16,19 @@ No chat summary, remembered total, or scheduled-task prompt is a source of truth
 
 ## Canonical operations
 
+### Manual/local CLI
+
+The `btc-dca` entrypoint is a thin wrapper over `LedgerGateway`; these commands reconcile accounting only and never contact an exchange or submit an order:
+
+```bash
+btc-dca ledger-state --month 2026-10
+btc-dca ledger-record --executed-at 2026-10-09T12:30:00Z --usd 25 --reference-price 82000 --source "Codex CLI" --note "user-confirmed execution"
+btc-dca ledger-correct --target-execution-id execution_existing --executed-at 2026-10-09T12:30:00Z --usd 24 --reference-price 82000 --source "Codex CLI" --note "user-confirmed correction"
+btc-dca ledger-cancel --target-execution-id execution_existing --cancelled-at 2026-10-09T12:35:00Z --source "Codex CLI" --note "user-confirmed cancellation"
+```
+
+Correction and cancellation require the exact active target ID. A same-day same-economics purchase that could be a duplicate is blocked unless the caller supplies both an explicit distinct-execution intent and a distinct execution ID. Every successful operation re-reads and returns the derived active projection/PortfolioState.
+
 ### record_execution
 
 Use when the user explicitly confirms that a BTC purchase actually executed.
@@ -67,6 +80,10 @@ For every BTC DCA project interface:
 ## Versioned synchronization and append-only reconciliation
 
 `VersionedLedgerStore` exposes `read() -> (content, version)` and compare-and-swap. The version is an immutable token: GitHub Contents adapters use the current blob SHA; local adapters use the digest of the exact canonical bytes/current Git state. Other transports must provide equivalent atomic CAS. Business logic never contains GitHub credentials. A CAS conflict causes a bounded fresh read, validation, and replay of the same semantic operation; exhaustion fails without overwrite. All updates must preserve prior event history.
+
+### GitHub Contents adapter contract
+
+For project-chat writes, fetch the manifest and its declared ledger from current `main`; fetch the ledger's current GitHub blob/content SHA and use it as the expected-version token. Parse/validate the complete file, apply the semantic operation to the active projection, validate the new complete history/projection/PortfolioState, then update with that expected SHA. On stale-SHA rejection, fetch latest bytes+SHA and re-apply the same operation; retry no more than 3 times. Never force-overwrite. Re-read canonical state after success before reporting. If the connector cannot enforce expected-SHA semantics, do not write.
 
 Legacy schema rows remain readable. Gateway-originated reconciliations use the bounded provenance model in schema 1.3; corrections and voids remain append-only events using `supersedes_execution_id`.
 
