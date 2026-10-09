@@ -1,0 +1,42 @@
+name: Canonical CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Canonical validation
+    runs-on: ubuntu-24.04
+
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Compile
+        run: uv run python -m compileall -q src tests
+
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Validate canonical repository state
+        run: uv run python -m btc_dca_bridge validate
