@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FoundationContractsTest(unittest.TestCase):
     def test_schema_files_are_valid_json_schema_documents(self):
         schemas = sorted((ROOT / "schemas").glob("*.schema.json"))
-        self.assertEqual(len(schemas), 22)
+        self.assertEqual(len(schemas), 23)
         for path in schemas:
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload["$schema"], "https://json-schema.org/draft/2020-12/schema")
@@ -40,13 +40,19 @@ class FoundationContractsTest(unittest.TestCase):
             {"schema_version":"1.3.0","execution_id":"execution_corrected","executed_at_utc":"2026-10-01T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":30,"reference_price_usdt":81000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"correction","intake_interface":"project_chat"},"supersedes_execution_id":"execution_original"},
             {"schema_version":"1.3.0","execution_id":"execution_voided","executed_at_utc":"2026-10-02T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":20,"reference_price_usdt":82000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"other","intake_interface":"project_chat"}},
             {"schema_version":"1.3.0","execution_id":"execution_void","executed_at_utc":"2026-10-02T11:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":0,"reference_price_usdt":None,"btc_quantity":None,"status":"voided","reconciliation":{"source":"Project user-confirmed execution","note":"void","intake_interface":"project_chat"},"supersedes_execution_id":"execution_voided"},
+            {"schema_version":"1.3.0","execution_id":"execution_e","executed_at_utc":"2026-10-03T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":10,"reference_price_usdt":100000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"another normal execution","intake_interface":"codex_cli"}},
         ]
         history = parse_executions("".join(json.dumps(row) + "\n" for row in rows))
         state = derive_portfolio(history, "2026-10", Decimal("500"))
-        self.assertEqual(state.ledger_event_count, 4)
-        self.assertEqual(state.derived_from_execution_ids, ("execution_corrected",))
-        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("30"))
-        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("470"))
+        self.assertEqual(state.ledger_event_count, 5)
+        self.assertEqual(state.confirmed_execution_count, 2)
+        self.assertEqual(state.derived_from_execution_ids, ("execution_corrected", "execution_e"))
+        self.assertEqual(state.total_confirmed_usd_deployed, Decimal("40"))
+        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("40"))
+        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("460"))
+        nominal = Decimal("30") / Decimal("81000") + Decimal("10") / Decimal("100000")
+        self.assertEqual(state.reference_price_derived_nominal_btc, nominal)
+        self.assertEqual(state.weighted_reference_acquisition_price_usdt, Decimal("40") / nominal)
 
     def test_v1_configuration_preserves_non_negotiable_values(self):
         config = (ROOT / "config" / "strategy_v1.yaml").read_text(encoding="utf-8")

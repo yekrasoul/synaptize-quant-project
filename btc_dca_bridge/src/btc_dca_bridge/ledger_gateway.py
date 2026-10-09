@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import load_strategy_config
 from .errors import AmbiguousManualExecutionError, LedgerValidationError
 from .ledger import confirmed_executions, read_executions
-from .ledger_sync import FileVersionedLedgerStore, LedgerReconciliationService
+from .ledger_sync import FileVersionedLedgerStore, LedgerReconciliationService, VersionedLedgerStore
 from .models import PortfolioState
 from .paths import LEDGER_PATH
 from .portfolio import derive_portfolio
@@ -54,10 +54,10 @@ def _economic_match(left: dict, right: dict, *, calendar_date: bool = False) -> 
 
 class LedgerGateway:
     """Shared ledger boundary; every write uses latest-read/validate/CAS semantics."""
-    def __init__(self, ledger_path: Path = LEDGER_PATH, config_path: Path | None = None, *, max_retries: int = 3) -> None:
+    def __init__(self, ledger_path: Path = LEDGER_PATH, config_path: Path | None = None, *, max_retries: int = 3, store: VersionedLedgerStore | None = None) -> None:
         self.ledger_path = Path(ledger_path)
         self.config_path = config_path
-        self.service = LedgerReconciliationService(FileVersionedLedgerStore(self.ledger_path), max_retries=max_retries)
+        self.service = LedgerReconciliationService(store or FileVersionedLedgerStore(self.ledger_path), max_retries=max_retries)
 
     @staticmethod
     def _manual_id(executed_at_utc: str, executed_usd: Decimal, reference_price_usdt: Decimal, btc_quantity: Decimal | None) -> str:
@@ -81,7 +81,12 @@ class LedgerGateway:
         def build(history, active):
             for existing in history:
                 if existing.execution_id == chosen_id:
-                    if not _economic_match(existing.payload, requested):
+                    is_manual_record = (
+                        existing.payload.get("status") == "reconciled"
+                        and existing.payload.get("supersedes_execution_id") is None
+                        and existing.payload.get("reconciliation", {}).get("source") == "Project user-confirmed execution"
+                    )
+                    if not is_manual_record or not _economic_match(existing.payload, requested):
                         raise LedgerValidationError(f"execution identity already exists with conflicting economic evidence: {chosen_id}")
                     return existing.payload
             if not explicit_distinct_execution:
@@ -107,9 +112,8 @@ class LedgerGateway:
             for item in history:
                 if item.execution_id == identity:
                     if item.payload != row:
-                        comparable = dict(item.payload); candidate = dict(row)
-                        for payload in (comparable, candidate):
-                            payload.get("reconciliation", {}).pop("note", None); payload.get("reconciliation", {}).pop("intake_interface", None)
+                        comparable = {**item.payload, "reconciliation": {key: value for key, value in item.payload.get("reconciliation", {}).items() if key not in {"note", "intake_interface"}}}
+                        candidate = {**row, "reconciliation": {key: value for key, value in row["reconciliation"].items() if key not in {"note", "intake_interface"}}}
                         if comparable != candidate: raise LedgerValidationError("correction identity conflicts with existing evidence")
                     return item.payload
             if supersedes_execution_id not in {item.execution_id for item in active}:
@@ -122,8 +126,20 @@ class LedgerGateway:
         identity = execution_id or "execution_void_" + hashlib.sha256(f"{supersedes_execution_id}|void".encode()).hexdigest()[:24]
         row = {"schema_version": "1.3.0", "execution_id": identity, "executed_at_utc": timestamp, "asset": "BTC", "quote_currency": "USDT", "executed_usd": 0, "reference_price_usdt": None, "btc_quantity": None, "status": "voided", "reconciliation": {"source": "Project user-confirmed execution", "note": note, "intake_interface": interface}, "supersedes_execution_id": supersedes_execution_id}
         def build(history, active):
-            for item in history:
-                if item.execution_id == identity or (item.payload.get("status") == "voided" and item.payload.get("supersedes_execution_id") == supersedes_execution_id): return item.payload
+            existing_identity = next((item for item in history if item.execution_id == identity), None)
+            if existing_identity is not None:
+                actual = existing_identity.payload
+                same_cancel = (
+                    actual.get("status") == "voided"
+                    and actual.get("supersedes_execution_id") == supersedes_execution_id
+                    and actual.get("reconciliation", {}).get("source") == "Project user-confirmed execution"
+                )
+                if not same_cancel:
+                    raise LedgerValidationError("execution identity already exists with conflicting cancellation evidence")
+                return actual
+            existing_void = next((item for item in history if item.payload.get("status") == "voided" and item.payload.get("supersedes_execution_id") == supersedes_execution_id), None)
+            if existing_void is not None:
+                return existing_void.payload
             if supersedes_execution_id not in {item.execution_id for item in active}: raise LedgerValidationError(f"cannot cancel inactive execution: {supersedes_execution_id}")
             return row
         return self._write(build, identity)

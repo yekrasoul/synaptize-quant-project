@@ -101,7 +101,32 @@ class ProductionStatusTests(unittest.TestCase):
         self.assertEqual(snapshot["blocker_ids"], [QUOTE_LIMIT_BLOCKER_ID])
         self.assertEqual(snapshot["quote_unit_limit_status"], "NOT_EXPOSED")
         self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(snapshot["canonical_execution_count"], 0)
+        self.assertEqual(snapshot["ledger_event_count"], 0)
+        self.assertEqual(snapshot["schema_version"], "6.1.0")
         self.assertEqual(snapshot["real_money_authorization"], {"granted": False, "source": "none", "required": True, "status": "NOT_AUTHORIZED"})
+
+    def test_legacy_status_snapshot_schema_remains_readable(self):
+        from btc_dca_bridge.schemas import validate_artifact
+        current = self.fake.service.evaluate().to_dict()
+        legacy = {key: value for key, value in current.items() if key != "ledger_event_count"}
+        legacy["schema_version"] = "6.0.0"
+        validate_artifact("production_status", legacy)
+        ArtifactStore(self.root).persist(ArtifactType.PRODUCTION_STATUS, legacy, run_id=legacy["snapshot_id"])
+        self.assertEqual(self.fake.service.history(limit=1)[0]["schema_version"], "6.0.0")
+
+    def test_status_separates_history_events_from_active_executions(self):
+        rows = [
+            {"schema_version":"1.3.0","execution_id":"execution_a","executed_at_utc":"2026-10-01T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":25,"reference_price_usdt":80000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"A","intake_interface":"project_chat"}},
+            {"schema_version":"1.3.0","execution_id":"execution_b","executed_at_utc":"2026-10-01T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":30,"reference_price_usdt":81000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"B","intake_interface":"project_chat"},"supersedes_execution_id":"execution_a"},
+            {"schema_version":"1.3.0","execution_id":"execution_c","executed_at_utc":"2026-10-02T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":20,"reference_price_usdt":82000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"C","intake_interface":"project_chat"}},
+            {"schema_version":"1.3.0","execution_id":"execution_d","executed_at_utc":"2026-10-02T11:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":0,"reference_price_usdt":None,"btc_quantity":None,"status":"voided","reconciliation":{"source":"Project user-confirmed execution","note":"D","intake_interface":"project_chat"},"supersedes_execution_id":"execution_c"},
+            {"schema_version":"1.3.0","execution_id":"execution_e","executed_at_utc":"2026-10-03T10:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":10,"reference_price_usdt":100000,"btc_quantity":None,"status":"reconciled","reconciliation":{"source":"Project user-confirmed execution","note":"E","intake_interface":"codex_cli"}},
+        ]
+        self.ledger.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        snapshot = self.fake.service.evaluate().to_dict()
+        self.assertEqual(snapshot["ledger_event_count"], 5)
+        self.assertEqual(snapshot["canonical_execution_count"], 2)
 
     def test_snapshot_persists_immutably_and_history_is_ordered(self):
         first = self.fake.service.collect()

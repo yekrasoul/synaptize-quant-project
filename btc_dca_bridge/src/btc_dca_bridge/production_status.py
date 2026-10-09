@@ -22,7 +22,7 @@ from .production_evidence import AUTHORIZATION, ProductionEvidenceService, preau
 from .readiness import ProductionReadinessService
 from .schemas import validate_artifact
 
-SNAPSHOT_SCHEMA_VERSION = "6.0.0"
+SNAPSHOT_SCHEMA_VERSION = "6.1.0"
 ALERT_SCHEMA_VERSION = "1.0.0"
 
 
@@ -53,6 +53,7 @@ class ProductionStatusSnapshot:
     monthly_spent_usdt: str
     remaining_monthly_budget_usdt: str
     canonical_execution_count: int
+    ledger_event_count: int
     unresolved_operations: bool
     canonical_ledger_status: str
     evidence_status: str
@@ -294,8 +295,9 @@ class ProductionStatusService:
             remaining = Decimal("500") - spent
             ledger_status = "VALID"
             execution_count = len(confirmed_executions(executions))
+            ledger_event_count = len(executions)
         except Exception:
-            spent, remaining, ledger_status, execution_count = Decimal("0"), Decimal("0"), "CORRUPT", 0
+            spent, remaining, ledger_status, execution_count, ledger_event_count = Decimal("0"), Decimal("0"), "CORRUPT", 0, 0
         try:
             health_status = str(health.get("status", "UNAVAILABLE"))
             blockers = tuple(item.to_dict() if hasattr(item, "to_dict") else dict(item) for item in self.blocker_provider(now=captured))
@@ -363,6 +365,7 @@ class ProductionStatusService:
             "monthly_spent_usdt": str(spent),
             "remaining_monthly_budget_usdt": str(remaining),
             "canonical_execution_count": execution_count,
+            "ledger_event_count": ledger_event_count,
             "unresolved_operations": unresolved,
             "canonical_ledger_status": ledger_status,
             "evidence_status": evidence_status,
