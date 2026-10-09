@@ -115,9 +115,6 @@ class LedgerGateway:
         btc_quantity: Decimal | None = None,
         execution_id: str | None = None,
     ) -> tuple[str, bool]:
-        current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
-        if supersedes_execution_id not in current:
-            raise ValueError(f"cannot correct inactive execution: {supersedes_execution_id}")
         if execution_id is None:
             base = self._manual_id(
                 executed_at_utc, executed_usd, reference_price_usdt, btc_quantity
@@ -143,6 +140,11 @@ class LedgerGateway:
                     "supersedes_execution_id": supersedes_execution_id,
                 }
                 return execution_id, self._append_semantically_once(payload)
+
+        current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
+        if supersedes_execution_id not in current:
+            raise ValueError(f"cannot correct inactive execution: {supersedes_execution_id}")
+
         payload = {
             "schema_version": "1.2.0",
             "execution_id": execution_id,
