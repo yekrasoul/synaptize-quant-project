@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -21,7 +22,7 @@ from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPo
 class FakeReadinessClient:
     def __init__(self, *, availability=Decimal("100"), liability=False):
         self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
-        self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z")
+        self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "1789693389000")
         self.availability, self.liability = availability, liability
         self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"), market_order_qty_unit="quoteCoin", market_buy_quote_maximum=Decimal("8000000"))
     def credential_info(self): return self.credential
@@ -71,6 +72,8 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_READY")
         ids = {item["check_id"] for item in result["blockers"]}
         self.assertTrue({"REPOSITORY_CLEAN", "BYBIT_LIABILITIES", "CLOCK_SKEW"}.issubset(ids))
+        repository = next(item for item in result["checks"] if item["check_id"] == "REPOSITORY_CLEAN")
+        self.assertIn("worktree changes outside ignored production evidence", repository["reason"])
 
     def test_unsafe_config_is_blocking(self):
         unsafe = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
@@ -99,10 +102,10 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(clock["status"], "UNAVAILABLE")
         self.assertNotEqual(result["status"], "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION")
 
-    def test_account_mode_accepts_uta_2_and_uta_2_pro_with_fresh_timestamp(self):
+    def test_account_mode_accepts_old_but_valid_uta_2_and_uta_2_pro_timestamps(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-        uta2_ok, uta2_reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
-        pro_ok, pro_reason = classify_production_account_mode(AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"), now=now)
+        uta2_ok, uta2_reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", "1789693389000"), now=now)
+        pro_ok, pro_reason = classify_production_account_mode(AccountInfo(6, "REGULAR_MARGIN", "OFF", "1789693389000"), now=now)
         self.assertTrue(uta2_ok)
         self.assertIn("UTA 2.0 status 5", uta2_reason)
         self.assertTrue(pro_ok)
@@ -111,15 +114,41 @@ class ReadinessTests(unittest.TestCase):
     def test_account_mode_rejects_unsupported_shapes_and_timestamps(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
         for account in (
-            AccountInfo(3, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
-            AccountInfo(4, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
-            AccountInfo(1, "REGULAR_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
-            AccountInfo(6, "PORTFOLIO_MARGIN", "OFF", "2026-10-07T11:59:00Z"),
-            AccountInfo(6, "REGULAR_MARGIN", "ON", "2026-10-07T11:59:00Z"),
-            AccountInfo(6, "REGULAR_MARGIN", "OFF", "2026-10-07T11:00:00Z"),
-            AccountInfo(6, "REGULAR_MARGIN", "OFF", "future"),
+            AccountInfo(3, "REGULAR_MARGIN", "OFF", "1789693389000"),
+            AccountInfo(4, "REGULAR_MARGIN", "OFF", "1789693389000"),
+            AccountInfo(1, "REGULAR_MARGIN", "OFF", "1789693389000"),
+            AccountInfo(6, "PORTFOLIO_MARGIN", "OFF", "1789693389000"),
+            AccountInfo(6, "REGULAR_MARGIN", "ON", "1789693389000"),
+            AccountInfo(6, "REGULAR_MARGIN", "OFF", "not-a-timestamp"),
+            AccountInfo(6, "REGULAR_MARGIN", "OFF", "999999999999999999999"),
         ):
             self.assertFalse(classify_production_account_mode(account, now=now)[0])
+
+    def test_repository_cleanliness_blocks_modified_tracked_source(self):
+        result = self.evaluate(repo_probe=lambda: {"commit": "abc", "dirty": True, "status": " M src/btc_dca_bridge/readiness.py"})
+        repository = next(item for item in result["checks"] if item["check_id"] == "REPOSITORY_CLEAN")
+        self.assertEqual(repository["status"], "BLOCKED")
+
+    def test_repository_cleanliness_blocks_unexpected_untracked_source(self):
+        for status in ("?? src/unexpected.py", "?? config/unexpected.toml"):
+            with self.subTest(status=status):
+                result = self.evaluate(repo_probe=lambda status=status: {"commit": "abc", "dirty": True, "status": status})
+                repository = next(item for item in result["checks"] if item["check_id"] == "REPOSITORY_CLEAN")
+                self.assertEqual(repository["status"], "BLOCKED")
+
+    def test_production_evidence_artifacts_are_ignored_by_git_cleanliness(self):
+        evidence = Path("data/production_evidence")
+        sample = evidence / "synthetic-evidence.json"
+        self.assertEqual(subprocess.run(("git", "check-ignore", "-q", str(sample)), check=False).returncode, 0)
+        status = subprocess.run(("git", "status", "--porcelain", "--", str(evidence)), capture_output=True, text=True, check=True).stdout
+        self.assertEqual(status, "")
+
+    def test_clock_skew_remains_freshness_gate_independent_of_account_timestamp(self):
+        result = self.evaluate(server_time_probe=lambda: ServerTimeMeasurement(2.001, 1))
+        account = next(item for item in result["checks"] if item["check_id"] == "BYBIT_ACCOUNT")
+        clock = next(item for item in result["checks"] if item["check_id"] == "CLOCK_SKEW")
+        self.assertEqual(account["status"], "PASS")
+        self.assertEqual(clock["status"], "FAIL")
 
     def test_provenance_is_required_for_authoritative_availability(self):
         self.assertEqual(self.evaluate(client_factory=lambda: FakeReadinessClient(availability=None))["status"], "NOT_READY")
