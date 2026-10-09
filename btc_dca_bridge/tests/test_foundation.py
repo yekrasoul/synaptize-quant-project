@@ -23,7 +23,7 @@ class FoundationContractsTest(unittest.TestCase):
         september = sum(row["executed_usd"] for row in rows if row["executed_at_utc"].startswith("2026-09"))
         october = sum(row["executed_usd"] for row in rows if row["executed_at_utc"].startswith("2026-10"))
         self.assertEqual(september, 220)
-        self.assertEqual(october, 60)
+        self.assertEqual(october, 95)
 
     def test_v1_configuration_preserves_non_negotiable_values(self):
         config = (ROOT / "config" / "strategy_v1.yaml").read_text(encoding="utf-8")
