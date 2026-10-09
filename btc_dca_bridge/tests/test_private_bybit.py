@@ -51,7 +51,7 @@ class PrivateBybitTests(unittest.TestCase):
         unsafe = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"Wallet": ["AccountTransfer"]}})}).credential_info()
         self.assertEqual(unsafe.classification, CredentialClassification.UNSAFE_PERMISSION_SCOPE)
 
-        for permission in (("ContractTrade", "Order"), ("ContractTrade", "Position"), ("Derivatives", "DerivativesTrade"), ("Wallet", "Withdraw"), ("Wallet", "SubMemberTransfer"), ("Wallet", "Borrow")):
+        for permission in (("ContractTrade", "Order"), ("ContractTrade", "Position"), ("Options", "OptionsTrade"), ("Wallet", "Withdraw"), ("Wallet", "SubMemberTransfer"), ("Wallet", "Borrow")):
             group, action = permission
             classified = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {group: [action]}})}).credential_info()
             self.assertEqual(classified.classification, CredentialClassification.UNSAFE_PERMISSION_SCOPE, permission)
@@ -62,6 +62,39 @@ class PrivateBybitTests(unittest.TestCase):
         permissions = {"Spot": ["SpotTrade"], "Affiliate": [], "BitCard": [], "BlockTrade": [], "CopyTrading": [], "Earn": [], "Exchange": [], "Wallet": [], "Unrelated": []}
         info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
         self.assertEqual(info.classification, CredentialClassification.TRADE_CAPABLE)
+
+    def test_uta_unified_derivatives_parent_is_tolerated_for_spot_only(self):
+        permissions = {"Spot": ["SpotTrade"], "Derivatives": ["DerivativesTrade"], "ContractTrade": [], "Options": [], "Wallet": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.TRADE_CAPABLE)
+
+    def test_spot_trade_only_is_trade_capable(self):
+        permissions = {"Spot": ["SpotTrade"], "Derivatives": [], "ContractTrade": [], "Options": [], "Wallet": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.TRADE_CAPABLE)
+
+    def test_unified_derivatives_parent_without_spot_fails_closed(self):
+        permissions = {"Spot": [], "Derivatives": ["DerivativesTrade"], "ContractTrade": [], "Options": [], "Wallet": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.INVALID)
+
+    def test_uta_parent_shape_preserves_contract_options_wallet_and_unknown_guards(self):
+        cases = (
+            ({"Spot": ["SpotTrade"], "ContractTrade": ["Order"]}, CredentialClassification.UNSAFE_PERMISSION_SCOPE),
+            ({"Spot": ["SpotTrade"], "ContractTrade": ["Position"]}, CredentialClassification.UNSAFE_PERMISSION_SCOPE),
+            ({"Spot": ["SpotTrade"], "Options": ["OptionsTrade"]}, CredentialClassification.UNSAFE_PERMISSION_SCOPE),
+            ({"Spot": ["SpotTrade"], "Wallet": ["AccountTransfer"]}, CredentialClassification.UNSAFE_PERMISSION_SCOPE),
+            ({"Spot": ["SpotTrade"], "Derivatives": ["DerivativesTrade"], "UnknownGroup": ["UnknownAction"]}, CredentialClassification.INVALID),
+        )
+        for permissions, expected in cases:
+            with self.subTest(permissions=permissions):
+                info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
+                self.assertEqual(info.classification, expected)
+
+    def test_read_only_uta_spot_trade_is_invalid(self):
+        permissions = {"Spot": ["SpotTrade"], "Derivatives": ["DerivativesTrade"], "ContractTrade": [], "Options": [], "Wallet": []}
+        info = self.client({"/v5/user/query-api": response({"readOnly": 1, "permission": permissions})}).credential_info()
+        self.assertEqual(info.classification, CredentialClassification.INVALID)
 
     def test_safe_read_actions_with_empty_groups_are_read_only(self):
         permissions = {"Spot": ["SpotRead"], "Wallet": ["WalletRead"], "Affiliate": [], "Exchange": [], "UnknownEmpty": []}

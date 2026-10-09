@@ -159,12 +159,19 @@ def _permission_token(value: str) -> str:
 
 
 def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_value: Any) -> CredentialClassification:
-    """Classify structured Bybit permission groups with unsafe precedence."""
-    dangerous_groups = {"contracttrade", "derivatives", "derivativestrade", "position"}
+    """Classify the full Bybit permission shape with unsafe precedence.
+
+    Bybit reports ``DerivativesTrade`` as the Unified account permission. For
+    this Spot-only architecture it is tolerated only as the parent permission
+    coupled to ``SpotTrade``: ContractTrade and Options must be empty, Wallet
+    must have no dangerous action, and every other non-empty group must be
+    recognized. This does not authorize derivatives execution.
+    """
     dangerous_actions = {"accounttransfer", "submembertransfer", "withdrawal", "withdraw", "borrow", "repay"}
     known_read = {"read", "spotread", "walletread", "accountread", "query"}
     known_spot_trade = {"spottrade", "orderentry", "spotorder"}
-    has_trade = False
+    spot_actions: set[str] = set()
+    derivatives_actions: set[str] = set()
     has_read = False
     for raw_group, raw_actions in permissions.items():
         group = _permission_token(raw_group)
@@ -174,8 +181,14 @@ def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_
         # non-empty unknown group still fails closed below.
         if not actions:
             continue
-        if group in dangerous_groups:
-            return CredentialClassification.UNSAFE_PERMISSION_SCOPE
+        if group == "contracttrade":
+            if actions & {"order", "position"}:
+                return CredentialClassification.UNSAFE_PERMISSION_SCOPE
+            return CredentialClassification.INVALID
+        if group == "options":
+            if "optionstrade" in actions:
+                return CredentialClassification.UNSAFE_PERMISSION_SCOPE
+            return CredentialClassification.INVALID
         if group == "wallet":
             if any(action in dangerous_actions or any(token in action for token in ("transfer", "withdraw", "borrow", "repay")) for action in actions):
                 return CredentialClassification.UNSAFE_PERMISSION_SCOPE
@@ -183,13 +196,20 @@ def _classify_permissions(permissions: Mapping[str, tuple[str, ...]], read_only_
             has_read = True
         elif group == "spot":
             if not actions.issubset(known_read | known_spot_trade): return CredentialClassification.INVALID
-            has_trade |= bool(actions & known_spot_trade)
+            spot_actions |= actions
             has_read |= bool(actions & known_read)
+        elif group == "derivatives":
+            if actions != {"derivativestrade"}: return CredentialClassification.INVALID
+            derivatives_actions |= actions
         else:
             return CredentialClassification.INVALID
     is_read_only = read_only_value in (True, 1, "1")
-    if is_read_only and has_trade: return CredentialClassification.INVALID
-    if has_trade: return CredentialClassification.TRADE_CAPABLE
+    has_spot_trade = bool(spot_actions & known_spot_trade)
+    if is_read_only and has_spot_trade: return CredentialClassification.INVALID
+    # DerivativesTrade is a Unified parent permission, not an independent
+    # derivatives-order capability. It is invalid without SpotTrade.
+    if derivatives_actions and not has_spot_trade: return CredentialClassification.INVALID
+    if has_spot_trade: return CredentialClassification.TRADE_CAPABLE
     if is_read_only and has_read: return CredentialClassification.READ_ONLY
     return CredentialClassification.INVALID
 

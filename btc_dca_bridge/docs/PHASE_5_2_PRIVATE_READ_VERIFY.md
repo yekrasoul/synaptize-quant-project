@@ -29,8 +29,14 @@ Withdrawal, transfer, borrow, and repay permissions are unsafe. Permissions
 are never changed automatically; use a dedicated key with no withdrawal or
 transfer scope. Empty unrelated permission groups returned by Bybit are
 ignored only when their action lists are empty; non-empty unknown groups fail
-closed. A minimal Spot-only key with `SpotTrade` is trade-capable, while
-dangerous derivative and wallet scopes remain blocked.
+closed. Bybit reports `DerivativesTrade` as the Unified account permission.
+For this Spot-only architecture, it is tolerated only when `Spot` contains
+`SpotTrade`, `ContractTrade` is empty, `Options` is empty, no dangerous Wallet
+action exists, and no unknown permission group is non-empty. This does not
+authorize derivatives execution in `btc_dca_bridge`: execution remains Spot
+BTCUSDT only, and no derivatives endpoint or order path is introduced. A
+minimal Spot-only key with `SpotTrade` is trade-capable, while ContractTrade,
+Options, and dangerous Wallet scopes remain blocked.
 
 For this Spot-only architecture, both UTA 2.0 (`unifiedMarginStatus=5`) and
 UTA 2.0 Pro (`unifiedMarginStatus=6`) are supported when `marginMode` is
