@@ -119,15 +119,61 @@ class LedgerGatewayTest(unittest.TestCase):
         )
         second_id, second_created = self.gateway.cancel_execution(
             supersedes_execution_id=original_id,
-            cancelled_at_utc="2026-10-09T13:00:00Z",
+            cancelled_at_utc="2026-10-10T09:30:00Z",
             source="Another chat",
-            note="same void repeated",
+            note="same void repeated later",
         )
 
         self.assertEqual(first_id, second_id)
         self.assertTrue(first_created)
         self.assertFalse(second_created)
         self.assertEqual(len(read_executions(self.ledger)), 2)
+
+
+    def test_portfolio_state_counts_only_active_correction(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Chat 03 — Portfolio & Budget Tracker",
+            note="initial",
+        )
+        replacement_id, _ = self.gateway.correct_execution(
+            supersedes_execution_id=original_id,
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("30"),
+            reference_price_usdt=Decimal("81900"),
+            source="Project chat correction",
+            note="corrected",
+        )
+
+        state = self.gateway.get_portfolio_state("2026-10")
+        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("30"))
+        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("470"))
+        self.assertEqual(state.monthly_confirmed_execution_count, 1)
+        self.assertEqual(state.derived_from_execution_ids, (replacement_id,))
+
+    def test_portfolio_state_excludes_voided_execution(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Any BTC DCA project chat",
+            note="confirmed",
+        )
+        self.gateway.cancel_execution(
+            supersedes_execution_id=original_id,
+            cancelled_at_utc="2026-10-10T09:30:00Z",
+            source="Any BTC DCA project chat",
+            note="did not happen",
+        )
+
+        state = self.gateway.get_portfolio_state("2026-10")
+        self.assertEqual(state.monthly_confirmed_usd_deployed, Decimal("0"))
+        self.assertEqual(state.remaining_monthly_budget_usd, Decimal("500"))
+        self.assertEqual(state.monthly_confirmed_execution_count, 0)
+        self.assertEqual(state.derived_from_execution_ids, ())
+
 
 
 if __name__ == "__main__":
