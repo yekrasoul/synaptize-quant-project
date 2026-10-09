@@ -1,3 +1,6 @@
 graphify-out/
 
 graphify-out/
+
+# Local production-readiness evidence; never commit runtime artifacts.
+btc_dca_bridge/data/production_evidence/
