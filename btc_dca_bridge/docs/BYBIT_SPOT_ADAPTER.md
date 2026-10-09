@@ -109,29 +109,29 @@ freshness limit is five minutes and may be tightened explicitly by the caller.
 No summary high, percentage performance, derivative field, alternate exchange,
 or calendar-day shortcut is accepted.
 
-## Phase 3.5 source selection
+## Current approved source selection
 
-Production source order is strictly:
+The Bybit adapter remains the primary public market-data path. Production
+recommendation runs now use the ordered provider implemented in
+`market_data/approved_spot.py`:
 
 ```text
-Bybit direct Spot -> TradingView exact BYBIT:BTCUSDT Spot -> unavailable
+Bybit BTCUSDT Spot -> Binance BTCUSDT Spot -> KuCoin BTC-USDT Spot -> unavailable
 ```
 
-`FallbackMarketDataProvider` invokes complete snapshot sources, not individual
-price/history methods. The direct path must retrieve and validate its own ticker,
-hourly history, and any minute boundary history before it can return. Only after
-that complete path raises an availability-category error is the complete
-TradingView path called. Values retained in local variables from a failed path
-are never passed to the next path, so a Bybit price cannot be combined with
-TradingView history (or vice versa).
+Each source is a complete, atomic snapshot candidate. The selected venue must
+supply its own current Spot price plus the complete rolling 168-hour history
+needed for the high. A failed venue contributes no values to the next venue, so
+cross-exchange price/high mixing is impossible.
 
-Fallback-triggering categories are exactly `SOURCE_UNAVAILABLE`, `RATE_LIMITED`,
-`INVALID_RESPONSE`, and `INSUFFICIENT_HISTORY`. `INVALID_MARKET_IDENTITY`,
-`SOURCE_MISMATCH`, `DATA_STALE`, `INVALID_WINDOW`, and
-`CONTRADICTORY_PRICE_DATA` are hard failures and do not silently select another
-source. When both availability paths fail, `AllSourcesUnavailableError` exposes
-the primary source/category, confirms the fallback attempt, and retains the
-fallback source/category without embedding upstream payloads.
+The ordered provider may continue to the next approved Spot venue after a typed
+market-data failure, but every candidate must still pass market identity,
+freshness, exact-window, completeness, OHLC, and same-source validation. If all
+three approved venues fail, the run fails closed and no V1 recommendation is
+fabricated.
 
-See `TRADINGVIEW_FALLBACK.md` for exact symbol, resolution, protocol, freshness,
-and operational details. This fallback changes no V1 allocation rule.
+TradingView is retained only where needed for historical artifact/schema
+compatibility. It is not a current runtime market-data fallback.
+
+This source-policy evolution changes no V1 allocation amount, drawdown band,
+sentiment multiplier, minimum purchase, or monthly cap.
