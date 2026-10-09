@@ -40,9 +40,12 @@ Options, and dangerous Wallet scopes remain blocked.
 
 For this Spot-only architecture, both UTA 2.0 (`unifiedMarginStatus=5`) and
 UTA 2.0 Pro (`unifiedMarginStatus=6`) are supported when `marginMode` is
-`REGULAR_MARGIN`, `spotHedgingStatus` is `OFF`, and account metadata is fresh.
-Pro is not required for correctness, and no account upgrade is required or
-triggered.
+`REGULAR_MARGIN` and `spotHedgingStatus` is `OFF`. Bybit account-info
+`updatedTime` records when account data last changed, not the freshness of the
+current API response. It must parse and must not be future-dated, but it may
+legitimately be old. Fresh observation is established separately by the live
+authenticated GET and server-clock checks. Pro is not required for correctness,
+and no account upgrade is required or triggered.
 
 ## Verification and ambiguity
 
