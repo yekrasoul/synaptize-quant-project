@@ -118,10 +118,31 @@ class LedgerGateway:
         current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
         if supersedes_execution_id not in current:
             raise ValueError(f"cannot correct inactive execution: {supersedes_execution_id}")
-        execution_id = execution_id or (
-            self._manual_id(executed_at_utc, executed_usd, reference_price_usdt, btc_quantity)
-            + "_corr"
-        )
+        if execution_id is None:
+            base = self._manual_id(
+                executed_at_utc, executed_usd, reference_price_usdt, btc_quantity
+            )
+            digest = hashlib.sha256(
+                f"{supersedes_execution_id}|{base}|correct".encode("utf-8")
+            ).hexdigest()[:24]
+            execution_id = f"execution_corr_{digest}"
+
+        for existing in read_executions(self.ledger_path):
+            if existing.execution_id == execution_id:
+                payload = {
+                    "schema_version": "1.2.0",
+                    "execution_id": execution_id,
+                    "executed_at_utc": executed_at_utc,
+                    "asset": "BTC",
+                    "quote_currency": "USDT",
+                    "executed_usd": float(executed_usd),
+                    "reference_price_usdt": float(reference_price_usdt),
+                    "btc_quantity": None if btc_quantity is None else float(btc_quantity),
+                    "status": "reconciled",
+                    "reconciliation": {"source": source, "note": note},
+                    "supersedes_execution_id": supersedes_execution_id,
+                }
+                return execution_id, self._append_semantically_once(payload)
         payload = {
             "schema_version": "1.2.0",
             "execution_id": execution_id,
@@ -146,12 +167,30 @@ class LedgerGateway:
         note: str,
         execution_id: str | None = None,
     ) -> tuple[str, bool]:
-        current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
-        if supersedes_execution_id not in current:
-            raise ValueError(f"cannot cancel inactive execution: {supersedes_execution_id}")
         if execution_id is None:
             raw = f"{supersedes_execution_id}|{cancelled_at_utc}|void"
             execution_id = "execution_void_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+        for existing in read_executions(self.ledger_path):
+            if existing.execution_id == execution_id:
+                payload = {
+                    "schema_version": "1.2.0",
+                    "execution_id": execution_id,
+                    "executed_at_utc": cancelled_at_utc,
+                    "asset": "BTC",
+                    "quote_currency": "USDT",
+                    "executed_usd": 0,
+                    "reference_price_usdt": None,
+                    "btc_quantity": None,
+                    "status": "voided",
+                    "reconciliation": {"source": source, "note": note},
+                    "supersedes_execution_id": supersedes_execution_id,
+                }
+                return execution_id, self._append_semantically_once(payload)
+
+        current = {item.execution_id for item in confirmed_executions(read_executions(self.ledger_path))}
+        if supersedes_execution_id not in current:
+            raise ValueError(f"cannot cancel inactive execution: {supersedes_execution_id}")
         payload = {
             "schema_version": "1.2.0",
             "execution_id": execution_id,
