@@ -22,7 +22,7 @@ class ProjectManifestTests(unittest.TestCase):
 
     def test_project_instructions_template_contains_governance_not_mutable_values(self):
         template = (PROJECT_ROOT / "docs/PROJECT_INSTRUCTIONS_TEMPLATE.md").read_text(encoding="utf-8")
-        for required in ("live canonical GitHub", "config/project_manifest.yaml", "Project Instructions outrank chat memory", "canonical ledger outranks", "expected-SHA", "at most 3 attempts"):
+        for required in ("live canonical GitHub", "btc_dca_bridge/config/project_manifest.yaml", "Project Instructions outrank chat memory", "canonical ledger outranks", "expected-SHA", "at most 3 attempts"):
             self.assertIn(required, template)
         for forbidden in ("strategy_v1.yaml", "October spend", "approved_spot_source_order", "monthly_cap_usd: 500"):
             self.assertNotIn(forbidden, template)
