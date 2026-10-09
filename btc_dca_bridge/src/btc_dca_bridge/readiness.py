@@ -64,7 +64,18 @@ def measure_server_time(server_time_ms: Callable[[], int], *, clock: Callable[[]
 
 
 def classify_production_account_mode(account: AccountInfo, *, now: datetime, max_age: timedelta = timedelta(minutes=5)) -> tuple[bool, str]:
-    """Accept fresh UTA 2.0 or UTA 2.0 Pro in the Spot architecture."""
+    """Validate supported account configuration, not response freshness.
+
+    Bybit's ``account.updatedTime`` is the timestamp when account data or
+    configuration was updated. It is not the observation time of the current
+    authenticated GET response. Current response freshness is established by
+    the live GET collection timestamp, server-time measurement, clock-skew
+    check, and evidence expiry rules.
+
+    ``now`` and ``max_age`` remain in the signature for call compatibility;
+    account age is intentionally not used as a freshness gate.
+    """
+    del max_age
     status = str(account.unified_margin_status)
     if status not in {"5", "6"}:
         return False, "unsupported unifiedMarginStatus; only UTA 2.0 status 5 or UTA 2.0 Pro status 6 is supported"
@@ -76,16 +87,13 @@ def classify_production_account_mode(account: AccountInfo, *, now: datetime, max
     try:
         if raw is None:
             raise ValueError("missing updatedTime")
-        if str(raw).isdigit():
-            observed = datetime.fromtimestamp(int(str(raw)) / 1000, tz=UTC)
-        else:
-            observed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            if observed.tzinfo is None:
-                raise ValueError("updatedTime is not timezone-aware")
-            observed = observed.astimezone(UTC)
-        if observed > now + timedelta(seconds=2) or now - observed > max_age:
-            return False, "account metadata is stale or future-dated"
-    except (TypeError, ValueError, OverflowError) as exc:
+        text = str(raw)
+        if not re.fullmatch(r"[0-9]+", text):
+            raise ValueError("expected a nonnegative millisecond timestamp")
+        observed = datetime.fromtimestamp(int(text) / 1000, tz=UTC)
+        if observed > now + timedelta(days=1):
+            raise ValueError("timestamp is implausibly future-dated")
+    except (OSError, TypeError, ValueError, OverflowError) as exc:
         return False, f"account updatedTime is invalid: {exc}"
     status_name = "UTA 2.0" if status == "5" else "UTA 2.0 Pro"
     return True, f"supported {status_name} status {status} / REGULAR_MARGIN / spotHedgingStatus OFF"
@@ -210,7 +218,7 @@ class ProductionReadinessService:
             snapshot = None
         try:
             repo = self.repo_probe()
-            add("REPOSITORY_CLEAN", "security", "PASS" if not repo.get("dirty") else "BLOCKED", True, str(repo.get("commit")), "repository is clean" if not repo.get("dirty") else "tracked repository changes are present", "Deploy an immutable clean commit")
+            add("REPOSITORY_CLEAN", "security", "PASS" if not repo.get("dirty") else "BLOCKED", True, str(repo.get("commit")), "repository is clean" if not repo.get("dirty") else "worktree changes outside ignored production evidence are present", "Deploy an immutable clean commit")
             add("PROCESS_IDENTITY", "operator", "PASS", False, f"hostname={socket.gethostname()}, pid={os.getpid()}, platform={platform.platform()}, python={platform.python_version()}, commit={repo.get('commit')}", "host/build identity recorded")
         except Exception as exc:
             add("REPOSITORY_CLEAN", "security", "UNAVAILABLE", True, "unavailable", str(exc), "Run from a readable repository checkout")
@@ -235,7 +243,7 @@ class ProductionReadinessService:
             add("BYBIT_CREDENTIAL_SCOPE", "credentials", "PASS" if cred_ok else "FAIL", True, "classification and explicit permission groups inspected", "credential scope is Spot trade-capable and excludes unsafe permissions" if cred_ok else "credential scope cannot prove approved Spot-only permissions", "Use a dedicated least-privilege Spot credential")
             account = client.account_info()
             account_ok, account_reason = classify_production_account_mode(account, now=self.now())
-            add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use supported Unified status 6 / REGULAR_MARGIN / OFF with fresh metadata")
+            add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use supported Unified status 5 or 6 / REGULAR_MARGIN / OFF; current authenticated GET evidence establishes freshness")
             balances = {row.coin: row for row in client.wallet_balances()}
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
