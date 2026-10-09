@@ -1,75 +1,134 @@
+import tempfile
+import unittest
 from decimal import Decimal
+from pathlib import Path
 
 from btc_dca_bridge.ledger import confirmed_executions, read_executions
 from btc_dca_bridge.ledger_gateway import LedgerGateway
 
 
-def test_record_is_idempotent_across_interfaces(tmp_path):
-    ledger = tmp_path / "executions.jsonl"
-    gateway = LedgerGateway(ledger_path=ledger)
+class LedgerGatewayTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.ledger = Path(self.directory.name) / "executions.jsonl"
+        self.gateway = LedgerGateway(ledger_path=self.ledger)
 
-    first_id, first_created = gateway.record_execution(
-        executed_at_utc="2026-10-09T12:00:00Z",
-        executed_usd=Decimal("25"),
-        reference_price_usdt=Decimal("82000"),
-        source="Chat 03 — Portfolio & Budget Tracker",
-        note="confirmed",
-    )
-    second_id, second_created = gateway.record_execution(
-        executed_at_utc="2026-10-09T12:00:00Z",
-        executed_usd=Decimal("25"),
-        reference_price_usdt=Decimal("82000"),
-        source="This project chat",
-        note="same confirmed fill",
-    )
+    def test_record_is_idempotent_across_interfaces(self):
+        first_id, first_created = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Chat 03 — Portfolio & Budget Tracker",
+            note="confirmed",
+        )
+        second_id, second_created = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="This project chat",
+            note="same confirmed fill",
+        )
 
-    assert first_id == second_id
-    assert first_created is True
-    assert second_created is False
-    assert len(read_executions(ledger)) == 1
+        self.assertEqual(first_id, second_id)
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(len(read_executions(self.ledger)), 1)
+
+    def test_correction_supersedes_without_double_counting(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Chat 03 — Portfolio & Budget Tracker",
+            note="initial",
+        )
+        replacement_id, _ = self.gateway.correct_execution(
+            supersedes_execution_id=original_id,
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("30"),
+            reference_price_usdt=Decimal("81900"),
+            source="Project chat correction",
+            note="corrected amount and price",
+        )
+
+        active = confirmed_executions(read_executions(self.ledger))
+        self.assertEqual([item.execution_id for item in active], [replacement_id])
+        self.assertEqual(active[0].executed_usd, Decimal("30"))
+
+    def test_repeated_correction_is_idempotent(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Chat 03 — Portfolio & Budget Tracker",
+            note="initial",
+        )
+        first_id, first_created = self.gateway.correct_execution(
+            supersedes_execution_id=original_id,
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("30"),
+            reference_price_usdt=Decimal("81900"),
+            source="Chat 03",
+            note="corrected",
+        )
+        second_id, second_created = self.gateway.correct_execution(
+            supersedes_execution_id=original_id,
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("30"),
+            reference_price_usdt=Decimal("81900"),
+            source="Another project chat",
+            note="same correction repeated",
+        )
+
+        self.assertEqual(first_id, second_id)
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(len(read_executions(self.ledger)), 2)
+
+    def test_cancel_removes_execution_from_active_projection(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Any BTC DCA project chat",
+            note="confirmed",
+        )
+        self.gateway.cancel_execution(
+            supersedes_execution_id=original_id,
+            cancelled_at_utc="2026-10-09T13:00:00Z",
+            source="Any BTC DCA project chat",
+            note="user corrected: purchase did not happen",
+        )
+
+        self.assertEqual(confirmed_executions(read_executions(self.ledger)), ())
+
+    def test_repeated_cancel_is_idempotent(self):
+        original_id, _ = self.gateway.record_execution(
+            executed_at_utc="2026-10-09T12:00:00Z",
+            executed_usd=Decimal("25"),
+            reference_price_usdt=Decimal("82000"),
+            source="Any BTC DCA project chat",
+            note="confirmed",
+        )
+        first_id, first_created = self.gateway.cancel_execution(
+            supersedes_execution_id=original_id,
+            cancelled_at_utc="2026-10-09T13:00:00Z",
+            source="Chat 03",
+            note="void",
+        )
+        second_id, second_created = self.gateway.cancel_execution(
+            supersedes_execution_id=original_id,
+            cancelled_at_utc="2026-10-09T13:00:00Z",
+            source="Another chat",
+            note="same void repeated",
+        )
+
+        self.assertEqual(first_id, second_id)
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(len(read_executions(self.ledger)), 2)
 
 
-def test_correction_supersedes_without_double_counting(tmp_path):
-    ledger = tmp_path / "executions.jsonl"
-    gateway = LedgerGateway(ledger_path=ledger)
-
-    original_id, _ = gateway.record_execution(
-        executed_at_utc="2026-10-09T12:00:00Z",
-        executed_usd=Decimal("25"),
-        reference_price_usdt=Decimal("82000"),
-        source="Chat 03 — Portfolio & Budget Tracker",
-        note="initial",
-    )
-    replacement_id, _ = gateway.correct_execution(
-        supersedes_execution_id=original_id,
-        executed_at_utc="2026-10-09T12:00:00Z",
-        executed_usd=Decimal("30"),
-        reference_price_usdt=Decimal("81900"),
-        source="Project chat correction",
-        note="corrected amount and price",
-    )
-
-    active = confirmed_executions(read_executions(ledger))
-    assert [item.execution_id for item in active] == [replacement_id]
-    assert active[0].executed_usd == Decimal("30")
-
-
-def test_cancel_removes_execution_from_active_projection(tmp_path):
-    ledger = tmp_path / "executions.jsonl"
-    gateway = LedgerGateway(ledger_path=ledger)
-
-    original_id, _ = gateway.record_execution(
-        executed_at_utc="2026-10-09T12:00:00Z",
-        executed_usd=Decimal("25"),
-        reference_price_usdt=Decimal("82000"),
-        source="Any BTC DCA project chat",
-        note="confirmed",
-    )
-    gateway.cancel_execution(
-        supersedes_execution_id=original_id,
-        cancelled_at_utc="2026-10-09T13:00:00Z",
-        source="Any BTC DCA project chat",
-        note="user corrected: purchase did not happen",
-    )
-
-    assert confirmed_executions(read_executions(ledger)) == ()
+if __name__ == "__main__":
+    unittest.main()
