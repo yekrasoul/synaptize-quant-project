@@ -11,6 +11,8 @@ no custody logic, no leverage, and no V2 indicator or rule changes.
 
 ## 2. Canonical sources of truth
 
+All ChatGPT/project interfaces must also follow [`PROJECT_CHAT_CONTRACT.md`](PROJECT_CHAT_CONTRACT.md), which defines mandatory cross-chat ledger READ/WRITE/CORRECT/CANCEL behavior.
+
 | Concern | Canonical source | Rule |
 |---|---|---|
 | V1 allocation rules | `config/strategy_v1.yaml` | One definition; code and automation read it rather than duplicate thresholds. |
