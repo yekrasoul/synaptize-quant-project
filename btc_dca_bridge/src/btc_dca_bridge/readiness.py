@@ -226,7 +226,12 @@ class ProductionReadinessService:
             credential = client.credential_info()
             actions = {str(action) for values in credential.permissions.values() for action in values}
             dangerous = {"Withdrawal", "Withdraw", "AccountTransfer", "SubMemberTransfer", "Borrow", "Repay"}
-            cred_ok = credential.classification is CredentialClassification.TRADE_CAPABLE and "SpotTrade" in actions and not actions.intersection(dangerous) and not any("derivative" in str(group).lower() or "contract" in str(group).lower() for group in credential.permissions)
+            # _classify_permissions validates the complete shape, including
+            # Bybit's Unified-account DerivativesTrade parent permission. It
+            # must not be rejected here merely because its group is named
+            # "Derivatives"; ContractTrade, Options, dangerous Wallet scopes,
+            # and unknown non-empty groups remain blocked by that classifier.
+            cred_ok = credential.classification is CredentialClassification.TRADE_CAPABLE and "SpotTrade" in actions and not actions.intersection(dangerous)
             add("BYBIT_CREDENTIAL_SCOPE", "credentials", "PASS" if cred_ok else "FAIL", True, "classification and explicit permission groups inspected", "credential scope is Spot trade-capable and excludes unsafe permissions" if cred_ok else "credential scope cannot prove approved Spot-only permissions", "Use a dedicated least-privilege Spot credential")
             account = client.account_info()
             account_ok, account_reason = classify_production_account_mode(account, now=self.now())
