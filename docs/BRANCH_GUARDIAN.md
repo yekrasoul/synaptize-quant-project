@@ -24,3 +24,5 @@ enable execution.
 Required checks are the canonical `Canonical validation` check and the two
 Guardian checks: `Branch Guardian / Validation` and `Branch Guardian / Safety
 classification`. No required check is bypassed.
+
+Pilot verified after bootstrap.
