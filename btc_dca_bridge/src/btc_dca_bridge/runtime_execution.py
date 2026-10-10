@@ -17,7 +17,7 @@ from .live_readiness import LiveReadinessError, ORDER_CONTRACT, canonical_finger
 from .real_money_authorization import artifact_sha256
 
 MAX_AUTHORIZATION_SECONDS = 10 * 60
-MAX_ACTIVATION_SECONDS = 60
+MAX_ACTIVATION_SECONDS = 5 * 60
 MAX_ENABLEMENT_SECONDS = 24 * 60 * 60
 
 

@@ -106,12 +106,12 @@ class LiveActivationTests(unittest.TestCase):
 
     def test_expired_activation_can_be_read_but_cannot_issue_capability(self):
         self.activate()
-        result = read_activation_status(store=self.store, now_utc=NOW + timedelta(seconds=61))
+        result = read_activation_status(store=self.store, now_utc=NOW + timedelta(minutes=6))
         self.assertEqual(result["activation"], "EXPIRED")
         activation_payload, activation_sha = self.store.find_artifact(ArtifactType.EXECUTION_ACTIVATION, identity_field="activation_id", identity_value=result["activation_id"])
         ready = GateResult(GateStatus.READY_FOR_SUBMISSION, "A", (), SHA)
         with self.assertRaisesRegex(ValueError, "expired"):
-            issue_execution_capability(activation=activation_payload, activation_sha256=activation_sha, gate_a=ready, gate_b=ready, request_fingerprint=SHA, runtime_config=safe_config(), now_utc=NOW + timedelta(seconds=61))
+            issue_execution_capability(activation=activation_payload, activation_sha256=activation_sha, gate_a=ready, gate_b=ready, request_fingerprint=SHA, runtime_config=safe_config(), now_utc=NOW + timedelta(minutes=6))
 
     def test_status_derives_consumption_from_submission_evidence_and_default_is_blocked(self):
         self.assertEqual(read_activation_status(store=ArtifactStore(self.root / "empty"))["activation"], "NOT_ACTIVATED")
