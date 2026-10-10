@@ -115,6 +115,53 @@ class ProductionEvidenceTests(unittest.TestCase):
         self.now = datetime(2026, 10, 7, 12, 1, 0, 1, tzinfo=UTC)
         self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint=_account_fingerprint(FakeClient())[0])["status"], "STALE")
 
+    def test_collection_uses_actual_readiness_observation_times_for_dynamic_ttls(self):
+        started = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+        observed = started + timedelta(seconds=65)
+        self.now = started
+        observed_iso = observed.isoformat().replace("+00:00", "Z")
+
+        def timed_readiness():
+            result = readiness()
+            result["observation_timestamps"] = {
+                "wallet": observed_iso,
+                "spot_quote_availability": observed_iso,
+                "clock": observed_iso,
+                "account": observed_iso,
+                "instrument": observed_iso,
+            }
+            return result
+
+        service = ProductionEvidenceService(
+            data_root=self.root / "timed-data",
+            ledger_path=self.root / "ledger.jsonl",
+            now=lambda: self.now,
+            client_factory=lambda: FakeClient(),
+            readiness_factory=lambda **kwargs: type(
+                "Readiness",
+                (),
+                {"evaluate": lambda self: timed_readiness()},
+            )(),
+            connectivity_probe=self.connectivity,
+            repo_probe=self.repo,
+        )
+
+        bundle, _ = service.collect()
+
+        self.assertEqual(bundle["wallet_observed_at_utc"], observed_iso)
+        self.assertEqual(bundle["availability_observed_at_utc"], observed_iso)
+        self.assertEqual(bundle["liability_observed_at_utc"], observed_iso)
+        self.assertEqual(bundle["clock_observed_at_utc"], observed_iso)
+        self.assertEqual(bundle["account_observed_at_utc"], observed_iso)
+        self.assertEqual(bundle["instrument_observed_at_utc"], observed_iso)
+
+        self.now = started + timedelta(seconds=70)
+        result = service.verify(
+            bundle["evidence_id"],
+            current_account_fingerprint=_account_fingerprint(FakeClient())[0],
+        )
+        self.assertEqual(result["status"], "VALID_NOT_READY")
+
     def test_unproven_account_identity_can_never_be_authorization_ready(self):
         bundle, _ = self.service.collect()
         path = self.root / "data" / "production_evidence" / "2026" / "10" / "07" / f"{bundle['evidence_id']}.json"

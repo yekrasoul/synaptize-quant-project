@@ -194,7 +194,15 @@ class ProductionReadinessService:
 
     def evaluate(self) -> dict[str, Any]:
         checks: list[ReadinessCheck] = []
-        def add(*args: Any) -> None: checks.append(self._check(*args))
+        observation_timestamps: dict[str, str] = {}
+
+        def add(*args: Any) -> None:
+            checks.append(self._check(*args))
+
+        def mark_observed(name: str) -> None:
+            observation_timestamps[name] = (
+                self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")
+            )
         try:
             config = load_execution_config()
             safe = config.live_execution_enabled is False and config.kill_switch is True and config.order_submission == "not_implemented"
@@ -229,6 +237,7 @@ class ProductionReadinessService:
         for name in ("BYBIT_API_KEY", "BYBIT_API_SECRET"):
             add(f"SECRET_{name}", "credentials", "PASS" if os.environ.get(name) else "UNAVAILABLE", True, "PRESENT" if os.environ.get(name) else "ABSENT", "required secret presence checked without exposing value" if os.environ.get(name) else "required secret is absent", "Provide the secret through the approved runtime secret store")
         client = None
+        quote_limit_evidence = None
         try:
             client = self.client_factory()
             credential = client.credential_info()
@@ -242,12 +251,15 @@ class ProductionReadinessService:
             cred_ok = credential.classification is CredentialClassification.TRADE_CAPABLE and "SpotTrade" in actions and not actions.intersection(dangerous)
             add("BYBIT_CREDENTIAL_SCOPE", "credentials", "PASS" if cred_ok else "FAIL", True, "classification and explicit permission groups inspected", "credential scope is Spot trade-capable and excludes unsafe permissions" if cred_ok else "credential scope cannot prove approved Spot-only permissions", "Use a dedicated least-privilege Spot credential")
             account = client.account_info()
+            mark_observed("account")
             account_ok, account_reason = classify_production_account_mode(account, now=self.now())
             add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use Unified status 5 or 6 / REGULAR_MARGIN / OFF; do not use updatedTime age as request freshness; rely on the authenticated current GET, server-time clock check, and evidence observation timestamp")
             balances = {row.coin: row for row in client.wallet_balances()}
+            mark_observed("wallet")
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
             available = client.spot_quote_availability() if hasattr(client, "spot_quote_availability") else None
+            mark_observed("spot_quote_availability")
             try:
                 available_amount = availability.validate_spot_quote_availability(available, now=self.now(), policy=self.availability_policy)
                 if available_amount < Decimal("10"):
@@ -259,6 +271,7 @@ class ProductionReadinessService:
             else:
                 add("BYBIT_SPOT_AVAILABLE_BALANCE", "wallet", "PASS", True, f"authoritative_amount_usdt={available_amount}; minimum_v1_usdt=10", "authoritative Spot quote-buy availability is proven and meets the V1 minimum", "")
             rules = client.instrument_rules()
+            mark_observed("instrument")
             observed_at = self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")
             try:
                 quote_limit_evidence = client.quote_unit_limit_evidence()
@@ -296,6 +309,7 @@ class ProductionReadinessService:
                 measurement = measure_server_time(client.server_time_ms)
             else:
                 raise RuntimeError("server-time probe unavailable")
+            mark_observed("clock")
             add("CLOCK_SKEW", "network", "PASS" if abs(measurement.delta_seconds) <= measurement.threshold_seconds else "FAIL", True, f"server_delta_seconds={measurement.delta_seconds}, round_trip_ms={measurement.round_trip_ms}, threshold_seconds={measurement.threshold_seconds}", "UTC clock skew is within the documented threshold" if abs(measurement.delta_seconds) <= measurement.threshold_seconds else "clock skew exceeds the documented threshold", "Synchronize the host clock; do not silently correct it")
         except Exception as exc: add("CLOCK_SKEW", "network", "UNAVAILABLE", True, "not measured", str(exc), "Measure authenticated server-time delta")
         try:
@@ -316,7 +330,40 @@ class ProductionReadinessService:
         add("REAL_MONEY_AUTHORIZATION", "security", "PASS", False, "granted=false required=true status=NOT_AUTHORIZED", "readiness never grants real-money authorization")
         failures = [item for item in checks if item.required and item.status in {"FAIL", "BLOCKED", "UNAVAILABLE"}]
         state = "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" if not failures else ("READY_FOR_OPERATOR_PREPARATION" if all(item.status not in {"FAIL", "BLOCKED"} for item in failures) else "NOT_READY")
-        return {"status": state, "checks": [item.to_dict() for item in checks], "blockers": [{"check_id": item.check_id, "reason": item.reason, "remediation": item.remediation} for item in failures], "quote_unit_limit_evidence": quote_limit_evidence.to_dict() if 'quote_limit_evidence' in locals() else unavailable_quote_unit_limit(observed_at_utc=self.now().astimezone(UTC).isoformat().replace("+00:00", "Z")).to_dict(), "real_money_authorization": {"granted": False, "required": True, "status": "NOT_AUTHORIZED"}, "host": {"hostname": socket.gethostname(), "pid": os.getpid(), "platform": platform.platform(), "python_version": platform.python_version()}}
+        return {
+            "status": state,
+            "checks": [item.to_dict() for item in checks],
+            "blockers": [
+                {
+                    "check_id": item.check_id,
+                    "reason": item.reason,
+                    "remediation": item.remediation,
+                }
+                for item in failures
+            ],
+            "quote_unit_limit_evidence": (
+                quote_limit_evidence.to_dict()
+                if quote_limit_evidence is not None
+                else unavailable_quote_unit_limit(
+                    observed_at_utc=self.now()
+                    .astimezone(UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                ).to_dict()
+            ),
+            "observation_timestamps": observation_timestamps,
+            "real_money_authorization": {
+                "granted": False,
+                "required": True,
+                "status": "NOT_AUTHORIZED",
+            },
+            "host": {
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
+                "platform": platform.platform(),
+                "python_version": platform.python_version(),
+            },
+        }
 
 
 def production_connectivity(*, client_factory: Callable[[], Any] | None = None) -> dict[str, Any]:

@@ -114,6 +114,16 @@ class ProductionEvidenceService:
                 client = None
         account_fingerprint, account_status = _account_fingerprint(client) if client is not None else (None, "ACCOUNT_IDENTITY_UNPROVEN")
         checks = [sanitize_evidence(item) for item in readiness.get("checks", [])]
+        readiness_observations = readiness.get("observation_timestamps", {})
+        if not isinstance(readiness_observations, Mapping):
+            readiness_observations = {}
+
+        created_iso = created.isoformat().replace("+00:00", "Z")
+
+        def readiness_observed(name: str) -> str:
+            value = readiness_observations.get(name)
+            return str(value) if value else created_iso
+
         incomplete_ids = {"BYBIT_READ_ACCESS", "CLOCK_SKEW", "PRODUCTION_CONNECTIVITY", "SECRET_HYGIENE", "FILESYSTEM_DURABILITY", "OPERATOR_LOCK"}
         required_unavailable = any(item.get("required") and item.get("status") == "UNAVAILABLE" and item.get("check_id") in incomplete_ids for item in checks)
         connectivity_complete = connectivity.get("status") == "READS_OK"
@@ -150,12 +160,12 @@ class ProductionEvidenceService:
             "operator_lock_result": sanitize_evidence(_check(checks, "OPERATOR_LOCK")),
             "real_money_authorization": dict(AUTHORIZATION), "status": status, "host_binding": "host-bound",
             "evidence_ttl_seconds": int(EVIDENCE_TTL.total_seconds()), "dynamic_ttls_seconds": DYNAMIC_TTLS_SECONDS,
-            "wallet_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
-            "availability_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
-            "liability_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
-            "clock_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
-            "account_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
-            "instrument_observed_at_utc": created.isoformat().replace("+00:00", "Z"),
+            "wallet_observed_at_utc": readiness_observed("wallet"),
+            "availability_observed_at_utc": readiness_observed("spot_quote_availability"),
+            "liability_observed_at_utc": readiness_observed("wallet"),
+            "clock_observed_at_utc": readiness_observed("clock"),
+            "account_observed_at_utc": readiness_observed("account"),
+            "instrument_observed_at_utc": readiness_observed("instrument"),
         }
         bundle = sanitize_evidence(bundle)
         receipt = ArtifactStore(self.data_root).persist_production_evidence(bundle)
