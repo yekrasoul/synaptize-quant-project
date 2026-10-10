@@ -37,6 +37,7 @@ from .real_money_authorization import authorize_persisted_approval, read_authori
 from .live_activation import create_execution_activation, read_activation_status
 from .production_enablement import ControlledProductionExecutor, gate_d, prepare_production_enablement, read_enablement_status
 from .live_readiness import ORDER_CONTRACT, canonical_fingerprint
+from .runtime_execution import derive_ephemeral_execution_policy
 from .errors import ArtifactNotFoundError
 from .final_readiness import final_readiness_audit
 from .branch_guardian import classify_branch, write_result
@@ -190,6 +191,9 @@ def _parser() -> argparse.ArgumentParser:
     activation_status = subparsers.add_parser("live-activation-status", help="read-only status of the latest one-shot activation")
     activation_status.add_argument("--activation-id")
     activation_status.add_argument("--data-root", type=Path, default=DATA_PATH)
+    runtime_status = subparsers.add_parser("runtime-execution-status", help="read-only ephemeral execution capability status")
+    runtime_status.add_argument("--activation-id")
+    runtime_status.add_argument("--data-root", type=Path, default=DATA_PATH)
     enable = subparsers.add_parser("production-enable-prepare", help="prepare governance-only production enablement; never enables execution")
     enable.add_argument("--evidence-json", type=Path, required=True)
     enable.add_argument("--repository-commit-sha", required=True)
@@ -665,6 +669,27 @@ def _live_activation_status(args: argparse.Namespace) -> tuple[dict[str, object]
     return read_activation_status(store=ArtifactStore(args.data_root), activation_id=args.activation_id), 0
 
 
+def _runtime_execution_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    """Report runtime capability state without creating or enabling anything."""
+    config = load_execution_config()
+    activation = read_activation_status(store=ArtifactStore(args.data_root), activation_id=args.activation_id)
+    activation_state = str(activation.get("activation", "NOT_ACTIVATED"))
+    capability_state = {
+        "EXPIRED": "EXPIRED",
+        "CONSUMED": "CONSUMED",
+        "REVOKED": "ABSENT",
+    }.get(activation_state, "ABSENT")
+    return {
+        "canonical_policy": "BLOCKED",
+        "ephemeral_capability": capability_state,
+        "execution": "BLOCKED",
+        "live_execution_enabled": config.live_execution_enabled,
+        "kill_switch": config.kill_switch,
+        "order_submission": config.order_submission,
+        "message": "NO ORDER EXECUTED",
+    }, 0
+
+
 def _production_enable_prepare(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     enablement, receipt = prepare_production_enablement(
         store=ArtifactStore(args.data_root), evidence=read_json_object(args.evidence_json),
@@ -955,24 +980,100 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
     }
 
 
+def _gate_d_evidence(bundle: dict[str, object], *, enablement: dict[str, object]) -> dict[str, object]:
+    """Project persisted evidence into Gate D's explicit boolean contract.
+
+    Gate D may use the persisted readiness bundle for deployment-level checks;
+    dynamic Gate A/B evidence is collected separately and is never projected
+    from this bundle.
+    """
+    projected = dict(bundle)
+    checks = {
+        str(item.get("check_id")): item
+        for item in bundle.get("check_results", [])
+        if isinstance(item, dict)
+    }
+    required_to_check = {
+        "canonical_ci_healthy": "CANONICAL_CI",
+        "ledger_valid": "LEDGER_INTEGRITY",
+        "v1_strategy_valid": "V1_STRATEGY",
+        "production_contract_valid": "PRODUCTION_CONTRACT",
+        "account_identity_known": "BYBIT_ACCOUNT_IDENTITY",
+        "account_mode_accepted": "BYBIT_ACCOUNT",
+        "liabilities_clear": "BYBIT_LIABILITIES",
+        "credential_scope_accepted": "BYBIT_CREDENTIAL_SCOPE",
+        "withdrawal_disabled": "BYBIT_CREDENTIAL_SCOPE",
+        "spot_availability_operational": "BYBIT_SPOT_AVAILABLE_BALANCE",
+        "instrument_metadata_operational": "BYBIT_INSTRUMENT",
+        "clock_operational": "CLOCK_SKEW",
+        "reconciliation_operational": "UNRESOLVED_OPERATIONS",
+        "production_shadow_healthy": "PRODUCTION_SHADOW",
+        "watchdog_healthy": "WATCHDOG",
+        "no_unresolved_submission": "UNRESOLVED_OPERATIONS",
+        "no_reconciliation_required": "UNRESOLVED_OPERATIONS",
+        "no_artifact_corruption": "FILESYSTEM_DURABILITY",
+    }
+    for target, check_id in required_to_check.items():
+        status = str(checks.get(check_id, {}).get("status", "UNAVAILABLE"))
+        projected[target] = status in {"PASS", "HEALTHY", "CLEAR"}
+    projected.update({
+        "account_identity_fingerprint": bundle.get("account_identity_fingerprint"),
+        "account_mode": enablement.get("expected_account_mode"),
+        "credential_scope": enablement.get("allowed_credential_scope"),
+        "production_contract_fingerprint": enablement.get("production_contract_fingerprint"),
+        "execution_policy_fingerprint": enablement.get("execution_policy_fingerprint"),
+    })
+    return projected
+
+
 def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     config = load_execution_config()
-    if not config.live_execution_enabled or config.kill_switch or config.order_submission != "implemented":
-        return ({"status": "blocked", "reason": "checked-in production defaults prohibit execution", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
     try:
         chain = _load_controlled_execution_artifacts(args)
+        verifier = ControlledProductionExecutor(engine=None, store=chain["store"])
+        verifier._verify_persisted_chain(
+            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
+            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
+            activation=chain["activation"], activation_sha256=chain["activation_sha"],
+            approval=chain["approval"], approval_sha256=chain["approval_sha"],
+            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"],
+            intent=chain["intent"], decision=chain["decision"],
+            decision_sha256=chain["decision_sha"], order_intent_sha256=chain["intent_sha"],
+            evidence=chain["evidence"], evidence_sha256=chain["evidence_sha"],
+            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
+            calendar_month=args.month,
+        )
+        policy = derive_ephemeral_execution_policy(
+            canonical_config=config,
+            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
+            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
+            activation=chain["activation"], activation_sha256=chain["activation_sha"],
+            approval=chain["approval"], approval_sha256=chain["approval_sha"],
+            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"],
+            decision=chain["decision"], decision_sha256=chain["decision_sha"],
+            intent=chain["intent"], intent_sha256=chain["intent_sha"],
+            evidence=chain["evidence"], repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
+            calendar_month=args.month, now_utc=datetime.now(UTC),
+        )
+        runtime_config = policy.runtime_config
+        policy.assert_current(
+            client_order_id=chain["intent"].client_order_id,
+            quote_amount_usdt=chain["intent"].quote_amount_usdt,
+            calendar_month=args.month,
+            now_utc=datetime.now(UTC),
+        )
         preliminary_d = gate_d(
             enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
-            runtime_config=config, store=chain["store"],
+            runtime_config=runtime_config, store=chain["store"],
             repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
-            evidence=chain["evidence"], now_utc=datetime.now(UTC),
+            evidence=_gate_d_evidence(chain["evidence"], enablement=chain["enablement"]), now_utc=datetime.now(UTC),
         )
         if preliminary_d.status.value != "READY_FOR_SUBMISSION":
             return ({"status": "blocked", "gate": "D", "reasons": preliminary_d.reasons, "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
         client = _private_read_client_factory()
         reconciler = _post_ack_reconciler_factory(client)
-        gate_a_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
-        gate_b_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
+        gate_a_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=runtime_config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
+        gate_b_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=runtime_config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
 
         def lazy_transport():
             return _submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", ""))
@@ -983,7 +1084,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
             activation=chain["activation"], activation_sha256=chain["activation_sha"],
             capability=None, approval=chain["approval"], approval_sha256=chain["approval_sha"],
             manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"], intent=chain["intent"],
-            decision=chain["decision"], runtime_config=config, evidence=chain["evidence"],
+            decision=chain["decision"], runtime_config=runtime_config, evidence=chain["evidence"],
             repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
             calendar_month=args.month, ledger_path=args.ledger, read_client=client,
             reconciler=reconciler, run_id=args.run_id, transport_factory=lazy_transport,
@@ -1141,6 +1242,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _live_activate(args)
         elif args.command == "live-activation-status":
             result, exit_code = _live_activation_status(args)
+        elif args.command == "runtime-execution-status":
+            result, exit_code = _runtime_execution_status(args)
         elif args.command == "production-enable-prepare":
             result, exit_code = _production_enable_prepare(args)
         elif args.command == "production-enablement-status":
