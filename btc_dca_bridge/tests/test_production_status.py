@@ -93,6 +93,55 @@ class ProductionStatusTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_status_reuses_preauthorization_verification_without_late_reverify(self):
+        class Evidence:
+            def __init__(self):
+                self.verify_calls = 0
+
+            def latest(self):
+                return {
+                    "evidence_id": "evidence-" + "a" * 32,
+                    "account_identity_status": "PROVEN",
+                }
+
+            def verify(self, evidence_id):
+                self.verify_calls += 1
+                return {"status": "STALE", "evidence_id": evidence_id}
+
+        evidence = Evidence()
+
+        def evidence_factory(**kwargs):
+            return evidence
+
+        preauth = {
+            "status": "BLOCKED",
+            "verification": {
+                "status": "VALID_NOT_READY",
+                "evidence_id": "evidence-" + "a" * 32,
+            },
+        }
+
+        service = ProductionStatusService(
+            data_root=self.root,
+            ledger_path=self.ledger,
+            now=self.clock,
+            readiness_factory=self.fake.service.readiness_factory,
+            operations_factory=self.fake.service.operations_factory,
+            evidence_service_factory=evidence_factory,
+            preauthorization_evaluator=lambda _: preauth,
+            contract_provider=self.fake.service.contract_provider,
+            blocker_provider=self.fake.service.blocker_provider,
+            repo_probe=self.fake.service.repo_probe,
+            hostname=self.fake.service.hostname,
+        )
+
+        snapshot = service.evaluate().to_dict()
+
+        self.assertEqual(snapshot["evidence_status"], "VALID_NOT_READY")
+        self.assertEqual(snapshot["account_identity_status"], "PROVEN")
+        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(evidence.verify_calls, 0)
+
     def test_current_production_state_is_healthy_but_external_blocked(self):
         snapshot = self.fake.service.evaluate().to_dict()
         self.assertEqual(snapshot["software_health"], "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY")
