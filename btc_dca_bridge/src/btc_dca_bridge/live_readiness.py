@@ -16,9 +16,10 @@ from enum import Enum
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
+from .ttl_policy import LIVE_EXECUTION_APPROVAL_TTL
 from .config import ExecutionConfig
 
-APPROVAL_TTL = timedelta(minutes=10)
+APPROVAL_TTL = LIVE_EXECUTION_APPROVAL_TTL
 APPROVAL_SCHEMA_VERSION = "5.4.0B"
 ORDER_CONTRACT = {
     "category": "spot", "symbol": "BTCUSDT", "side": "Buy",

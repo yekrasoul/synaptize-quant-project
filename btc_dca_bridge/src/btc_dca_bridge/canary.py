@@ -23,9 +23,10 @@ from .live_order import SpotMarketBuyRequest
 from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy
 from .schemas import validate_artifact
+from .ttl_policy import CANARY_MANIFEST_TTL
 
 CANARY_SCHEMA_VERSION = "5.4.0"
-CANARY_EXPIRY = timedelta(minutes=30)
+CANARY_EXPIRY = CANARY_MANIFEST_TTL
 APPROVED_ACTIONS = {"SpotTrade", "OrderEntry", "SpotOrder"}
 
 

@@ -54,6 +54,7 @@ from .notifications import TelegramNotifier, TelegramTransport, format_failure_m
 from .readiness import ProductionReadinessService, production_connectivity
 from .canary_readiness import bybit_canary_readiness
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
+from .readiness_checks import project_gate_d_evidence
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
 
@@ -168,7 +169,10 @@ def _parser() -> argparse.ArgumentParser:
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
-    subparsers.add_parser("live-readiness", help="read-only Phase 5.4B live boundary status")
+    live_readiness = subparsers.add_parser("live-readiness", help="read-only controlled execution chain status")
+    live_readiness.add_argument("--data-root", type=Path, default=DATA_PATH)
+    live_readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    live_readiness.add_argument("--json", action="store_true")
     authorize = subparsers.add_parser("live-authorize", help="explicitly authorize one exact prepared order; never enables execution")
     authorize.add_argument("--approval-id", required=True)
     authorize.add_argument("--approval-sha", required=True)
@@ -608,21 +612,48 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
 
 
-def _live_readiness() -> tuple[dict[str, object], int]:
-    """Report the checked-in boundary without collecting private data or mutating anything."""
+def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    """Report the complete persisted ceremony without collecting or mutating state."""
     config = load_execution_config()
-    return ({
-        "status": "BLOCKED",
-        "authorization": "NOT_AUTHORIZED",
-        "reason": "Phase 5.4B is preparation-only; checked-in execution defaults remain disabled",
-        "safety": {
-            "live_execution_enabled": config.live_execution_enabled,
-            "kill_switch": config.kill_switch,
-            "explicit_live_approval_required": config.explicit_live_approval_required,
-            "order_submission": config.order_submission,
-        },
-        "message": "NO ORDER EXECUTED",
-    }, EXIT_BLOCKED)
+    store = ArtifactStore(args.data_root)
+    chain: dict[str, object] = {}
+    blockers: list[str] = []
+    for label, kind, directory, identity_key in (
+        ("decision", ArtifactType.DECISION, "decisions", "decision_id"),
+        ("order_intent", ArtifactType.ORDER_INTENT, "order_intents", "order_intent_id"),
+        ("canary_manifest", ArtifactType.CANARY_MANIFEST, "canary_manifests", "canary_id"),
+        ("live_execution_approval", ArtifactType.LIVE_EXECUTION_APPROVAL, "live_execution_approvals", "approval_id"),
+        ("real_money_authorization", ArtifactType.REAL_MONEY_AUTHORIZATION, "real_money_authorizations", "authorization_id"),
+        ("execution_activation", ArtifactType.EXECUTION_ACTIVATION, "execution_activations", "activation_id"),
+        ("production_enablement", ArtifactType.PRODUCTION_ENABLEMENT, "production_enablements", "enablement_id"),
+        ("production_evidence", ArtifactType.PRODUCTION_EVIDENCE, "production_evidence", "evidence_id"),
+    ):
+        paths = sorted((store.root / directory).glob("*/*/*/*.json"))
+        if not paths:
+            chain[label] = {"status": "MISSING", "source": directory}
+            blockers.append(f"{label} is missing")
+            continue
+        path = paths[-1]
+        try:
+            date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+            payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
+            chain[label] = {"status": str(payload.get("status", "PRESENT")), "id": str(payload.get(identity_key, path.stem))}
+        except Exception as exc:
+            chain[label] = {"status": "INVALID", "reason": str(exc), "source": str(path)}
+            blockers.append(f"{label} is invalid: {exc}")
+    safety = {"live_execution_enabled": config.live_execution_enabled, "kill_switch": config.kill_switch, "order_submission": config.order_submission, "monthly_cap_usd": str(config.monthly_cap_usd)}
+    if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
+        blockers.append("checked-in execution policy is not fail-safe")
+    if not blockers:
+        blockers.append("no execution is permitted by the checked-in fail-safe policy")
+    next_command = "btc-dca canary-prepare" if chain.get("canary_manifest", {}).get("status") == "MISSING" else (
+        "btc-dca canary-approve" if chain.get("live_execution_approval", {}).get("status") == "MISSING" else (
+            "btc-dca live-authorize" if chain.get("real_money_authorization", {}).get("status") in {"MISSING", "NOT_AUTHORIZED"} else (
+                "btc-dca live-activate" if chain.get("execution_activation", {}).get("status") in {"MISSING", "NOT_ACTIVATED"} else "btc-dca production-enable-prepare"
+            )
+        )
+    )
+    return ({"status": "BLOCKED", "final_state": "BLOCKED", "chain": chain, "safety": safety, "blockers": blockers, "next_allowed_command": next_command, "message": "NO ORDER EXECUTED"}, EXIT_BLOCKED)
 
 
 def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:
@@ -1067,35 +1098,10 @@ def _gate_d_evidence(bundle: dict[str, object], *, enablement: dict[str, object]
     dynamic Gate A/B evidence is collected separately and is never projected
     from this bundle.
     """
-    projected = dict(bundle)
-    checks = {
-        str(item.get("check_id")): item
-        for item in bundle.get("check_results", [])
-        if isinstance(item, dict)
-    }
-    required_to_check = {
-        "canonical_ci_healthy": "CANONICAL_CI",
-        "ledger_valid": "LEDGER_INTEGRITY",
-        "v1_strategy_valid": "V1_STRATEGY",
-        "production_contract_valid": "PRODUCTION_CONTRACT",
-        "account_identity_known": "BYBIT_ACCOUNT_IDENTITY",
-        "account_mode_accepted": "BYBIT_ACCOUNT",
-        "liabilities_clear": "BYBIT_LIABILITIES",
-        "credential_scope_accepted": "BYBIT_CREDENTIAL_SCOPE",
-        "withdrawal_disabled": "BYBIT_CREDENTIAL_SCOPE",
-        "spot_availability_operational": "BYBIT_SPOT_AVAILABLE_BALANCE",
-        "instrument_metadata_operational": "BYBIT_INSTRUMENT",
-        "clock_operational": "CLOCK_SKEW",
-        "reconciliation_operational": "UNRESOLVED_OPERATIONS",
-        "production_shadow_healthy": "PRODUCTION_SHADOW",
-        "watchdog_healthy": "WATCHDOG",
-        "no_unresolved_submission": "UNRESOLVED_OPERATIONS",
-        "no_reconciliation_required": "UNRESOLVED_OPERATIONS",
-        "no_artifact_corruption": "FILESYSTEM_DURABILITY",
-    }
-    for target, check_id in required_to_check.items():
-        status = str(checks.get(check_id, {}).get("status", "UNAVAILABLE"))
-        projected[target] = status in {"PASS", "HEALTHY", "CLEAR"}
+    projected = project_gate_d_evidence(
+        bundle,
+        contract_valid=bool(bundle.get("production_contract_fingerprint")),
+    )
     projected.update({
         "account_identity_fingerprint": bundle.get("account_identity_fingerprint"),
         "account_mode": enablement.get("expected_account_mode"),
@@ -1313,7 +1319,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "live-submit":
             result = _live_submit(args)
         elif args.command == "live-readiness":
-            result, exit_code = _live_readiness()
+            result, exit_code = _live_readiness(args)
         elif args.command == "live-authorize":
             result, exit_code = _live_authorize(args)
         elif args.command == "live-authorization-status":

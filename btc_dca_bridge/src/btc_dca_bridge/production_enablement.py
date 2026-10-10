@@ -17,6 +17,7 @@ from .errors import ArtifactNotFoundError
 from .live_readiness import GateStatus, LiveExecutionGate, LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 from .live_activation import issue_execution_capability
 from .real_money_authorization import artifact_sha256
+from .readiness_checks import project_gate_d_evidence
 
 ENABLEMENT_TTL = timedelta(hours=24)
 ENABLEMENT_SCHEMA_VERSION = "5.4.0E"
@@ -80,6 +81,11 @@ class ProductionEnablement:
                 execution_policy_fingerprint: str, production_contract_fingerprint: str,
                 account_identity_fingerprint: str, account_mode: str,
                 credential_scope: str, confirmation: str, now_utc: datetime) -> "ProductionEnablement":
+        if "check_results" in evidence:
+            evidence = project_gate_d_evidence(
+                evidence,
+                contract_valid=bool(production_contract_fingerprint),
+            )
         if any(evidence.get(key) is not True for key in REQUIRED_EVIDENCE):
             missing = [key for key in REQUIRED_EVIDENCE if evidence.get(key) is not True]
             raise LiveReadinessError("production enablement prerequisites are not proven: " + ", ".join(missing))

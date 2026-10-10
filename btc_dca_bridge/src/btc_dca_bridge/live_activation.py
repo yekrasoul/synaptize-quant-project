@@ -17,8 +17,9 @@ from .config import ExecutionConfig, load_execution_config
 from .errors import ArtifactNotFoundError
 from .live_readiness import GateResult, GateStatus, LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 from .real_money_authorization import artifact_sha256, verify_authorization_binding
+from .ttl_policy import EXECUTION_ACTIVATION_TTL
 
-ACTIVATION_TTL = timedelta(minutes=5)
+ACTIVATION_TTL = EXECUTION_ACTIVATION_TTL
 ACTIVATION_SCHEMA_VERSION = "5.4.0D"
 _PHRASE = re.compile(r"^ACTIVATE ONE SHOT BYBIT SPOT BTCUSDT BUY \$([0-9]+(?:\.[0-9]+)?) (dca-[a-f0-9]{32})$")
 
