@@ -27,6 +27,8 @@ SAFETY_EXPECTATIONS = {
     "authorization": "NOT_AUTHORIZED",
 }
 HEALTHY_STATES = {"HEALTHY", "OK", "PASS", "SUCCESS"}
+ALERTING_STATES = {"ALERT", "CRITICAL", "FAILURE", "FAILED"}
+NON_ALERTING_STATES = {"INITIALIZING", "CONFIGURED", "NOT_APPLICABLE", "UNKNOWN", "NOT_RUN"}
 
 
 def _utc(value: str | datetime) -> datetime:
@@ -114,9 +116,64 @@ def classify_self_hosted_runner(shadow: Mapping[str, Any], jobs_by_run_id: Mappi
     return "UNKNOWN"
 
 
+def classify_watchdog(
+    observed_at: str | datetime,
+    runs: Sequence[Mapping[str, Any]],
+    *,
+    current_run_id: str | int | None = None,
+    freshness_hours: int = 2,
+) -> str:
+    """Classify monitor freshness without turning an installation's first run into an incident."""
+    try:
+        observed = _utc(observed_at)
+        current_id = str(current_run_id) if current_run_id is not None else None
+        valid_runs: list[tuple[datetime, Mapping[str, Any]]] = []
+        malformed = False
+        for run in runs:
+            if not isinstance(run, Mapping):
+                malformed = True
+                continue
+            if current_id is not None and str(run.get("id")) == current_id:
+                continue
+            event = run.get("event")
+            head_branch = run.get("head_branch")
+            if event != "schedule" or head_branch != "main":
+                continue
+            try:
+                valid_runs.append((_parse_run_time(run), run))
+            except (TypeError, ValueError, KeyError):
+                malformed = True
+        if malformed:
+            return "UNKNOWN"
+        recent_cutoff = observed - timedelta(hours=freshness_hours)
+        recent = [(created, run) for created, run in valid_runs if recent_cutoff <= created <= observed]
+        if any(run.get("status") == "completed" and run.get("conclusion") == "success" for _, run in recent):
+            return "HEALTHY"
+        if any(
+            run.get("status") in {"queued", "in_progress"}
+            or run.get("status") == "completed" and run.get("conclusion") in {"failure", "cancelled", "timed_out"}
+            for _, run in recent
+        ):
+            return "ALERT"
+        if any(run.get("status") == "completed" and run.get("conclusion") == "success" for _, run in valid_runs):
+            return "ALERT"
+        return "INITIALIZING"
+    except (TypeError, ValueError, KeyError):
+        return "UNKNOWN"
+
+
 def classify_canonical_ci(runs: Sequence[Mapping[str, Any]]) -> str:
-    """Fail closed when main-branch Canonical CI evidence is absent or malformed."""
-    relevant = [run for run in runs if run.get("head_branch") == "main"]
+    """Classify CI under its pull-request/manual trigger model, without inventing push evidence."""
+    relevant = []
+    for run in runs:
+        if not isinstance(run, Mapping):
+            continue
+        if run.get("event") == "pull_request" and run.get("base_ref", run.get("base_branch")) == "main":
+            relevant.append(run)
+        elif run.get("event") == "workflow_dispatch" and run.get("head_branch") == "main":
+            relevant.append(run)
+        elif run.get("event") is None and run.get("head_branch") == "main":
+            relevant.append(run)
     if not relevant:
         return "UNKNOWN"
     try:
@@ -224,6 +281,14 @@ def _healthy(value: Any) -> bool:
     return str(value).upper() in HEALTHY_STATES
 
 
+def _alerting(value: Any) -> bool:
+    return str(value).upper() in ALERTING_STATES
+
+
+def _non_alerting_startup(value: Any) -> bool:
+    return str(value).upper() in NON_ALERTING_STATES
+
+
 def _fingerprint(value: Any) -> str:
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
@@ -235,7 +300,12 @@ def evaluate(*, mode: str, checks: Mapping[str, Any], safety: Mapping[str, Any],
     relevant = CRITICAL_CHECKS if mode == "critical" else FULL_CHECKS
     components = {name: str(checks.get(name, "NOT_RUN")).upper() for name in relevant}
     violations = safety_violations(safety)
-    critical_overall = "CRITICAL" if violations or any(not _healthy(components[name]) for name in CRITICAL_CHECKS) else "HEALTHY"
+    if violations or any(_alerting(components[name]) for name in CRITICAL_CHECKS):
+        critical_overall = "CRITICAL"
+    elif all(_healthy(components[name]) for name in CRITICAL_CHECKS):
+        critical_overall = "HEALTHY"
+    else:
+        critical_overall = "UNKNOWN"
     overall = critical_overall
     if overall == "HEALTHY" and mode == "full" and any(not _healthy(components[name]) for name in FULL_CHECKS):
         overall = "DEGRADED"
@@ -244,35 +314,40 @@ def evaluate(*, mode: str, checks: Mapping[str, Any], safety: Mapping[str, Any],
     delivered_alerts = dict(previous.get("delivered_alerts", {}))
     fingerprints = dict(checks.get("fingerprints", {}))
     pending: list[dict[str, str]] = []
-    for violation in violations:
-        name = f"safety.{violation}"
-        fp = _fingerprint({"violation": violation, "value": safety.get(violation)})
-        if delivered_alerts.get(name) != fp:
-            pending.append({"kind": "CRITICAL", "component": name, "fingerprint": fp})
-    for name in relevant:
-        state = components[name]
-        fp = str(fingerprints.get(name, _fingerprint(state)))
-        if not _healthy(state) and delivered_alerts.get(name) != fp:
-            pending.append({"kind": "CRITICAL" if name in CRITICAL_CHECKS else "WARNING", "component": name, "fingerprint": fp})
-        if _healthy(state) and name in delivered_alerts:
-            pending.append({"kind": "RECOVERED", "component": name, "fingerprint": delivered_alerts[name]})
-    contract = checks.get("contract_state")
-    previous_contract = previous.get("contract_state")
-    if mode == "full" and isinstance(contract, Mapping) and isinstance(previous_contract, Mapping) and contract.get("fingerprint") != previous_contract.get("fingerprint") and previous.get("delivered_contract_fingerprint") != contract.get("fingerprint"):
-        fp = str(contract.get("fingerprint", _fingerprint(contract)))
-        if not any(item["component"] == "external_dependencies" for item in pending):
-            pending.append({"kind": "CONTRACT_CHANGE", "component": "external_dependencies", "fingerprint": fp})
-    if send_test_alert:
-        pending.append({"kind": "TEST_ALERT", "component": "system", "fingerprint": _fingerprint(observed_at)})
+    test_mode = send_test_alert or send_test_summary
+    if test_mode:
+        if send_test_alert:
+            pending.append({"kind": "TEST_ALERT", "component": "system", "fingerprint": _fingerprint(observed_at)})
+    else:
+        for violation in violations:
+            name = f"safety.{violation}"
+            fp = _fingerprint({"violation": violation, "value": safety.get(violation)})
+            if delivered_alerts.get(name) != fp:
+                pending.append({"kind": "CRITICAL", "component": name, "fingerprint": fp})
+        for name in relevant:
+            state = components[name]
+            fp = str(fingerprints.get(name, _fingerprint(state)))
+            if _alerting(state) and delivered_alerts.get(name) != fp:
+                pending.append({"kind": "CRITICAL" if name in CRITICAL_CHECKS else "WARNING", "component": name, "fingerprint": fp})
+            if _healthy(state) and name in delivered_alerts:
+                pending.append({"kind": "RECOVERED", "component": name, "fingerprint": delivered_alerts[name]})
+        contract = checks.get("contract_state")
+        previous_contract = previous.get("contract_state")
+        if mode == "full" and isinstance(contract, Mapping) and isinstance(previous_contract, Mapping) and contract.get("fingerprint") != previous_contract.get("fingerprint") and previous.get("delivered_contract_fingerprint") != contract.get("fingerprint"):
+            fp = str(contract.get("fingerprint", _fingerprint(contract)))
+            if not any(item["component"] == "external_dependencies" for item in pending):
+                pending.append({"kind": "CONTRACT_CHANGE", "component": "external_dependencies", "fingerprint": fp})
 
     observed_date = _utc(observed_at).date().isoformat()
-    summary_due = send_test_summary or (not send_test_alert and previous.get("summary_delivery_date") != observed_date)
-    return {"schema_version": "2.0.0", "mode": mode, "observed_at_utc": _utc(observed_at).isoformat().replace("+00:00", "Z"), "overall": overall, "critical_monitor": critical_overall, "components": components, "fingerprints": fingerprints, "safety": dict(safety), "safety_violations": list(violations), "pending_notifications": pending, "daily_summary_due": summary_due, "contract_state": checks.get("contract_state")}
+    summary_due = send_test_summary if test_mode else previous.get("summary_delivery_date") != observed_date
+    return {"schema_version": "2.0.0", "mode": mode, "observed_at_utc": _utc(observed_at).isoformat().replace("+00:00", "Z"), "overall": overall, "critical_monitor": critical_overall, "components": components, "fingerprints": fingerprints, "safety": dict(safety), "safety_violations": list(violations), "pending_notifications": pending, "daily_summary_due": summary_due, "test_mode": test_mode, "contract_state": checks.get("contract_state")}
 
 
 def commit_state(result: Mapping[str, Any], previous: Mapping[str, Any] | None, *, alerts_delivered: bool, summary_delivered: bool) -> dict[str, Any]:
     """Advance notification acknowledgements only after confirmed delivery."""
     previous = previous or {}
+    if result.get("test_mode"):
+        return dict(previous)
     state = {"schema_version": "2.0.0", "observed_at_utc": result["observed_at_utc"], "overall": result["overall"], "components": dict(result.get("components", {})), "fingerprints": dict(result.get("fingerprints", {})), "safety": dict(result.get("safety", {})), "safety_violations": list(result.get("safety_violations", [])), "contract_state": result.get("contract_state"), "delivered_alerts": dict(previous.get("delivered_alerts", {})), "delivered_recoveries": dict(previous.get("delivered_recoveries", {})), "delivered_contract_fingerprint": previous.get("delivered_contract_fingerprint"), "summary_delivery_date": previous.get("summary_delivery_date"), "last_telegram_delivery_at": previous.get("last_telegram_delivery_at")}
     if alerts_delivered:
         for item in result.get("pending_notifications", []):
