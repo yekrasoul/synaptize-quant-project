@@ -67,7 +67,7 @@ class ProductionWorkflowTest(unittest.TestCase):
         self.assertIn("actions/upload-artifact@v6", workflow)
         self.assertIn("actions/download-artifact@v5", workflow)
         self.assertIn("astral-sh/setup-uv@v6", workflow)
-        self.assertIn("runs-on: ubuntu-24.04", workflow)
+        self.assertIn("runs-on: [self-hosted, Linux, X64, btc-dca]", workflow)
         self.assertIn("path: btc_dca_bridge/data", workflow)
         self.assertIn("retention-days: ${{ steps.context.outputs.completed_retention_days }}", workflow)
         self.assertIn("partial_retention_days", workflow)
