@@ -34,6 +34,7 @@ from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .real_money_authorization import authorize_persisted_approval, read_authorization_status
+from .live_activation import create_execution_activation, read_activation_status
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -169,6 +170,20 @@ def _parser() -> argparse.ArgumentParser:
     authorization_status = subparsers.add_parser("live-authorization-status", help="read-only status of the latest one-shot authorization")
     authorization_status.add_argument("--authorization-id")
     authorization_status.add_argument("--data-root", type=Path, default=DATA_PATH)
+    activate = subparsers.add_parser("live-activate", help="create one short-lived activation capability; never submits")
+    activate.add_argument("--authorization-id", required=True)
+    activate.add_argument("--authorization-sha", required=True)
+    activate.add_argument("--approval-id", required=True)
+    activate.add_argument("--approval-sha", required=True)
+    activate.add_argument("--client-order-id", required=True)
+    activate.add_argument("--amount", required=True)
+    activate.add_argument("--month", required=True)
+    activate.add_argument("--confirm", required=True)
+    activate.add_argument("--run-id", required=True)
+    activate.add_argument("--data-root", type=Path, default=DATA_PATH)
+    activation_status = subparsers.add_parser("live-activation-status", help="read-only status of the latest one-shot activation")
+    activation_status.add_argument("--activation-id")
+    activation_status.add_argument("--data-root", type=Path, default=DATA_PATH)
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -598,6 +613,26 @@ def _live_authorization_status(args: argparse.Namespace) -> tuple[dict[str, obje
     return read_authorization_status(store=ArtifactStore(args.data_root), authorization_id=args.authorization_id), 0
 
 
+def _live_activate(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    activation, receipt = create_execution_activation(
+        store=ArtifactStore(args.data_root), authorization_id=args.authorization_id,
+        authorization_sha256=args.authorization_sha, approval_id=args.approval_id,
+        approval_sha256=args.approval_sha, client_order_id=args.client_order_id,
+        amount=args.amount, calendar_month=args.month, phrase=args.confirm,
+        run_id=args.run_id, now_utc=datetime.now(UTC),
+    )
+    return {
+        "status": "ACTIVE", "activation_id": activation.activation_id,
+        "activation_sha256": receipt.sha256, "expires_at_utc": activation.payload["expires_at_utc"],
+        "one_shot_identity": activation.one_shot_identity,
+        "execution": "BLOCKED", "message": "NO ORDER EXECUTED",
+    }, 0
+
+
+def _live_activation_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    return read_activation_status(store=ArtifactStore(args.data_root), activation_id=args.activation_id), 0
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -691,7 +726,11 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     # Checked-in config blocks before client/transport construction. The
     # guarded engine remains the sole future submission implementation.
     if not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented":
-        return {"status": "blocked", "reason": "checked-in production defaults prohibit execution", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
+        return {"status": "blocked", "reason": "checked-in production defaults prohibit execution", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
+    # The legacy CLI has no activation-capability input.  Stop before client
+    # or transport construction until a future controlled invocation supplies
+    # the exact Phase 5.4D capability.
+    return {"status": "blocked", "reason": "one-shot execution activation required", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
     # The persisted intent documents the fail-safe prepared mode.  The exact
     # immutable identity is retained while the separately approved runtime
     # gate supplies the only execution-mode transition.
@@ -846,6 +885,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _live_authorize(args)
         elif args.command == "live-authorization-status":
             result, exit_code = _live_authorization_status(args)
+        elif args.command == "live-activate":
+            result, exit_code = _live_activate(args)
+        elif args.command == "live-activation-status":
+            result, exit_code = _live_activation_status(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:

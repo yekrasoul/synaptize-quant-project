@@ -13,6 +13,7 @@ from btc_dca_bridge.execution import InstrumentRules, make_order_intent
 from btc_dca_bridge.ledger import append_execution_once
 from btc_dca_bridge.live_order import (AmbiguousSubmissionError, ConfirmedFill, LiveApproval,
     LiveOrderEngine, LiveOrderSafetyError, ReconciliationEvidence, SpotMarketBuyRequest)
+from btc_dca_bridge.live_activation import ExecutionCapability
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
 from btc_dca_bridge.private_bybit import SpotQuoteAvailability
@@ -72,12 +73,16 @@ class LiveOrderHardeningTests(unittest.TestCase):
         self.availability_policy = SpotQuoteAvailabilityPolicy(frozenset({("/test/availability", "quoteAvailable")}), frozenset({"TEST"}), max_age=timedelta(days=1))
         self.quote_limit_policy = QuoteUnitLimitPolicy(frozenset({("/test/quote-limit", "maxQuote")}), max_age=timedelta(days=1))
         self.engine = LiveOrderEngine(artifact_store=ArtifactStore(self.data), now=lambda: self.now, availability_policy=self.availability_policy, quote_limit_policy=self.quote_limit_policy)
+        request_fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        self.activation = {"activation_id": "activation-" + "f" * 32, "status": "ACTIVE", "expires_at_utc": "2026-10-07T12:01:00Z", "one_shot_identity": "test-one-shot", "consumed": False}
+        self.activation_sha = hashlib.sha256((json.dumps(self.activation, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
+        self.capability = ExecutionCapability.for_test(activation_id=self.activation["activation_id"], one_shot_identity=self.activation["one_shot_identity"], request_fingerprint=request_fingerprint)
         self.reader = FakeReader()
         self.ack = HttpResponse(200, {}, json.dumps({"retCode": 0, "retMsg": "OK", "result": {"orderId": "order-1", "orderLinkId": self.intent.client_order_id}}).encode())
         self.reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1"))
 
     def submit(self, **kwargs):
-        values = dict(calendar_month="2026-10", ledger_path=self.ledger, execution_config=self.config, approval=self.approval, approval_sha256=self.approval_receipt.sha256, manifest=self.manifest, manifest_sha256=self.manifest_sha, read_client=self.reader, transport=FakeTransport(self.ack), run_id=self.run_id, post_ack_reconciler=self.reconciler)
+        values = dict(calendar_month="2026-10", ledger_path=self.ledger, execution_config=self.config, approval=self.approval, approval_sha256=self.approval_receipt.sha256, manifest=self.manifest, manifest_sha256=self.manifest_sha, read_client=self.reader, transport=FakeTransport(self.ack), run_id=self.run_id, post_ack_reconciler=self.reconciler, activation=self.activation, activation_sha256=self.activation_sha, capability=self.capability)
         values.update(kwargs)
         return self.engine.submit(self.intent, self.decision, **values)
 

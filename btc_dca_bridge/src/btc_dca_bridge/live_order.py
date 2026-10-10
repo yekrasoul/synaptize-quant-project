@@ -271,10 +271,12 @@ class LiveOrderEngine:
         if category is None: category = {"blocked": "request_not_sent", "ambiguous": "reconciliation_required", "rejected_by_exchange": "exchange_rejected", "acknowledged": "acknowledgement_received"}.get(state, "reconciliation_required")
         return SubmissionOutcome(run_id, intent.decision_id, intent.order_intent_id, intent.client_order_id, state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), code, msg, order_id, returned_link, reconciliation, True, category)
 
-    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval, approval_sha256: str, manifest: Mapping[str, Any], manifest_sha256: str, read_client: FreshBybitReadClient, transport: SubmissionTransport, run_id: str, post_ack_reconciler: PostAckReconciler) -> SubmissionResult:
+    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval, approval_sha256: str, manifest: Mapping[str, Any], manifest_sha256: str, read_client: FreshBybitReadClient, transport: SubmissionTransport, run_id: str, post_ack_reconciler: PostAckReconciler, activation: Mapping[str, Any] | None = None, activation_sha256: str | None = None, capability: Any = None) -> SubmissionResult:
         if not execution_config.live_execution_enabled: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="LIVE EXECUTION DISABLED"))
         if execution_config.kill_switch: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="KILL SWITCH ACTIVE"))
         if execution_config.order_submission not in {"implemented_disabled", "implemented"}: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="ORDER SUBMISSION MODE DISABLED"))
+        if activation is None or activation_sha256 is None or capability is None:
+            return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="ONE-SHOT EXECUTION ACTIVATION REQUIRED"))
         if manifest is None: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="CANARY MANIFEST REQUIRED"))
         if hasattr(manifest, "to_dict"):
             manifest = manifest.to_dict()
@@ -300,6 +302,12 @@ class LiveOrderEngine:
         if self.artifact_store.has_submission_attempt_identity(approval_id=approval.approval_id, canary_id=manifest["canary_id"], decision_id=intent.decision_id, client_order_id=intent.client_order_id): raise LiveOrderSafetyError("prior prepared or ambiguous submission requires reconciliation")
         try: self.artifact_store.persist(ArtifactType.ORDER_SUBMISSION_ATTEMPT, attempt, run_id=run_id)
         except ArtifactAlreadyExistsError as exc: raise LiveOrderSafetyError("submission attempt already exists; reconciliation required") from exc
+        from .live_activation import gate_c
+        try:
+            gate_c(capability=capability, activation=activation, activation_sha256=activation_sha256, request_fingerprint=attempt.request_fingerprint, runtime_config=execution_config, now_utc=self._now().astimezone(UTC))
+            capability.consume()
+        except Exception as exc:
+            raise LiveOrderSafetyError(f"final activation boundary blocked: {exc}") from exc
         try:
             response = transport.submit_spot_market_buy(request)
             outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler, canary_id=manifest["canary_id"], approval_id=approval.approval_id)
