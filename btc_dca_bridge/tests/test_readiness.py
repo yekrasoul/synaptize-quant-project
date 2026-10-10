@@ -20,8 +20,8 @@ from btc_dca_bridge.quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPo
 
 
 class FakeReadinessClient:
-    def __init__(self, *, availability=Decimal("100"), liability=False):
-        self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
+    def __init__(self, *, availability=Decimal("100"), liability=False, permissions=None):
+        self.credential = ApiCredentialInfo(CredentialClassification.TRADE_CAPABLE, False, permissions or {"Spot": ("SpotTrade",), "Wallet": ("WalletRead",)})
         self.account = AccountInfo(6, "REGULAR_MARGIN", "OFF", "1789693389000")
         self.availability, self.liability = availability, liability
         self.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"), market_order_qty_unit="quoteCoin", market_buy_quote_maximum=Decimal("8000000"))
@@ -66,6 +66,11 @@ class ReadinessTests(unittest.TestCase):
         result = self.evaluate(client_factory=lambda: FakeReadinessClient(availability=None))
         self.assertEqual(result["status"], "NOT_READY")
         self.assertIn("BYBIT_SPOT_AVAILABLE_BALANCE", {item["check_id"] for item in result["blockers"]})
+
+    def test_derivatives_permission_blocks_production_scope(self):
+        result = self.evaluate(client_factory=lambda: FakeReadinessClient(permissions={"Spot": ("SpotTrade",), "Derivatives": ("DerivativesTrade",)}))
+        scope = next(item for item in result["checks"] if item["check_id"] == "BYBIT_CREDENTIAL_SCOPE")
+        self.assertEqual(scope["status"], "FAIL")
 
     def test_multiple_safety_blockers_are_reported(self):
         result = self.evaluate(client_factory=lambda: FakeReadinessClient(liability=True), server_time_probe=lambda: 5.0, repo_probe=lambda: {"commit": "abc", "dirty": True})
