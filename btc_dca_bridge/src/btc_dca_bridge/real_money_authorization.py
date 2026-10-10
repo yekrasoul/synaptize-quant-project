@@ -19,7 +19,7 @@ from .config import load_execution_config
 from .errors import ArtifactNotFoundError
 from .live_readiness import LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 
-AUTHORIZATION_TTL = timedelta(minutes=5)
+AUTHORIZATION_TTL = timedelta(minutes=10)
 AUTHORIZATION_SCHEMA_VERSION = "5.4.0C"
 _CONFIRMATION = re.compile(r"^AUTHORIZE BYBIT SPOT BTCUSDT BUY \$([0-9]+(?:\.[0-9]+)?) (dca-[a-f0-9]{32})$")
 

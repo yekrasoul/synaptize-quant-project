@@ -177,7 +177,7 @@ class RealMoneyAuthorizationTests(unittest.TestCase):
 
     def test_status_derives_expired_authorization(self):
         self.authorize()
-        result = read_authorization_status(store=self.store, now_utc=NOW + timedelta(minutes=6))
+        result = read_authorization_status(store=self.store, now_utc=NOW + timedelta(minutes=11))
         self.assertEqual(result["status"], "EXPIRED")
         self.assertEqual(result["authorization"], "NOT_AUTHORIZED")
         self.assertEqual(result["execution"], "BLOCKED")
