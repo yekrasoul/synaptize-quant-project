@@ -440,11 +440,17 @@ def commit_state(result: Mapping[str, Any], previous: Mapping[str, Any] | None, 
 def render_summary(result: Mapping[str, Any]) -> str:
     components, safety = result.get("components", {}), result.get("safety", {})
     diagnostics = result.get("diagnostics", {})
-    lines = ["BTC DCA SYSTEM HEALTH", "", f"Overall: {result.get('overall', 'UNKNOWN')}", f"Observed: {result.get('observed_at_utc', 'UNKNOWN')}", "", f"Critical Monitor: {result.get('critical_monitor', 'UNKNOWN')}", f"Production Shadow: {components.get('production_shadow', 'UNKNOWN')}", f"Self-hosted Runner: {components.get('self_hosted_runner', 'UNKNOWN')}", f"Watchdog: {components.get('watchdog', 'UNKNOWN')}", f"Canonical CI: {components.get('canonical_ci', 'UNKNOWN')}", f"Bybit Spot Connectivity: {components.get('bybit_spot_connectivity', 'NOT_RUN')}", f"Market-data freshness: {components.get('market_data_freshness', 'NOT_RUN')}", f"Artifacts: {components.get('artifacts', 'UNKNOWN')}", f"Ledger Integrity: {components.get('ledger_integrity', 'UNKNOWN')}"]
+    def status_line(label: str, value: Any) -> str:
+        state = str(value or "UNKNOWN")
+        emoji = {"HEALTHY": "✅", "PASS": "✅", "SUCCESS": "✅", "ALERT": "🔴", "CRITICAL": "🔴", "FAILED": "🔴", "DEGRADED": "🟠", "UNKNOWN": "🟡", "INITIALIZING": "🟡", "NOT_CONFIGURED": "⚪", "NOT_RUN": "⚪", "NOT_APPLICABLE": "⚪"}.get(state, "🟡")
+        return f"{emoji} {label}: {state}"
+
+    lines = ["🩺 BTC DCA SYSTEM HEALTH", "", status_line("Overall", result.get("overall", "UNKNOWN")), f"🕒 Observed: {result.get('observed_at_utc', 'UNKNOWN')}", "", status_line("Critical Monitor", result.get("critical_monitor", "UNKNOWN")), status_line("Production Shadow", components.get("production_shadow", "UNKNOWN")), status_line("Self-hosted Runner", components.get("self_hosted_runner", "UNKNOWN")), status_line("Watchdog", components.get("watchdog", "UNKNOWN")), status_line("Canonical CI", components.get("canonical_ci", "UNKNOWN")), status_line("Bybit Spot Connectivity", components.get("bybit_spot_connectivity", "NOT_RUN")), status_line("Market-data freshness", components.get("market_data_freshness", "NOT_RUN")), status_line("Artifacts", components.get("artifacts", "UNKNOWN")), status_line("Ledger Integrity", components.get("ledger_integrity", "UNKNOWN"))]
     for component, label in (("bybit_spot_connectivity", "Bybit Spot Connectivity"), ("market_data_freshness", "Market-data freshness"), ("watchdog", "Watchdog"), ("canonical_ci", "Canonical CI")):
         detail = diagnostics.get(component)
         if isinstance(detail, Mapping) and detail.get("reason"):
-            lines.append(f"  {label} diagnostic:")
+            section = "🌐 Bybit Connectivity" if component == "bybit_spot_connectivity" else "📈 Market-data Freshness" if component == "market_data_freshness" else f"{label} diagnostic"
+            lines.append(f"  {section}")
             raw = detail.get("raw")
             if component == "bybit_spot_connectivity" and isinstance(raw, Mapping) and raw.get("status") is not None:
                 lines.append(f"    Status: {raw['status']}")

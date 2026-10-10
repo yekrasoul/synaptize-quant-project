@@ -366,7 +366,7 @@ class SystemHealthMonitorTest(unittest.TestCase):
     def test_summary_contains_required_fields_and_no_order(self):
         result = evaluate(mode="critical", checks=healthy_checks(), safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
         summary = render_summary(result)
-        for text in ("BTC DCA SYSTEM HEALTH", "Critical Monitor:", "Ledger Integrity:", "Authorization: NOT_AUTHORIZED", "NO ORDER EXECUTED"):
+        for text in ("🩺 BTC DCA SYSTEM HEALTH", "✅ Critical Monitor:", "✅ Ledger Integrity:", "Authorization: NOT_AUTHORIZED", "NO ORDER EXECUTED"):
             self.assertIn(text, summary)
 
     def test_workflow_preserves_read_only_guards_and_old_monitors_remain(self):
