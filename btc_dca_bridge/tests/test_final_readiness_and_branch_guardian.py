@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import yaml
 
-from btc_dca_bridge.branch_guardian import changed_diff_lines, classify_branch
+from btc_dca_bridge.branch_guardian import canonical_validation_succeeds, changed_diff_lines, classify_branch
 from btc_dca_bridge.final_readiness import final_readiness_audit
 
 
@@ -21,6 +21,8 @@ class BranchGuardianTests(unittest.TestCase):
 
     def test_protected_surfaces_are_safety_sensitive(self):
         for path in ("btc_dca_bridge/config/execution.yaml", "btc_dca_bridge/config/active_strategy.json", ".github/workflows/production-shadow.yml"):
+            self.assertEqual(self.classify([path])["classification"], "SAFETY_SENSITIVE")
+        for path in (".github/workflows/branch-guardian.yml", ".github/workflows/branch-guardian-trusted.yml", "btc_dca_bridge/src/btc_dca_bridge/branch_guardian.py"):
             self.assertEqual(self.classify([path])["classification"], "SAFETY_SENSITIVE")
 
     def test_safety_semantic_changes_are_conservative_blockers(self):
@@ -45,6 +47,18 @@ class BranchGuardianTests(unittest.TestCase):
         diff = "--- a/docs/kill_switch.md\n+++ b/docs/live_execution_enabled.md\n@@ -1 +1 @@\n context"
         self.assertEqual(changed_diff_lines(diff), "")
         self.assertEqual(self.classify(files=["docs/note.md"], diff=diff)["classification"], "SAFE_ENGINEERING")
+
+    def test_canonical_check_requires_exact_name_sha_success_and_actions_app(self):
+        sha = "h" * 40
+        good = {"check_runs": [{"name": "Canonical validation", "conclusion": "success", "head_sha": sha, "app": {"slug": "github-actions"}}]}
+        self.assertTrue(canonical_validation_succeeds(good, sha))
+        for bad in (
+            {"check_runs": []},
+            {"check_runs": [{"name": "Canonical validation", "conclusion": "failure", "head_sha": sha, "app": {"slug": "github-actions"}}]},
+            {"check_runs": [{"name": "Canonical validation", "conclusion": "success", "head_sha": "x" * 40, "app": {"slug": "github-actions"}}]},
+            {"check_runs": [{"name": "Canonical validation", "conclusion": "success", "head_sha": sha, "app": {"slug": "other-app"}}]},
+        ):
+            self.assertFalse(canonical_validation_succeeds(bad, sha))
 
     def test_ledger_and_runtime_drift_fail(self):
         self.assertEqual(self.classify(["btc_dca_bridge/ledger/executions.jsonl"])["classification"], "FAIL")
@@ -73,10 +87,32 @@ class FinalReadinessTests(unittest.TestCase):
         branches = triggers["push"]["branches"]
         self.assertEqual(set(branches), {"feat/**", "fix/**", "refactor/**"})
         self.assertEqual(workflow["jobs"]["validation"]["permissions"], {"contents": "read", "actions": "read"})
-        self.assertEqual(workflow["jobs"]["guardian"]["permissions"]["pull-requests"], "write")
+        self.assertNotIn("guardian", workflow["jobs"])
+        trusted = yaml.safe_load((Path(__file__).parents[2] / ".github" / "workflows" / "branch-guardian-trusted.yml").read_text(encoding="utf-8"))
+        self.assertEqual(trusted["jobs"]["trusted-guardian"]["name"], "Branch Guardian / Safety classification")
+        self.assertEqual(trusted["jobs"]["trusted-guardian"]["permissions"]["pull-requests"], "write")
+        self.assertEqual(trusted["jobs"]["trusted-guardian"]["permissions"]["contents"], "write")
+        self.assertEqual(trusted["jobs"]["trusted-guardian"]["permissions"]["actions"], "read")
+        self.assertEqual(trusted["jobs"]["trusted-guardian"]["permissions"]["checks"], "read")
+        self.assertNotIn("pull-requests", workflow["permissions"])
         workflow_text = (Path(__file__).parents[2] / ".github" / "workflows" / "branch-guardian.yml").read_text(encoding="utf-8")
         self.assertIn("BRANCH_GUARDIAN_BOOTSTRAPPED", workflow_text)
-        self.assertIn("--auto --merge", workflow_text)
+        self.assertNotIn("gh pr merge", workflow_text)
+        trusted_text = (Path(__file__).parents[2] / ".github" / "workflows" / "branch-guardian-trusted.yml").read_text(encoding="utf-8")
+        self.assertIn('name == "Canonical validation"', trusted_text)
+        self.assertIn("--auto --merge", trusted_text)
+        self.assertNotIn("download-artifact", trusted_text)
+        self.assertIn("workflow_run:", trusted_text)
+        self.assertIn("conclusion == 'success'", trusted_text)
+        self.assertNotIn("auto_merge_eligible", trusted_text)
+        self.assertIn("headRefOid", trusted_text)
+        self.assertIn("behind_by", trusted_text)
+        self.assertIn("HEAD_SHA", trusted_text)
+        for runtime_state in ("NOT_AUTHORIZED", "NOT_ACTIVATED", "NOT_ENABLED", "BLOCKED"):
+            self.assertIn(runtime_state, trusted_text)
+        ci = yaml.safe_load((Path(__file__).parents[2] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))
+        ci_triggers = ci.get("on", ci.get(True))
+        self.assertEqual(set(ci_triggers["push"]["branches"]), {"feat/**", "fix/**", "refactor/**"})
 
 
 if __name__ == "__main__":
