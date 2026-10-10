@@ -101,7 +101,7 @@ jobs:
                 { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 }
               );
             }
-            core.setOutput('evidence_json', JSON.stringify({
+            const evidence = {
               observed_at: new Date().toISOString(),
               shadow_runs: shadowRuns,
               shadow_jobs_by_run_id: shadowJobsByRunId,
@@ -109,7 +109,8 @@ jobs:
               ci_runs: ciRuns,
               artifacts,
               telegram_configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
-            }));
+            };
+            require('fs').writeFileSync('/tmp/system-health-github-evidence.json', JSON.stringify(evidence), 'utf8');
 
       - name: Locate prior monitor state
         id: prior
@@ -167,7 +168,6 @@ jobs:
         shell: bash
         env:
           MODE: ${{ steps.mode.outputs.mode }}
-          GITHUB_EVIDENCE_JSON: ${{ steps.github_evidence.outputs.evidence_json }}
           SEND_TEST_ALERT: ${{ inputs.send_test_alert }}
           SEND_TEST_SUMMARY: ${{ inputs.send_test_summary }}
         run: |
@@ -185,7 +185,7 @@ jobs:
             uv run python -m btc_dca_bridge production-connectivity --json >/tmp/system-health-bybit.json 2>/dev/null || true
             uv run python -m btc_dca_bridge production-status --json >/tmp/system-health-status.json 2>/dev/null || true
           fi
-          MODE="$MODE" EVIDENCE="$GITHUB_EVIDENCE_JSON" LEDGER="$ledger_integrity" PREVIOUS_FILE="$previous_file" SEND_TEST_ALERT="$SEND_TEST_ALERT" SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<'PY'
+          MODE="$MODE" LEDGER="$ledger_integrity" PREVIOUS_FILE="$previous_file" SEND_TEST_ALERT="$SEND_TEST_ALERT" SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<'PY'
           import json, os, pathlib, sys
           from btc_dca_bridge.health_monitor import (
               authorization_from_canonical, canonical_contract_state,
@@ -194,7 +194,13 @@ jobs:
               classify_self_hosted_runner,
               classify_production_status,
           )
-          evidence = json.loads(os.environ["EVIDENCE"])
+          evidence_path = pathlib.Path("/tmp/system-health-github-evidence.json")
+          try:
+              evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+          except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+              raise SystemExit(f"GitHub operational evidence unavailable: {exc}") from exc
+          if not isinstance(evidence, dict):
+              raise SystemExit("GitHub operational evidence must be a JSON object")
           observed_at = evidence["observed_at"]
           previous = json.loads(pathlib.Path(os.environ["PREVIOUS_FILE"]).read_text()) if os.environ.get("PREVIOUS_FILE") else None
           shadow = classify_production_shadow(observed_at, evidence.get("shadow_runs", []))
