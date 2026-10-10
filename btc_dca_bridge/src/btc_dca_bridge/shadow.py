@@ -26,7 +26,6 @@ from .ledger import read_executions
 from .market_data.bybit import BybitSpotAdapter
 from .market_data.http import PublicHttpTransport
 from .market_data.provider import BybitSnapshotSource
-from .market_data.approved_spot import OrderedApprovedSpotProvider, build_binance_source, build_kucoin_source
 from .models import Execution, MarketSnapshot, PortfolioState, StrategyDecision
 from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH, PROJECT_ROOT
 from .portfolio import derive_portfolio
@@ -309,14 +308,10 @@ def build_live_shadow_pipeline(
         clock=clock,
         max_input_age=timedelta(seconds=market_config.freshness_max_age_seconds),
     )
-    max_input_age = timedelta(seconds=market_config.freshness_max_age_seconds)
-    market_provider = OrderedApprovedSpotProvider(
-        (
-            primary,
-            build_binance_source(clock=clock, max_input_age=max_input_age),
-            build_kucoin_source(clock=clock, max_input_age=max_input_age),
-        )
-    )
+    # V1 is canonically Bybit BTCUSDT Spot only.  Any typed Bybit acquisition
+    # failure propagates to ShadowPipeline as MARKET_DATA_FAILED; no other
+    # exchange may produce a V1 decision.
+    market_provider = primary
     sentiment_transport = PublicHttpTransport(
         "https://api.alternative.me",
         connect_timeout_seconds=sentiment_config.http.connect_timeout_seconds,

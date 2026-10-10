@@ -32,13 +32,19 @@ class OperationalConfigTests(unittest.TestCase):
 
     def test_all_committed_operational_config_parses_and_preserves_production_values(self) -> None:
         config = load_operational_config()
-        self.assertEqual((config.market_data.primary_provider, config.market_data.fallback_providers), ("bybit_api", ("binance_api", "kucoin_api")))
+        self.assertEqual((config.market_data.primary_provider, config.market_data.fallback_providers), ("bybit_api", ()))
         self.assertEqual((config.market_data.exchange, config.market_data.market_type, config.market_data.symbol), ("Bybit", "spot", "BTCUSDT"))
         self.assertEqual(config.sentiment.provider, "alternative_me_crypto_fear_greed")
         self.assertEqual(config.sentiment.freshness_max_age_seconds, 36 * 60 * 60)
         self.assertFalse(config.runtime.live_execution_enabled)
         self.assertEqual(config.persistence.digest_algorithm, "sha256")
         self.assertTrue(all(value is False for value in config.research.flags.values()))
+
+    def test_canonical_market_data_config_has_no_cross_exchange_fallback(self) -> None:
+        text = (ROOT / "config" / "market_data.yaml").read_text(encoding="utf-8")
+        self.assertIn("fallback_providers: []", text)
+        self.assertNotIn("binance_api", text)
+        self.assertNotIn("kucoin_api", text)
 
     def test_rejects_unapproved_market_identity_and_perpetual_symbol(self) -> None:
         with self.assertRaises(ConfigurationError):

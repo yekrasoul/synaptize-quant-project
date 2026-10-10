@@ -16,14 +16,14 @@ from btc_dca_bridge.errors import (
     DataUnavailableError,
     LedgerValidationError,
     PersistenceIOError,
+    RateLimitedError,
     SentimentSourceUnavailableError,
     ShadowRunAlreadyCompletedError,
     ShadowRunError,
     ShadowRunErrorCode,
 )
 from btc_dca_bridge.market_data.bybit import BYBIT_SOURCE
-from btc_dca_bridge.market_data.approved_spot import OrderedApprovedSpotProvider
-from btc_dca_bridge.market_data.provider import FallbackMarketDataProvider
+from btc_dca_bridge.market_data.provider import BybitSnapshotSource, FallbackMarketDataProvider
 from btc_dca_bridge.market_data.tradingview import TRADINGVIEW_SOURCE
 from btc_dca_bridge.models import MarketSnapshot, StrategyDecision
 from btc_dca_bridge.sentiment.models import SentimentSnapshot
@@ -129,13 +129,11 @@ class ShadowPipelineTest(unittest.TestCase):
             **kwargs,
         )
 
-    def test_live_shadow_builder_uses_approved_ordered_spot_provider(self):
+    def test_live_shadow_builder_uses_direct_bybit_only_spot_provider(self):
         pipeline = build_live_shadow_pipeline(run_at_utc=NOW)
-        self.assertIsInstance(pipeline.market_provider, OrderedApprovedSpotProvider)
-        self.assertEqual(
-            tuple(source.source for source in pipeline.market_provider.sources),
-            ("bybit_api", "binance_api", "kucoin_api"),
-        )
+        self.assertIsInstance(pipeline.market_provider, BybitSnapshotSource)
+        self.assertEqual(pipeline.market_provider.source, BYBIT_SOURCE)
+        self.assertFalse(hasattr(pipeline.market_provider, "sources"))
 
     def test_successful_direct_bybit_run_uses_ledger_and_exact_v1_result(self):
         result = self.pipeline().run(run_at_utc=NOW)
@@ -150,6 +148,34 @@ class ShadowPipelineTest(unittest.TestCase):
         self.assertEqual(decision["remaining_budget_before_usd"], 440)
         self.assertEqual(decision["final_purchase_usd"], 98)
         self.assertTrue(result.no_order_executed)
+
+    def test_canonical_bybit_failures_fail_closed_without_fallback_or_completion(self):
+        class FailingBybitAdapter:
+            def __init__(self, failure):
+                self.failure = failure
+                self.calls = 0
+
+            def fetch_ticker(self):
+                self.calls += 1
+                raise self.failure
+
+        for failure in (DataUnavailableError("offline"), RateLimitedError("busy")):
+            with self.subTest(failure=type(failure).__name__):
+                pipeline = build_live_shadow_pipeline(
+                    run_at_utc=NOW,
+                    ledger_path=self.ledger_path,
+                    data_root=self.data_root,
+                )
+                adapter = FailingBybitAdapter(failure)
+                pipeline.market_provider.adapter = adapter
+                before_ledger = self.ledger_path.read_bytes()
+                with self.assertRaises(ShadowRunError) as raised:
+                    pipeline.run(run_at_utc=NOW)
+                self.assertEqual(raised.exception.code, ShadowRunErrorCode.MARKET_DATA_FAILED)
+                self.assertEqual(adapter.calls, 1)
+                self.assertEqual(self.ledger_path.read_bytes(), before_ledger)
+                self.assertEqual(list(self.data_root.rglob("*.json")), [])
+                self.assertFalse(hasattr(pipeline, "place_order"))
 
     def test_successful_tradingview_fallback_retains_primary_failure(self):
         primary = StaticSource(BYBIT_SOURCE, DataUnavailableError("offline"))

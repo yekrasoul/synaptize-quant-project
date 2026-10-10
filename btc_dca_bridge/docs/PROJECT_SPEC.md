@@ -16,7 +16,7 @@ All ChatGPT/project interfaces must also follow [`PROJECT_CHAT_CONTRACT.md`](PRO
 | V1 allocation rules | manifest-declared strategy config | One definition; code and automation resolve it through the reviewed active-strategy loader. |
 | Contract shapes | `schemas/*.schema.json` | Versioned JSON Schema contracts. |
 | Executed-purchase history | manifest-declared ledger via `LedgerGateway` | Single canonical cross-interface event history; portfolio/budget always use the active execution projection, never raw historical event sums. |
-| Market snapshot | validated `MarketSnapshot` from the approved Spot source chain | Source order is Bybit BTCUSDT Spot -> Binance BTCUSDT Spot -> KuCoin BTC-USDT Spot. Current price and rolling 168h high must come atomically from the same selected venue. If all approved venues fail validation, no decision is produced. |
+| Market snapshot | validated `MarketSnapshot` from the canonical Bybit Spot source | Source is Bybit BTCUSDT Spot only. Current price and rolling 168h high must come atomically from Bybit. If Bybit is unavailable or fails validation, no decision is produced. |
 | Sentiment snapshot | validated Alternative.me Crypto Fear & Greed observation | One independent public source; no substitute sentiment signal. |
 | Completed run state | immutable component artifacts plus schema-valid shadow-run manifest | A run is complete only when its final digest-verified manifest exists. Mutable `latest.json` state is prohibited. |
 | Production-shadow retention | GitHub Actions artifact named by `run_id` | Completed JSON artifacts and digest sidecars are retained together for 90 days; this is durable operational retention, not permanent archival storage. |
@@ -55,7 +55,7 @@ The normal daily V1 calculation is recommendation-only. An operator executes any
 ## 5. Failure policy
 
 - Missing, stale, contradictory, incomplete, or invalid approved-Spot market data fails closed; no allocation is fabricated.
-- Market-source order is fixed: Bybit Spot -> Binance Spot -> KuCoin Spot. Fallback occurs only after the complete preceding venue fails validation. A price from one venue may never be combined with a 168h high from another.
+- Market source is fixed to Bybit BTCUSDT Spot. There is no cross-exchange fallback. A price from another venue may never be used for a V1 decision.
 - Perpetuals, futures, options, mark/index prices, leveraged products, TradingView runtime fallback, unapproved exchanges, and mixed-source calculations are prohibited for V1 execution inputs.
 - Invalid Fear & Greed data also yields `data_unavailable`; it is a required V1 input for a final recommendation.
 - A schema validation, ledger parse, or monthly-cap derivation failure stops the run before notification.
@@ -83,8 +83,6 @@ Strategy and contract versions are independent semantic versions. A V1 rule chan
 | GitHub | versioned code/config/contracts/automation and audit history | no secret or manual-execution substitute |
 | Telegram | delivery channel for notification events | notification is not order confirmation |
 | Bybit | primary BTCUSDT Spot market-data source and separately guarded execution venue | daily recommendation path uses Spot market data; live submission remains disabled by default |
-| Binance | first approved BTCUSDT Spot market-data fallback | market data only; never an execution venue for this strategy |
-| KuCoin | second approved BTC-USDT Spot market-data fallback | market data only; never an execution venue for this strategy |
 
 ## 9. Repository layout
 

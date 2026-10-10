@@ -4,8 +4,7 @@ The shadow pipeline is read-only composition:
 
 ```text
 Bybit BTCUSDT Spot
-  → Binance BTCUSDT Spot fallback
-  → KuCoin BTC-USDT Spot fallback
+  → if unavailable or unreliable: fail closed / no decision
   → Alternative.me Crypto Fear & Greed
   → canonical reconciled execution ledger / UTC calendar month
   → unchanged deterministic V1 engine
@@ -47,7 +46,7 @@ Manual public read-only invocation:
 uv run python -m btc_dca_bridge run --mode shadow
 ```
 
-For deterministic diagnostics, add `--run-at 2026-10-07T12:00:00Z` and optionally a matching `--run-id`. Normal execution uses the approved public Spot source chain (Bybit -> Binance -> KuCoin), public Alternative.me, the local canonical ledger, and the runtime `data/` root. The selected venue must atomically supply both price and complete rolling 168-hour history. Failure of all approved venues exits non-zero.
+For deterministic diagnostics, add `--run-at 2026-10-07T12:00:00Z` and optionally a matching `--run-id`. Normal execution uses Bybit BTCUSDT Spot only, public Alternative.me, the local canonical ledger, and the runtime `data/` root. Bybit must atomically supply both price and complete rolling 168-hour history; if it is unavailable or unreliable, the shadow run exits non-zero with no V1 decision or completed manifest.
 
 Example successful ending:
 
