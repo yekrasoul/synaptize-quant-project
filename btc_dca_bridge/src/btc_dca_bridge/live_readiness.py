@@ -169,8 +169,11 @@ class GateResult:
 class LiveExecutionGate:
     """Pure evaluator for Gate A/Gate B; it never constructs a network client."""
 
-    def __init__(self, approval: LiveExecutionApproval, *, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(self, approval: LiveExecutionApproval, *, authorization: Mapping[str, Any] | None = None, approval_sha256: str | None = None, authorization_sha256: str | None = None, now: Callable[[], datetime] | None = None) -> None:
         self.approval = approval
+        self.authorization = authorization
+        self.approval_sha256 = approval_sha256
+        self.authorization_sha256 = authorization_sha256
         self._now = now or (lambda: datetime.now(UTC))
 
     def evaluate(self, current: Mapping[str, Any], *, gate: str = "A") -> GateResult:
@@ -185,7 +188,15 @@ class LiveExecutionGate:
         if safety.get("explicit_live_approval_required") is not True: reasons.append("explicit live approval is not required")
         if safety.get("order_submission") not in {"implemented", "implemented_disabled"}: reasons.append("order submission capability is not enabled")
         if (safety.get("exchange"), safety.get("market_type"), safety.get("symbol")) != ("Bybit", "spot", "BTCUSDT"): reasons.append("production market contract mismatch")
-        if current.get("authorization_status") != "AUTHORIZED": reasons.append("explicit human authorization is absent")
+        from .real_money_authorization import verify_authorization_binding
+        authorization = current.get("real_money_authorization", self.authorization)
+        valid_authorization, authorization_reasons = verify_authorization_binding(
+            self.approval, authorization,
+            approval_sha256=current.get("approval_sha256", self.approval_sha256),
+            authorization_sha256=current.get("authorization_sha256", self.authorization_sha256),
+            now_utc=self._now(),
+        )
+        if not valid_authorization: reasons.extend(authorization_reasons)
         try:
             now = self._now().astimezone(UTC)
             expires = datetime.fromisoformat(str(p["expires_at_utc"]).replace("Z", "+00:00"))

@@ -47,6 +47,7 @@ class ArtifactType(str, Enum):
     LIVE_APPROVAL = "live_approval"
     LIVE_EXECUTION_APPROVAL = "live_execution_approval"
     LIVE_EXECUTION_ATTEMPT = "live_execution_attempt"
+    REAL_MONEY_AUTHORIZATION = "real_money_authorization"
     SUBMISSION_RECONCILIATION = "submission_reconciliation"
     PRODUCTION_EVIDENCE = "production_evidence"
     PRODUCTION_STATUS = "production_status"
@@ -66,6 +67,7 @@ _DIRECTORIES = {
     ArtifactType.LIVE_APPROVAL: "live_approvals",
     ArtifactType.LIVE_EXECUTION_APPROVAL: "live_execution_approvals",
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "live_execution_attempts",
+    ArtifactType.REAL_MONEY_AUTHORIZATION: "real_money_authorizations",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
     ArtifactType.PRODUCTION_STATUS: "production_status",
@@ -84,6 +86,7 @@ _SCHEMAS = {
     ArtifactType.LIVE_APPROVAL: "live_approval",
     ArtifactType.LIVE_EXECUTION_APPROVAL: "live_execution_approval",
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "live_execution_attempt",
+    ArtifactType.REAL_MONEY_AUTHORIZATION: "real_money_authorization",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliation",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
     ArtifactType.PRODUCTION_STATUS: "production_status",
@@ -102,6 +105,7 @@ _TIMESTAMPS = {
     ArtifactType.LIVE_APPROVAL: "approved_at_utc",
     ArtifactType.LIVE_EXECUTION_APPROVAL: "created_at_utc",
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "created_at_utc",
+    ArtifactType.REAL_MONEY_AUTHORIZATION: "created_at_utc",
     ArtifactType.SUBMISSION_RECONCILIATION: "reconciled_at_utc",
     ArtifactType.PRODUCTION_EVIDENCE: "created_at_utc",
     ArtifactType.PRODUCTION_STATUS: "captured_at_utc",

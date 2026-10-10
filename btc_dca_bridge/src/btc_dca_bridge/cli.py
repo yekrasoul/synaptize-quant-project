@@ -33,6 +33,7 @@ from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, Priva
 from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
+from .real_money_authorization import authorize_persisted_approval
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -154,6 +155,17 @@ def _parser() -> argparse.ArgumentParser:
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
     subparsers.add_parser("live-readiness", help="read-only Phase 5.4B live boundary status")
+    authorize = subparsers.add_parser("live-authorize", help="explicitly authorize one exact prepared order; never enables execution")
+    authorize.add_argument("--approval-id", required=True)
+    authorize.add_argument("--approval-sha", required=True)
+    authorize.add_argument("--canary-id", required=True)
+    authorize.add_argument("--manifest-sha", required=True)
+    authorize.add_argument("--amount", required=True)
+    authorize.add_argument("--client-order-id", required=True)
+    authorize.add_argument("--month", required=True)
+    authorize.add_argument("--confirm", required=True)
+    authorize.add_argument("--run-id", required=True)
+    authorize.add_argument("--data-root", type=Path, default=DATA_PATH)
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -553,6 +565,32 @@ def _live_readiness() -> tuple[dict[str, object], int]:
     }, EXIT_BLOCKED)
 
 
+def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    store = ArtifactStore(args.data_root)
+    authorization, receipt = authorize_persisted_approval(
+        store=store, approval_id=args.approval_id, approval_sha256=args.approval_sha,
+        canary_manifest_id=args.canary_id, canary_manifest_sha256=args.manifest_sha,
+        amount=args.amount, client_order_id=args.client_order_id,
+        calendar_month=args.month, confirmation=args.confirm,
+        run_id=args.run_id, now_utc=datetime.now(UTC),
+    )
+    config = load_execution_config()
+    return ({
+        "status": "AUTHORIZED",
+        "authorization_id": authorization.authorization_id,
+        "authorization_sha256": receipt.sha256,
+        "one_shot_identity": authorization.one_shot_identity,
+        "runtime": {
+            "live_execution_enabled": config.live_execution_enabled,
+            "kill_switch": config.kill_switch,
+            "order_submission": config.order_submission,
+            "authorization": "NOT_AUTHORIZED",
+            "execution_status": "BLOCKED",
+        },
+        "message": "NO ORDER EXECUTED",
+    }, 0)
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -797,6 +835,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _live_submit(args)
         elif args.command == "live-readiness":
             result, exit_code = _live_readiness()
+        elif args.command == "live-authorize":
+            result, exit_code = _live_authorize(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:
