@@ -647,6 +647,19 @@ def _readiness_latest(store: ArtifactStore, kind: ArtifactType, directory: str) 
     return payload, artifact_sha256(payload)
 
 
+def _readiness_candidates(store: ArtifactStore, kind: ArtifactType, directory: str) -> list[tuple[dict[str, object], str]]:
+    """Read every candidate; chain resolution, not path order, chooses one."""
+    candidates: list[tuple[dict[str, object], str]] = []
+    for path in (store.root / directory).glob("*/*/*/*.json"):
+        try:
+            date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+            payload = store.read(kind, run_id=path.stem, artifact_date_utc=date)
+            candidates.append((payload, artifact_sha256(payload)))
+        except Exception:
+            continue
+    return candidates
+
+
 def _select_production_evidence(store: ArtifactStore, *, current_commit: str, now: datetime) -> tuple[dict[str, object], str] | None:
     """Select evidence by validated metadata, never by filename ordering."""
     root = store.root / "production_evidence"
@@ -710,64 +723,155 @@ def _assess_readiness_artifact(label: str, payload: Mapping[str, object], digest
         result["status"] = "CONSUMED"
     elif label == "production_enablement" and payload.get("status") == "REVOKED":
         result["status"] = "REVOKED"
+    elif str(payload.get("state", "")) in {"EXPIRED", "REVOKED", "CONSUMED"}:
+        result["status"] = str(payload["state"])
     return result
+
+
+def _readiness_payload_month(payload: Mapping[str, object]) -> str | None:
+    month = payload.get("calendar_month")
+    if month:
+        return str(month)
+    created = payload.get("created_at_utc") or payload.get("prepared_at_utc")
+    if not created:
+        return None
+    try:
+        return datetime.fromisoformat(str(created).replace("Z", "+00:00")).strftime("%Y-%m")
+    except ValueError:
+        return None
+
+
+def _readiness_matches(payload: Mapping[str, object], expected: Mapping[str, object]) -> bool:
+    return all(payload.get(key) == value for key, value in expected.items())
+
+
+def _resolve_readiness_chain(store: ArtifactStore, *, current_commit: str, now: datetime) -> tuple[dict[str, object], list[str]]:
+    """Resolve one identity-linked ceremony, never one latest artifact per directory."""
+    candidates: dict[str, list[tuple[dict[str, object], str, dict[str, object]]]] = {}
+    for label, kind, directory, identity_key, created_key, ttl in _READINESS_ARTIFACTS:
+        rows = []
+        for payload, digest in _readiness_candidates(store, kind, directory):
+            assessment = _assess_readiness_artifact(label, payload, digest, current_commit=current_commit, now=now, identity_key=identity_key, created_key=created_key, ttl=ttl)
+            rows.append((payload, digest, assessment))
+        candidates[label] = rows
+
+    def valid(label: str) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in candidates[label] if row[2]["status"] == "VALID"]
+
+    def newest(rows: list[tuple[dict[str, object], str, dict[str, object]]], created_key: str) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return sorted(rows, key=lambda row: (str(row[0].get(created_key, "")), str(row[2].get("id", ""))), reverse=True)
+
+    def matching(label: str, expected: Mapping[str, object]) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in valid(label) if _readiness_matches(row[0], expected)]
+
+    def matching_any(label: str, expected: Mapping[str, object]) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in candidates[label] if _readiness_matches(row[0], expected)]
+
+    def build(approval_row: tuple[dict[str, object], str, dict[str, object]]) -> tuple[dict[str, object], int]:
+        approval, approval_sha, approval_state = approval_row
+        decision_rows = matching("decision", {"decision_id": approval.get("decision_id")})
+        decision_rows = [row for row in decision_rows if row[1] == approval.get("decision_sha256")]
+        intent_rows = matching("order_intent", {"order_intent_id": approval.get("order_intent_id")})
+        intent_rows = [row for row in intent_rows if row[1] == approval.get("order_intent_sha256")]
+        manifest_rows = matching("canary_manifest", {"canary_id": approval.get("canary_manifest_id")})
+        manifest_rows = [row for row in manifest_rows if row[1] == approval.get("canary_manifest_sha256")]
+        if not decision_rows or not intent_rows or not manifest_rows:
+            return {}, 0
+        decision, decision_sha, _ = newest(decision_rows, "created_at_utc")[0]
+        intent, intent_sha, _ = newest(intent_rows, "created_at_utc")[0]
+        manifest, manifest_sha, _ = newest(manifest_rows, "prepared_at_utc")[0]
+        month = approval.get("calendar_month")
+        if not _readiness_matches(intent, {"decision_id": decision.get("decision_id"), "client_order_id": approval.get("client_order_id")}):
+            return {}, 0
+        if not _readiness_matches(manifest, {"order_intent_id": intent.get("order_intent_id"), "client_order_id": approval.get("client_order_id")}):
+            return {}, 0
+        if str(intent.get("quote_amount_usd")) != str(approval.get("quote_amount_usdt")) or _readiness_payload_month(intent) != str(month):
+            return {}, 0
+
+        authorization_expected = {
+            "approval_id": approval.get("approval_id"), "approval_sha256": approval_sha,
+            "canary_manifest_id": approval.get("canary_manifest_id"), "canary_manifest_sha256": manifest_sha,
+            "decision_id": decision.get("decision_id"), "decision_sha256": decision_sha,
+            "order_intent_id": intent.get("order_intent_id"), "order_intent_sha256": intent_sha,
+            "client_order_id": approval.get("client_order_id"), "exact_quote_amount_usdt": approval.get("quote_amount_usdt"),
+            "calendar_month": month, "one_shot_identity": approval.get("one_shot_identity"),
+        }
+        authorization_rows = matching("real_money_authorization", authorization_expected)
+        if not authorization_rows:
+            authorization_rows = matching_any("real_money_authorization", authorization_expected)
+        authorization_row = newest(authorization_rows, "created_at_utc")[0] if authorization_rows else None
+        activation_row = None
+        if authorization_row:
+            authorization, authorization_sha, _ = authorization_row
+            activation_expected = {
+                "authorization_id": authorization.get("authorization_id"), "authorization_sha256": authorization_sha,
+                "approval_id": approval.get("approval_id"), "approval_sha256": approval_sha,
+                "canary_manifest_id": approval.get("canary_manifest_id"), "canary_manifest_sha256": manifest_sha,
+                "decision_id": decision.get("decision_id"), "decision_sha256": decision_sha,
+                "order_intent_id": intent.get("order_intent_id"), "order_intent_sha256": intent_sha,
+                "client_order_id": approval.get("client_order_id"), "exact_quote_amount_usdt": approval.get("quote_amount_usdt"),
+                "calendar_month": month, "one_shot_identity": approval.get("one_shot_identity"),
+            }
+            activation_rows = matching("execution_activation", activation_expected)
+            if not activation_rows:
+                activation_rows = matching_any("execution_activation", activation_expected)
+            activation_row = newest(activation_rows, "created_at_utc")[0] if activation_rows else None
+
+        enablement_expected = {
+            "repository_commit_sha": current_commit,
+            "production_contract_fingerprint": approval.get("production_contract_fingerprint"),
+            "execution_policy_fingerprint": approval.get("execution_safety_config_fingerprint"),
+            "expected_account_identity_fingerprint": approval.get("account_identity_fingerprint"),
+        }
+        enablement_rows = [row for row in valid("production_enablement") if _readiness_matches(row[0], enablement_expected)]
+        if not enablement_rows:
+            enablement_rows = [row for row in candidates["production_enablement"] if _readiness_matches(row[0], {key: value for key, value in enablement_expected.items() if key != "repository_commit_sha"})]
+        enablement_row = newest(enablement_rows, "created_at_utc")[0] if enablement_rows else None
+        selected = {
+            "decision": (decision, decision_sha, _assess_readiness_artifact("decision", decision, decision_sha, current_commit=current_commit, now=now, identity_key="decision_id", created_key="created_at_utc", ttl=None)),
+            "order_intent": (intent, intent_sha, _assess_readiness_artifact("order_intent", intent, intent_sha, current_commit=current_commit, now=now, identity_key="order_intent_id", created_key="created_at_utc", ttl=None)),
+            "canary_manifest": (manifest, manifest_sha, _assess_readiness_artifact("canary_manifest", manifest, manifest_sha, current_commit=current_commit, now=now, identity_key="canary_id", created_key="prepared_at_utc", ttl=CANARY_MANIFEST_TTL)),
+            "live_execution_approval": approval_row,
+        }
+        if authorization_row: selected["real_money_authorization"] = authorization_row
+        if activation_row: selected["execution_activation"] = activation_row
+        if enablement_row: selected["production_enablement"] = enablement_row
+        chain = {label: row[2] for label, row in selected.items()}
+        complete = len(selected) == len(_READINESS_ARTIFACTS)
+        return {"chain": chain, "complete": complete, "created_at_utc": approval.get("created_at_utc", ""), "stable_id": approval.get("approval_id", "")}, int(complete)
+
+    approval_rows = newest(valid("live_execution_approval"), "created_at_utc")
+    built = [build(row) for row in approval_rows]
+    built = [item for item in built if item[0]]
+    blockers: list[str] = []
+    if built:
+        selected_chain = max(built, key=lambda item: (item[1], item[0]["created_at_utc"], item[0]["stable_id"]))[0]["chain"]
+    else:
+        selected_chain = {}
+        for label in candidates:
+            rows = candidates[label]
+            if rows:
+                selected_chain[label] = newest(rows, "created_at_utc")[0][2]
+        if any(item.get("status") == "VALID" for item in selected_chain.values()):
+            blockers.append("ceremony artifacts do not share one exact chain: BINDING_MISMATCH")
+            for item in selected_chain.values():
+                if item.get("status") == "VALID":
+                    item.update(status="BINDING_MISMATCH", reason="no identity-linked ceremony chain exists")
+    for label, _, directory, _, _, _ in _READINESS_ARTIFACTS:
+        if label not in selected_chain:
+            selected_chain[label] = {"status": "MISSING", "source": directory}
+        if selected_chain[label]["status"] != "VALID":
+            blockers.append(f"{label}: {selected_chain[label]['status']}")
+    return selected_chain, blockers
 
 
 def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     """Validate one coherent persisted ceremony without collecting or mutating state."""
     config = load_execution_config()
     store = ArtifactStore(args.data_root)
-    chain: dict[str, object] = {}
-    blockers: list[str] = []
-    selected: dict[str, tuple[dict[str, object], str]] = {}
     current_commit = _current_commit()
     now = datetime.now(UTC)
-    for label, kind, directory, identity_key, created_key, ttl in _READINESS_ARTIFACTS:
-        try:
-            found = _readiness_latest(store, kind, directory)
-            if found is None:
-                chain[label] = {"status": "MISSING", "source": directory}
-                blockers.append(f"{label}: MISSING")
-                continue
-            payload, digest = found
-            selected[label] = (payload, digest)
-            chain[label] = _assess_readiness_artifact(label, payload, digest, current_commit=current_commit, now=now, identity_key=identity_key, created_key=created_key, ttl=ttl)
-            if chain[label]["status"] != "VALID":
-                blockers.append(f"{label}: {chain[label]['status']}")
-        except Exception as exc:
-            chain[label] = {"status": "INVALID", "source": directory, "reason": str(exc)}
-            blockers.append(f"{label}: INVALID")
-
-    if all(label in selected for label in ("decision", "order_intent", "canary_manifest", "live_execution_approval", "real_money_authorization", "execution_activation")):
-        decision, _ = selected["decision"]; intent, intent_sha = selected["order_intent"]; manifest, manifest_sha = selected["canary_manifest"]
-        approval, approval_sha = selected["live_execution_approval"]; authorization, authorization_sha = selected["real_money_authorization"]; activation, _ = selected["execution_activation"]
-        identity_pairs = (
-            (decision.get("decision_id"), intent.get("decision_id")),
-            (intent.get("order_intent_id"), manifest.get("order_intent_id")),
-            (manifest.get("canary_id"), approval.get("canary_manifest_id")),
-            (approval.get("approval_id"), authorization.get("approval_id")),
-            (authorization.get("authorization_id"), activation.get("authorization_id")),
-            (intent.get("client_order_id"), approval.get("client_order_id"), authorization.get("client_order_id"), activation.get("client_order_id")),
-            (str(intent.get("quote_amount_usd")), str(approval.get("quote_amount_usdt")), str(authorization.get("exact_quote_amount_usdt")), str(activation.get("exact_quote_amount_usdt"))),
-            (str(intent.get("created_at_utc", ""))[:7], approval.get("calendar_month"), authorization.get("calendar_month"), activation.get("calendar_month")),
-            (approval.get("one_shot_identity"), authorization.get("one_shot_identity"), activation.get("one_shot_identity")),
-        )
-        sha_pairs = (
-            (approval.get("canary_manifest_sha256"), manifest_sha),
-            (approval.get("order_intent_sha256"), intent_sha),
-            (authorization.get("approval_sha256"), approval_sha),
-            (activation.get("approval_sha256"), approval_sha),
-            (activation.get("authorization_sha256"), authorization_sha),
-        )
-        if any(len(set(map(str, pair))) != 1 for pair in identity_pairs + sha_pairs):
-            blockers.insert(0, "ceremony artifacts do not share one exact chain: BINDING_MISMATCH")
-            for item in chain.values():
-                if item.get("status") == "VALID":
-                    item.update(status="BINDING_MISMATCH", reason="selected artifacts do not share exact identity/SHA bindings")
-        for payload in (approval, authorization, activation):
-            if payload.get("repository_commit_sha") != current_commit:
-                if "ceremony artifacts are stale for current repository commit" not in blockers:
-                    blockers.insert(0, "ceremony artifacts are stale for current repository commit")
+    chain, blockers = _resolve_readiness_chain(store, current_commit=current_commit, now=now)
 
     evidence_result: dict[str, object] = {"status": "MISSING"}
     evidence_found = _readiness_latest(store, ArtifactType.PRODUCTION_EVIDENCE, "production_evidence")
