@@ -57,6 +57,21 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertTrue(all(inputs[name]["type"] == "boolean" for name in ("send_test_alert", "send_test_summary")))
         self.assertNotIn("continue-on-error", self.text)
 
+    def test_github_evidence_uses_filesystem_transport(self):
+        self.assertNotIn("GITHUB_EVIDENCE_JSON", self.text)
+        self.assertNotIn("core.setOutput('evidence_json'", self.text)
+        self.assertIn("writeFileSync('/tmp/system-health-github-evidence.json'", self.text)
+        self.assertIn('read_text(encoding="utf-8")', self.text)
+        self.assertIn('/tmp/system-health-github-evidence.json', self.text)
+
+    def test_large_synthetic_evidence_round_trips_without_environment_transport(self):
+        evidence = {"artifacts": [{"name": "production-shadow-evidence", "payload": "x" * (2 * 1024 * 1024)}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "system-health-github-evidence.json"
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(len(loaded["artifacts"][0]["payload"]), 2 * 1024 * 1024)
+
     def test_schedule_and_manual_mode_selection_is_exact(self):
         self.assertEqual(derive_mode(event_name="schedule", schedule=CRITICAL_CRON, requested_mode=None), "critical")
         self.assertEqual(derive_mode(event_name="schedule", schedule=FULL_CRON, requested_mode=None), "full")
