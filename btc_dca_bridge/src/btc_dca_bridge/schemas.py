@@ -33,6 +33,7 @@ SCHEMA_FILES = {
     "submission_reconciliation": "submission_reconciliation.schema.json",
     "live_execution_approval": "live_execution_approval.schema.json",
     "live_execution_attempt": "live_execution_attempt.schema.json",
+    "real_money_authorization": "real_money_authorization.schema.json",
     "production_evidence": "production_evidence.schema.json",
     "production_status": "production_status.schema.json",
     "production_status_6_0": "production_status_v6_0.schema.json",

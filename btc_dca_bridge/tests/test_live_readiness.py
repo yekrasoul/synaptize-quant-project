@@ -16,6 +16,7 @@ from btc_dca_bridge.live_readiness import (
     prepare_submission_attempt,
     submit_disabled,
 )
+from btc_dca_bridge.real_money_authorization import RealMoneyAuthorization, artifact_sha256
 from btc_dca_bridge.schemas import validate_artifact
 
 
@@ -55,8 +56,19 @@ class LiveReadinessTests(unittest.TestCase):
 
     def current(self, approval, **changes):
         p = approval.payload
+        approval_sha = artifact_sha256(p)
+        authorization = RealMoneyAuthorization.from_approval(
+            approval, approval_sha256=approval_sha,
+            canary_manifest_id=p["canary_manifest_id"], canary_manifest_sha256=p["canary_manifest_sha256"],
+            amount=p["quote_amount_usdt"], client_order_id=p["client_order_id"],
+            calendar_month=p["calendar_month"],
+            confirmation=f"AUTHORIZE BYBIT SPOT BTCUSDT BUY ${p['quote_amount_usdt']} {p['client_order_id']}",
+            now_utc=NOW,
+        )
+        authorization_sha = artifact_sha256(authorization.to_dict())
         values = dict(
-            safety_config=safe_config(), authorization_status="AUTHORIZED",
+            safety_config=safe_config(), real_money_authorization=authorization.to_dict(),
+            approval_sha256=approval_sha, authorization_sha256=authorization_sha,
             repository_commit_sha=p["repository_commit_sha"], calendar_month=p["calendar_month"],
             monthly_spent_usdt=p["monthly_spent_usdt"], remaining_monthly_budget_usdt=p["remaining_monthly_budget_usdt"],
             account_identity_fingerprint=p["account_identity_fingerprint"], account_mode=p["account_mode"],
@@ -106,7 +118,7 @@ class LiveReadinessTests(unittest.TestCase):
         cases = {
             "kill": {"safety_config": safe_config(kill_switch=True)},
             "disabled": {"safety_config": safe_config(live_execution_enabled=False)},
-            "no-auth": {"authorization_status": "NOT_AUTHORIZED"},
+            "no-auth": {"real_money_authorization": None},
             "manifest": {"canary_manifest_sha256": "c" * 64},
             "month": {"calendar_month": "2026-11"},
             "spent": {"monthly_spent_usdt": "490", "remaining_monthly_budget_usdt": "10"},
