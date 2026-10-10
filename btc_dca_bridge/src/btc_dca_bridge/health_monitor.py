@@ -141,7 +141,7 @@ def classify_watchdog(
                 continue
             try:
                 valid_runs.append((_parse_run_time(run), run))
-            except (TypeError, ValueError, KeyError):
+            except (AttributeError, TypeError, ValueError, KeyError):
                 malformed = True
         if malformed:
             return "UNKNOWN"
@@ -168,7 +168,7 @@ def classify_canonical_ci(runs: Sequence[Mapping[str, Any]]) -> str:
     for run in runs:
         if not isinstance(run, Mapping):
             continue
-        if run.get("event") == "pull_request" and run.get("base_ref", run.get("base_branch")) == "main":
+        if run.get("event") == "pull_request":
             relevant.append(run)
         elif run.get("event") == "workflow_dispatch" and run.get("head_branch") == "main":
             relevant.append(run)
@@ -214,14 +214,53 @@ def classify_production_status(payload: Mapping[str, Any] | None) -> str:
     return "DEGRADED"
 
 
-def classify_market_data_artifacts(root: str | Path, observed_at: str | datetime, *, max_age_hours: int = 8) -> str:
+def classify_connectivity_payload(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Classify connectivity while retaining only safe, read-only diagnostics."""
+    safe_keys = (
+        "status", "read_only", "message", "observed_at_utc", "reason", "error",
+        "error_category", "http_status", "endpoint", "source", "blocker",
+    )
+    if not isinstance(payload, Mapping):
+        return {"state": "UNKNOWN", "reason": "missing or unparseable production-connectivity output", "raw": None}
+    safe: dict[str, Any] = {key: payload[key] for key in safe_keys if key in payload and not isinstance(payload[key], (Mapping, list))}
+    if isinstance(payload.get("endpoints"), list):
+        safe["endpoints"] = []
+        endpoint_keys = ("endpoint", "status", "reason", "read_only", "observed_at_utc", "response_contract_valid", "http_status", "error_category")
+        for endpoint in payload["endpoints"]:
+            if isinstance(endpoint, Mapping):
+                safe["endpoints"].append({key: endpoint[key] for key in endpoint_keys if key in endpoint and not isinstance(endpoint[key], (Mapping, list))})
+    status = payload.get("status")
+    if status in {"READS_OK", "HEALTHY", "PASS"}:
+        state = "HEALTHY"
+        reason = "read-only connectivity checks succeeded"
+    elif status in {"READS_FAILED", "READS_UNAVAILABLE", "ALERT", "FAILURE", "FAILED"}:
+        state = "ALERT"
+        failed_endpoint = next((item for item in payload.get("endpoints", []) if isinstance(item, Mapping) and item.get("status") not in {None, "PASS", "HEALTHY"}), None)
+        reason = payload.get("reason") or payload.get("error") or (failed_endpoint or {}).get("reason") or payload.get("message") or "read-only connectivity checks failed"
+    else:
+        state = "UNKNOWN"
+        reason = payload.get("message") or payload.get("reason") or "connectivity result has no recognized status"
+    return {"state": state, "reason": str(reason), "raw": safe}
+
+
+def classify_market_data_artifacts_detailed(root: str | Path, observed_at: str | datetime, *, max_age_hours: int = 8) -> dict[str, Any]:
+    """Classify matching Bybit Spot BTCUSDT evidence and explain the result."""
     latest: tuple[datetime, Mapping[str, Any]] | None = None
+    malformed = False
+    unreadable = False
     try:
         for path in Path(root).rglob("*.json"):
             if path.name.endswith(".sha256"):
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
+            except OSError:
+                unreadable = True
+                continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                malformed = True
+                continue
+            try:
                 captured = payload.get("captured_at_utc")
                 if not captured:
                     continue
@@ -230,14 +269,36 @@ def classify_market_data_artifacts(root: str | Path, observed_at: str | datetime
                     continue
                 if latest is None or timestamp > latest[0]:
                     latest = (timestamp, payload)
-            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            except (TypeError, ValueError, KeyError):
+                malformed = True
                 continue
         if latest is None:
-            return "UNKNOWN"
+            reason = "malformed/unreadable evidence" if malformed or unreadable else "no matching Bybit Spot BTCUSDT market snapshot"
+            return {"state": "UNKNOWN", "latest_captured_at_utc": None, "age_seconds": None, "max_age_hours": max_age_hours, "fresh": None, "source_exchange": None, "market_type": None, "symbol": None, "reason": reason}
         age = _utc(observed_at) - latest[0]
-        return "HEALTHY" if timedelta(0) <= age <= timedelta(hours=max_age_hours) and latest[1].get("fresh") is True else "ALERT"
+        details = {"state": "UNKNOWN", "latest_captured_at_utc": latest[0].isoformat().replace("+00:00", "Z"), "age_seconds": int(age.total_seconds()), "max_age_hours": max_age_hours, "fresh": latest[1].get("fresh"), "source_exchange": latest[1].get("source_exchange"), "market_type": latest[1].get("market_type"), "symbol": latest[1].get("symbol"), "reason": ""}
+        if age < timedelta(0):
+            details["state"], details["reason"] = "ALERT", "snapshot timestamp is in the future"
+        elif age > timedelta(hours=max_age_hours):
+            details["state"], details["reason"] = "ALERT", f"latest matching snapshot age {_format_age(age)} exceeds max {max_age_hours}h"
+        elif latest[1].get("fresh") is not True:
+            details["state"], details["reason"] = "ALERT", "snapshot has fresh != true"
+        else:
+            details["state"], details["reason"] = "HEALTHY", "healthy fresh snapshot"
+        return details
     except (OSError, TypeError, ValueError):
-        return "UNKNOWN"
+        return {"state": "UNKNOWN", "latest_captured_at_utc": None, "age_seconds": None, "max_age_hours": max_age_hours, "fresh": None, "source_exchange": None, "market_type": None, "symbol": None, "reason": "malformed/unreadable evidence"}
+
+
+def classify_market_data_artifacts(root: str | Path, observed_at: str | datetime, *, max_age_hours: int = 8) -> str:
+    return str(classify_market_data_artifacts_detailed(root, observed_at, max_age_hours=max_age_hours)["state"])
+
+
+def _format_age(age: timedelta) -> str:
+    total_seconds = max(0, int(age.total_seconds()))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    return f"{hours}h{minutes:02d}m"
 
 
 def classify_artifact_integrity(root: str | Path) -> str:
@@ -306,9 +367,14 @@ def evaluate(*, mode: str, checks: Mapping[str, Any], safety: Mapping[str, Any],
         critical_overall = "HEALTHY"
     else:
         critical_overall = "UNKNOWN"
-    overall = critical_overall
-    if overall == "HEALTHY" and mode == "full" and any(not _healthy(components[name]) for name in FULL_CHECKS):
+    if critical_overall == "CRITICAL":
+        overall = "CRITICAL"
+    elif mode == "full" and any(_alerting(components[name]) for name in FULL_CHECKS):
         overall = "DEGRADED"
+    elif all(_healthy(components[name]) for name in relevant):
+        overall = "HEALTHY"
+    else:
+        overall = "UNKNOWN"
 
     previous = previous or {}
     delivered_alerts = dict(previous.get("delivered_alerts", {}))
@@ -340,7 +406,7 @@ def evaluate(*, mode: str, checks: Mapping[str, Any], safety: Mapping[str, Any],
 
     observed_date = _utc(observed_at).date().isoformat()
     summary_due = send_test_summary if test_mode else previous.get("summary_delivery_date") != observed_date
-    return {"schema_version": "2.0.0", "mode": mode, "observed_at_utc": _utc(observed_at).isoformat().replace("+00:00", "Z"), "overall": overall, "critical_monitor": critical_overall, "components": components, "fingerprints": fingerprints, "safety": dict(safety), "safety_violations": list(violations), "pending_notifications": pending, "daily_summary_due": summary_due, "test_mode": test_mode, "contract_state": checks.get("contract_state")}
+    return {"schema_version": "2.0.0", "mode": mode, "observed_at_utc": _utc(observed_at).isoformat().replace("+00:00", "Z"), "overall": overall, "critical_monitor": critical_overall, "components": components, "fingerprints": fingerprints, "safety": dict(safety), "safety_violations": list(violations), "pending_notifications": pending, "daily_summary_due": summary_due, "test_mode": test_mode, "diagnostics": checks.get("diagnostics", {}), "contract_state": checks.get("contract_state")}
 
 
 def commit_state(result: Mapping[str, Any], previous: Mapping[str, Any] | None, *, alerts_delivered: bool, summary_delivered: bool) -> dict[str, Any]:
@@ -368,7 +434,30 @@ def commit_state(result: Mapping[str, Any], previous: Mapping[str, Any] | None, 
 
 def render_summary(result: Mapping[str, Any]) -> str:
     components, safety = result.get("components", {}), result.get("safety", {})
-    return "\n".join(["BTC DCA SYSTEM HEALTH", "", f"Overall: {result.get('overall', 'UNKNOWN')}", f"Observed: {result.get('observed_at_utc', 'UNKNOWN')}", "", f"Critical Monitor: {result.get('critical_monitor', 'UNKNOWN')}", f"Production Shadow: {components.get('production_shadow', 'UNKNOWN')}", f"Self-hosted Runner: {components.get('self_hosted_runner', 'UNKNOWN')}", f"Watchdog: {components.get('watchdog', 'UNKNOWN')}", f"Canonical CI: {components.get('canonical_ci', 'UNKNOWN')}", f"Bybit Spot Connectivity: {components.get('bybit_spot_connectivity', 'NOT_RUN')}", f"Market-data freshness: {components.get('market_data_freshness', 'NOT_RUN')}", f"Artifacts: {components.get('artifacts', 'UNKNOWN')}", f"Ledger Integrity: {components.get('ledger_integrity', 'UNKNOWN')}", "", "Safety:", f"live_execution_enabled: {str(safety.get('live_execution_enabled')).lower()}", f"kill_switch: {str(safety.get('kill_switch')).lower()}", f"order_submission: {safety.get('order_submission', 'UNKNOWN')}", f"Authorization: {safety.get('authorization', 'UNKNOWN')}", "", "NO ORDER EXECUTED"])
+    diagnostics = result.get("diagnostics", {})
+    lines = ["BTC DCA SYSTEM HEALTH", "", f"Overall: {result.get('overall', 'UNKNOWN')}", f"Observed: {result.get('observed_at_utc', 'UNKNOWN')}", "", f"Critical Monitor: {result.get('critical_monitor', 'UNKNOWN')}", f"Production Shadow: {components.get('production_shadow', 'UNKNOWN')}", f"Self-hosted Runner: {components.get('self_hosted_runner', 'UNKNOWN')}", f"Watchdog: {components.get('watchdog', 'UNKNOWN')}", f"Canonical CI: {components.get('canonical_ci', 'UNKNOWN')}", f"Bybit Spot Connectivity: {components.get('bybit_spot_connectivity', 'NOT_RUN')}", f"Market-data freshness: {components.get('market_data_freshness', 'NOT_RUN')}", f"Artifacts: {components.get('artifacts', 'UNKNOWN')}", f"Ledger Integrity: {components.get('ledger_integrity', 'UNKNOWN')}"]
+    for component, label in (("bybit_spot_connectivity", "Bybit Spot Connectivity"), ("market_data_freshness", "Market-data freshness"), ("watchdog", "Watchdog"), ("canonical_ci", "Canonical CI")):
+        detail = diagnostics.get(component)
+        if isinstance(detail, Mapping) and detail.get("reason"):
+            lines.append(f"  {label} diagnostic:")
+            raw = detail.get("raw")
+            if component == "bybit_spot_connectivity" and isinstance(raw, Mapping) and raw.get("status") is not None:
+                lines.append(f"    Status: {raw['status']}")
+                endpoint = next((item for item in raw.get("endpoints", []) if isinstance(item, Mapping) and item.get("endpoint")), None)
+                if endpoint:
+                    lines.append(f"    Endpoint: {endpoint['endpoint']}")
+                    if endpoint.get("http_status") is not None:
+                        lines.append(f"    HTTP status: {endpoint['http_status']}")
+            if component == "market_data_freshness":
+                if detail.get("latest_captured_at_utc"):
+                    lines.append(f"    Latest snapshot: {detail['latest_captured_at_utc']}")
+                if detail.get("age_seconds") is not None:
+                    lines.append(f"    Age: {_format_age(timedelta(seconds=int(detail['age_seconds'])))}")
+                if detail.get("fresh") is not None:
+                    lines.append(f"    Fresh flag: {str(detail['fresh']).lower()}")
+            lines.append(f"    Reason: {detail['reason']}")
+    lines.extend(["", "Safety:", f"live_execution_enabled: {str(safety.get('live_execution_enabled')).lower()}", f"kill_switch: {str(safety.get('kill_switch')).lower()}", f"order_submission: {safety.get('order_submission', 'UNKNOWN')}", f"Authorization: {safety.get('authorization', 'UNKNOWN')}", "", "NO ORDER EXECUTED"])
+    return "\n".join(lines)
 
 
 def _main() -> int:

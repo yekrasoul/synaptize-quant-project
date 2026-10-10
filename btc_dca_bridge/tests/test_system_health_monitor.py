@@ -13,7 +13,9 @@ from btc_dca_bridge.health_monitor import (
     canonical_contract_state,
     classify_artifact_integrity,
     classify_canonical_ci,
+    classify_connectivity_payload,
     classify_market_data_artifacts,
+    classify_market_data_artifacts_detailed,
     classify_production_shadow,
     classify_production_status,
     classify_self_hosted_runner,
@@ -140,6 +142,15 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertEqual(classify_canonical_ci([{**pr, "conclusion": "failure"}]), "ALERT")
         self.assertEqual(classify_canonical_ci([{**pr, "conclusion": "success", "created_at": "bad"}]), "UNKNOWN")
         self.assertEqual(classify_canonical_ci([{**base, "event": "push", "conclusion": "success"}]), "UNKNOWN")
+        real_payload = {"id": 38070701656, "name": "Canonical CI", "event": "pull_request", "head_branch": "fix/system-health-stabilization", "head_sha": "7f35b4ce2dc980855de6c3f9a62dd6c22e6148e3", "status": "completed", "conclusion": "success", "pull_requests": [], "created_at": "2026-10-10T17:11:09Z"}
+        self.assertEqual(classify_canonical_ci([real_payload]), "HEALTHY")
+        self.assertEqual(classify_canonical_ci([{**real_payload, "conclusion": "failure"}]), "ALERT")
+        self.assertEqual(classify_canonical_ci([{**real_payload, "status": "queued", "conclusion": None}]), "UNKNOWN")
+        self.assertEqual(classify_canonical_ci([{**real_payload, "status": "in_progress", "conclusion": None}]), "UNKNOWN")
+        self.assertEqual(classify_canonical_ci([{**real_payload, "created_at": "bad"}]), "UNKNOWN")
+        dispatch = {**real_payload, "event": "workflow_dispatch", "head_branch": "main"}
+        self.assertEqual(classify_canonical_ci([dispatch]), "HEALTHY")
+        self.assertEqual(classify_canonical_ci([{**dispatch, "head_branch": "fix/branch"}]), "UNKNOWN")
 
     def test_watchdog_cold_start_and_fail_closed_history(self):
         observed = "2026-10-10T17:17:00Z"
@@ -174,6 +185,61 @@ class SystemHealthMonitorTest(unittest.TestCase):
         missing = evaluate(mode="critical", checks={**healthy_checks(), "telegram": "ALERT"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
         self.assertEqual(missing["overall"], "CRITICAL")
         self.assertTrue(any(item["component"] == "telegram" for item in missing["pending_notifications"]))
+
+    def test_connectivity_diagnostics_are_safe_and_preserved(self):
+        payload = {"status": "READS_FAILED", "message": "NO ORDER SUBMITTED", "http_status": 403, "endpoint": "/v5/market/time", "api_key": "secret", "endpoints": [{"endpoint": "/v5/market/time", "status": "FAIL", "reason": "HTTP 403", "read_only": True}]}
+        detail = classify_connectivity_payload(payload)
+        self.assertEqual(detail["state"], "ALERT")
+        self.assertEqual(detail["reason"], "HTTP 403")
+        self.assertEqual(detail["raw"]["status"], "READS_FAILED")
+        self.assertEqual(detail["raw"]["http_status"], 403)
+        self.assertNotIn("api_key", json.dumps(detail))
+        self.assertEqual(classify_connectivity_payload(None)["state"], "UNKNOWN")
+        self.assertIsNone(classify_connectivity_payload(None)["raw"])
+
+    def test_market_data_diagnostics_distinguish_freshness_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "snapshot.json"
+            base = {"captured_at_utc": "2026-10-10T16:00:00Z", "source_exchange": "Bybit", "market_type": "spot", "symbol": "BTCUSDT", "fresh": True}
+            detail = classify_market_data_artifacts_detailed(root, "2026-10-10T17:00:00Z")
+            self.assertEqual(detail["state"], "UNKNOWN")
+            self.assertEqual(detail["reason"], "no matching Bybit Spot BTCUSDT market snapshot")
+            path.write_text(json.dumps(base), encoding="utf-8")
+            detail = classify_market_data_artifacts_detailed(root, "2026-10-10T17:00:00Z")
+            self.assertEqual(detail["state"], "HEALTHY")
+            self.assertEqual(detail["reason"], "healthy fresh snapshot")
+            self.assertEqual(detail["latest_captured_at_utc"], "2026-10-10T16:00:00Z")
+            path.write_text(json.dumps({**base, "captured_at_utc": "2026-10-10T08:00:00Z"}), encoding="utf-8")
+            detail = classify_market_data_artifacts_detailed(root, "2026-10-10T17:12:00Z")
+            self.assertEqual(detail["state"], "ALERT")
+            self.assertIn("age 9h12m exceeds max 8h", detail["reason"])
+            path.write_text(json.dumps({**base, "captured_at_utc": "2026-10-10T18:00:00Z"}), encoding="utf-8")
+            self.assertEqual(classify_market_data_artifacts_detailed(root, "2026-10-10T17:00:00Z")["reason"], "snapshot timestamp is in the future")
+            path.write_text(json.dumps({**base, "fresh": False}), encoding="utf-8")
+            self.assertEqual(classify_market_data_artifacts_detailed(root, "2026-10-10T17:00:00Z")["reason"], "snapshot has fresh != true")
+            path.write_text("not-json", encoding="utf-8")
+            detail = classify_market_data_artifacts_detailed(root, "2026-10-10T17:00:00Z")
+            self.assertEqual(detail["state"], "UNKNOWN")
+            self.assertEqual(detail["reason"], "malformed/unreadable evidence")
+
+    def test_full_overall_precedence_preserves_unknown_without_hiding_alerts(self):
+        checks = {**healthy_checks(), "watchdog": "UNKNOWN", "bybit_spot_connectivity": "ALERT", "market_data_freshness": "ALERT"}
+        result = evaluate(mode="full", checks=checks, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertEqual(result["critical_monitor"], "UNKNOWN")
+        self.assertEqual(result["overall"], "DEGRADED")
+        result = evaluate(mode="full", checks={**checks, "production_shadow": "ALERT"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertEqual(result["overall"], "CRITICAL")
+        result = evaluate(mode="full", checks={**healthy_checks(), "watchdog": "UNKNOWN", "bybit_spot_connectivity": "UNKNOWN"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertEqual(result["overall"], "UNKNOWN")
+
+    def test_summary_includes_safe_component_diagnostics(self):
+        result = evaluate(mode="full", checks={**healthy_checks(), "diagnostics": {"bybit_spot_connectivity": {"reason": "HTTP 403 from /v5/market/time", "raw": {"status": "READS_FAILED", "endpoints": [{"endpoint": "/v5/market/time"}]}}, "market_data_freshness": {"reason": "latest matching snapshot age 9h12m exceeds max 8h", "latest_captured_at_utc": "2026-10-10T08:00:00Z", "age_seconds": 33120, "fresh": True}, "watchdog": {"reason": "no prior successful scheduled monitor history"}, "canonical_ci": {"reason": "no relevant Canonical CI run found"}}}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        summary = render_summary(result)
+        for text in ("Status: READS_FAILED", "Endpoint: /v5/market/time", "HTTP 403 from /v5/market/time", "Latest snapshot: 2026-10-10T08:00:00Z", "Age: 9h12m", "Fresh flag: true", "latest matching snapshot age 9h12m exceeds max 8h", "no prior successful scheduled monitor history", "no relevant Canonical CI run found"):
+            self.assertIn(text, summary)
+        self.assertNotIn("api_key", summary)
+        self.assertNotIn("token", summary.lower())
 
     def test_contract_state_contains_material_watch_features_and_fingerprint(self):
         contract = {"production_quote_limit_conclusion": "QUOTE_UNIT_MAX_NOT_REQUIRED", "approved_quote_unit_limit_source_count": 0, "real_money_authorization": {"status": "NOT_AUTHORIZED"}, "capabilities": {"quote_unit_maximum_supported": False, "quote_unit_maximum_source": None, "spot_quote_availability_supported": True, "market_unit_quote_coin_supported": True}}
@@ -243,7 +309,7 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertNotIn("bybit_spot_connectivity", critical["components"])
         full = evaluate(mode="full", checks={**healthy_checks(), "bybit_spot_connectivity": "UNKNOWN"}, safety=SAFETY, observed_at="2026-10-10T18:43:00Z")
         self.assertIn("bybit_spot_connectivity", full["components"])
-        self.assertEqual(full["overall"], "DEGRADED")
+        self.assertEqual(full["overall"], "UNKNOWN")
 
     def test_delivery_acknowledgement_controls_alert_retries_recovery_and_summary(self):
         failed_checks = {**healthy_checks(), "production_shadow": "ALERT"}
