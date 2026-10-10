@@ -112,7 +112,7 @@ class TelegramNotificationTest(unittest.TestCase):
         self.assertIn("NO ORDER EXECUTED", message)
         self.assertIn("FINAL PURCHASE: $98", message)
 
-    def test_failure_message_is_concise_typed_and_no_order(self):
+    def test_failure_message_includes_available_diagnostics_and_no_order(self):
         outcome = {
             "run_id": "run_20261007T110000Z_scheduled_123456789abc",
             "process_started_at_utc": "2026-10-07T11:04:19Z",
@@ -120,6 +120,9 @@ class TelegramNotificationTest(unittest.TestCase):
                 "stage": "MARKET_DATA",
                 "category": "SOURCE_UNAVAILABLE",
                 "source": "bybit_api",
+                "status_code": 403,
+                "retryable": False,
+                "cause_message": "SOURCE_UNAVAILABLE: Bybit returned HTTP 403 (forbidden, IP restriction, or IP rate limit)",
             },
         }
         message = format_failure_message(outcome)
@@ -127,8 +130,45 @@ class TelegramNotificationTest(unittest.TestCase):
         self.assertIn("failed stage: MARKET_DATA", message)
         self.assertIn("category: SOURCE_UNAVAILABLE", message)
         self.assertIn("source: bybit_api", message)
+        self.assertIn("HTTP status: 403", message)
+        self.assertIn("retryable: false", message)
+        self.assertIn("cause: SOURCE_UNAVAILABLE: Bybit returned HTTP 403", message)
         self.assertIn("NO ORDER EXECUTED", message)
         self.assertNotIn("Traceback", message)
+
+    def test_failure_message_omits_absent_diagnostics_and_untrusted_fields(self):
+        outcome = {
+            "run_id": "run-test",
+            "process_started_at_utc": "2026-10-07T11:04:19Z",
+            "failure": {
+                "stage": "MARKET_DATA",
+                "category": "SOURCE_UNAVAILABLE",
+                "cause_message": "connection timed out",
+                "secret": "bot-token-secret",
+                "traceback": "Traceback (most recent call last)",
+                "environment": "TELEGRAM_BOT_TOKEN=hidden",
+                "raw_response_body": '{"retCode":10006}',
+            },
+        }
+        message = format_failure_message(outcome)
+        self.assertIn("cause: connection timed out", message)
+        self.assertNotIn("bot-token-secret", message)
+        self.assertNotIn("Traceback", message)
+        self.assertNotIn("TELEGRAM_BOT_TOKEN", message)
+        self.assertNotIn("retCode", message)
+        self.assertNotIn("HTTP status:", message)
+        self.assertNotIn("retryable:", message)
+
+    def test_success_message_substantive_v1_fields_remain_unchanged(self):
+        message = format_success_message(completed_outcome())
+        for expected in (
+            "market source: bybit_api",
+            "BTC price: $80000",
+            "Fear & Greed: 35",
+            "FINAL PURCHASE: $98",
+            "SHADOW — BUY $98 BTC TODAY — NO ORDER EXECUTED",
+        ):
+            self.assertIn(expected, message)
 
     def test_success_delivery_uses_plain_text_and_confirms_message_id(self):
         response = TelegramResponse(

@@ -246,12 +246,18 @@ def _failure(error: ShadowRunError) -> dict[str, Any]:
     cause = error.cause
     source = getattr(cause, "source", None)
     category = getattr(getattr(cause, "code", None), "value", None) or error.code.value
-    return {
+    failure: dict[str, Any] = {
         "stage": error.stage,
         "category": category,
         "source": source,
         "message": str(error),
     }
+    if cause is not None:
+        failure["cause_message"] = str(cause)
+        for field in ("status_code", "retryable"):
+            if hasattr(cause, field):
+                failure[field] = getattr(cause, field)
+    return failure
 
 
 def read_json_object(path: Path) -> dict[str, Any]:

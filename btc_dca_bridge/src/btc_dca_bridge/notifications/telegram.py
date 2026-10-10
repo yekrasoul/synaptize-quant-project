@@ -243,6 +243,13 @@ def format_failure_message(
     ]
     if isinstance(source, str) and source:
         lines.append(f"source: {source}")
+    if details.get("status_code") is not None:
+        lines.append(f"HTTP status: {details['status_code']}")
+    if details.get("retryable") is not None:
+        lines.append(f"retryable: {str(details['retryable']).lower()}")
+    cause_message = details.get("cause_message")
+    if isinstance(cause_message, str) and cause_message:
+        lines.append(f"cause: {cause_message}")
     lines.extend(
         (
             f"timestamp: {outcome.get('process_started_at_utc', 'unknown')}",
