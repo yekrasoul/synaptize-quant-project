@@ -1,0 +1,180 @@
+name: Production shadow watchdog
+
+on:
+  schedule:
+    - cron: "23 1,7,13,19 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-shadow-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Monitor read-only BTC DCA shadow
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Inspect preceding scheduled production shadow
+        id: monitor
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const productionSlot = (watchdogTime) => {
+              const candidate = new Date(Date.UTC(
+                watchdogTime.getUTCFullYear(),
+                watchdogTime.getUTCMonth(),
+                watchdogTime.getUTCDate(),
+                0, 23, 0, 0
+              ));
+              const slots = [0, 6, 12, 18]
+                .map(hour => new Date(candidate.getTime() + hour * 60 * 60 * 1000))
+                .filter(slot => slot < watchdogTime);
+              if (slots.length > 0) return slots[slots.length - 1];
+              return new Date(candidate.getTime() - 6 * 60 * 60 * 1000);
+            };
+
+            let expectedSlot = productionSlot(new Date());
+            let matchedRun = null;
+            let status = 'error';
+            let conclusion = 'unknown';
+            let reason = 'Monitoring did not complete.';
+
+            try {
+              const currentRun = await github.rest.actions.getWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId
+              });
+              const watchdogStarted = new Date(
+                currentRun.data.run_started_at || currentRun.data.created_at
+              );
+              expectedSlot = productionSlot(watchdogStarted);
+
+              const runs = await github.paginate(
+                github.rest.actions.listWorkflowRuns,
+                {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: 'production-shadow.yml',
+                  per_page: 100
+                }
+              );
+              const graceEnd = new Date(expectedSlot.getTime() + 60 * 60 * 1000);
+              const candidates = runs
+                .filter(run => run.event === 'schedule' && run.head_branch === 'main')
+                .filter(run => {
+                  const created = new Date(run.created_at);
+                  return created >= expectedSlot && created < graceEnd;
+                })
+                .sort((left, right) =>
+                  new Date(right.created_at).getTime() - new Date(left.created_at).getTime()
+                );
+              matchedRun = candidates[0] || null;
+
+              if (!matchedRun) {
+                status = 'missing';
+                reason = 'Expected scheduled run was not observed during the one-hour grace interval.';
+              } else {
+                status = matchedRun.status || 'unknown';
+                conclusion = matchedRun.conclusion || 'unknown';
+                if (matchedRun.conclusion === 'success') {
+                  reason = 'Expected scheduled run completed successfully.';
+                } else if (matchedRun.status === 'queued' || matchedRun.status === 'in_progress') {
+                  reason = `Expected scheduled run remains ${matchedRun.status} after the grace period.`;
+                } else {
+                  reason = `Expected scheduled run completed with conclusion ${conclusion}.`;
+                }
+              }
+            } catch (error) {
+              status = 'error';
+              conclusion = 'unknown';
+              reason = `Monitoring/parsing error: ${error.message}`;
+            }
+
+            const result = matchedRun && matchedRun.conclusion === 'success' ? 'HEALTHY' : 'ALERT';
+            core.setOutput('expected_slot', expectedSlot.toISOString());
+            core.setOutput('matched_run_id', matchedRun ? String(matchedRun.id) : 'none');
+            core.setOutput('status', status);
+            core.setOutput('conclusion', conclusion);
+            core.setOutput('reason', reason);
+            core.setOutput('watchdog_result', result);
+            if (result === 'ALERT') core.setFailed(reason);
+
+      - name: Send Telegram alert
+        if: always() && steps.monitor.outputs.watchdog_result == 'ALERT'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EXPECTED_SLOT: ${{ steps.monitor.outputs.expected_slot }}
+          MATCHED_RUN_ID: ${{ steps.monitor.outputs.matched_run_id }}
+          WATCHDOG_STATUS: ${{ steps.monitor.outputs.status }}
+          WATCHDOG_CONCLUSION: ${{ steps.monitor.outputs.conclusion }}
+          WATCHDOG_REASON: ${{ steps.monitor.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+          chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+          if not token or not chat_id:
+              raise SystemExit("Telegram alert secrets are unavailable.")
+
+          message = "\n".join([
+              "BTC DCA SHADOW WATCHDOG",
+              f"expected slot UTC: {os.environ.get('EXPECTED_SLOT', 'unknown')}",
+              f"observed run ID: {os.environ.get('MATCHED_RUN_ID', 'none')}",
+              f"status: {os.environ.get('WATCHDOG_STATUS', 'unknown')}",
+              f"conclusion: {os.environ.get('WATCHDOG_CONCLUSION', 'unknown')}",
+              f"reason: {os.environ.get('WATCHDOG_REASON', 'unknown')}",
+              "NO ORDER EXECUTED",
+              "Authorization: NOT_AUTHORIZED",
+          ])
+          payload = json.dumps({"chat_id": chat_id, "text": message}).encode("utf-8")
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  body = json.loads(response.read().decode("utf-8"))
+                  if response.status != 200 or body.get("ok") is not True:
+                      raise SystemExit("Telegram API rejected the alert.")
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f"Telegram alert delivery failed with HTTP status {error.code}.") from error
+          except urllib.error.URLError as error:
+              raise SystemExit("Telegram alert delivery failed due to a network error.") from error
+          except (TimeoutError, json.JSONDecodeError) as error:
+              raise SystemExit("Telegram alert delivery returned an invalid response.") from error
+          PY
+
+      - name: Write watchdog summary
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SLOT: ${{ steps.monitor.outputs.expected_slot }}
+          MATCHED_RUN_ID: ${{ steps.monitor.outputs.matched_run_id }}
+          WATCHDOG_STATUS: ${{ steps.monitor.outputs.status }}
+          WATCHDOG_CONCLUSION: ${{ steps.monitor.outputs.conclusion }}
+          WATCHDOG_RESULT: ${{ steps.monitor.outputs.watchdog_result }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Production shadow watchdog"
+            echo "- expected slot UTC: ${EXPECTED_SLOT:-unknown}"
+            echo "- matched run ID: ${MATCHED_RUN_ID:-none}"
+            echo "- status/conclusion: ${WATCHDOG_STATUS:-unknown}/${WATCHDOG_CONCLUSION:-unknown}"
+            echo "- watchdog result: ${WATCHDOG_RESULT:-ALERT}"
+            echo "- read-only: yes"
+          } >> "$GITHUB_STEP_SUMMARY"
