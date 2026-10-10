@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .config import load_notification_config, load_operational_config, load_strategy_config, load_execution_config
 from .artifacts import ArtifactStore, ArtifactType
@@ -55,6 +56,13 @@ from .readiness import ProductionReadinessService, production_connectivity
 from .canary_readiness import bybit_canary_readiness
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
 from .readiness_checks import project_gate_d_evidence
+from .ttl_policy import (
+    CANARY_MANIFEST_TTL,
+    EXECUTION_ACTIVATION_TTL,
+    LIVE_EXECUTION_APPROVAL_TTL,
+    PRODUCTION_ENABLEMENT_TTL,
+    REAL_MONEY_AUTHORIZATION_TTL,
+)
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
 
@@ -612,48 +620,132 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
 
 
+_READINESS_ARTIFACTS = (
+    ("decision", ArtifactType.DECISION, "decisions", "decision_id", "created_at_utc", None),
+    ("order_intent", ArtifactType.ORDER_INTENT, "order_intents", "order_intent_id", "created_at_utc", None),
+    ("canary_manifest", ArtifactType.CANARY_MANIFEST, "canary_manifests", "canary_id", "prepared_at_utc", CANARY_MANIFEST_TTL),
+    ("live_execution_approval", ArtifactType.LIVE_EXECUTION_APPROVAL, "live_execution_approvals", "approval_id", "created_at_utc", LIVE_EXECUTION_APPROVAL_TTL),
+    ("real_money_authorization", ArtifactType.REAL_MONEY_AUTHORIZATION, "real_money_authorizations", "authorization_id", "created_at_utc", REAL_MONEY_AUTHORIZATION_TTL),
+    ("execution_activation", ArtifactType.EXECUTION_ACTIVATION, "execution_activations", "activation_id", "created_at_utc", EXECUTION_ACTIVATION_TTL),
+    ("production_enablement", ArtifactType.PRODUCTION_ENABLEMENT, "production_enablements", "enablement_id", "created_at_utc", PRODUCTION_ENABLEMENT_TTL),
+)
+
+
+def _current_commit() -> str:
+    return subprocess.run(("git", "rev-parse", "HEAD"), capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _readiness_latest(store: ArtifactStore, kind: ArtifactType, directory: str) -> tuple[dict[str, object], str] | None:
+    paths = sorted((store.root / directory).glob("*/*/*/*.json"))
+    if not paths:
+        return None
+    path = paths[-1]
+    date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+    payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
+    return payload, artifact_sha256(payload)
+
+
+def _assess_readiness_artifact(label: str, payload: Mapping[str, object], digest: str, *, current_commit: str, now: datetime, identity_key: str, created_key: str, ttl: timedelta | None) -> dict[str, object]:
+    result: dict[str, object] = {"status": "VALID", "id": payload.get(identity_key), "sha256": digest}
+    if payload.get("repository_commit_sha") and payload.get("repository_commit_sha") != current_commit:
+        result.update(status="STALE_REPOSITORY", reason="artifact was created for a different repository commit", expected_repository_commit=current_commit, artifact_repository_commit=payload.get("repository_commit_sha"))
+        return result
+    if ttl is None:
+        return result
+    try:
+        created = datetime.fromisoformat(str(payload[created_key]).replace("Z", "+00:00")).astimezone(UTC)
+        expires = datetime.fromisoformat(str(payload["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+    except (KeyError, TypeError, ValueError) as exc:
+        result.update(status="INVALID", reason=f"invalid artifact timestamps: {exc}")
+        return result
+    if expires <= now:
+        result.update(status="EXPIRED", reason="artifact expiry has passed", expires_at_utc=payload.get("expires_at_utc"))
+    elif ttl is not None and expires - created > ttl:
+        result.update(status="INVALID", reason="artifact TTL exceeds canonical policy")
+    elif label in {"real_money_authorization", "execution_activation"} and payload.get("consumed") is True:
+        result["status"] = "CONSUMED"
+    elif label == "production_enablement" and payload.get("status") == "REVOKED":
+        result["status"] = "REVOKED"
+    return result
+
+
 def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    """Report the complete persisted ceremony without collecting or mutating state."""
+    """Validate one coherent persisted ceremony without collecting or mutating state."""
     config = load_execution_config()
     store = ArtifactStore(args.data_root)
     chain: dict[str, object] = {}
     blockers: list[str] = []
-    for label, kind, directory, identity_key in (
-        ("decision", ArtifactType.DECISION, "decisions", "decision_id"),
-        ("order_intent", ArtifactType.ORDER_INTENT, "order_intents", "order_intent_id"),
-        ("canary_manifest", ArtifactType.CANARY_MANIFEST, "canary_manifests", "canary_id"),
-        ("live_execution_approval", ArtifactType.LIVE_EXECUTION_APPROVAL, "live_execution_approvals", "approval_id"),
-        ("real_money_authorization", ArtifactType.REAL_MONEY_AUTHORIZATION, "real_money_authorizations", "authorization_id"),
-        ("execution_activation", ArtifactType.EXECUTION_ACTIVATION, "execution_activations", "activation_id"),
-        ("production_enablement", ArtifactType.PRODUCTION_ENABLEMENT, "production_enablements", "enablement_id"),
-        ("production_evidence", ArtifactType.PRODUCTION_EVIDENCE, "production_evidence", "evidence_id"),
-    ):
-        paths = sorted((store.root / directory).glob("*/*/*/*.json"))
-        if not paths:
-            chain[label] = {"status": "MISSING", "source": directory}
-            blockers.append(f"{label} is missing")
-            continue
-        path = paths[-1]
+    selected: dict[str, tuple[dict[str, object], str]] = {}
+    current_commit = _current_commit()
+    now = datetime.now(UTC)
+    for label, kind, directory, identity_key, created_key, ttl in _READINESS_ARTIFACTS:
         try:
-            date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
-            payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
-            chain[label] = {"status": str(payload.get("status", "PRESENT")), "id": str(payload.get(identity_key, path.stem))}
+            found = _readiness_latest(store, kind, directory)
+            if found is None:
+                chain[label] = {"status": "MISSING", "source": directory}
+                blockers.append(f"{label}: MISSING")
+                continue
+            payload, digest = found
+            selected[label] = (payload, digest)
+            chain[label] = _assess_readiness_artifact(label, payload, digest, current_commit=current_commit, now=now, identity_key=identity_key, created_key=created_key, ttl=ttl)
+            if chain[label]["status"] != "VALID":
+                blockers.append(f"{label}: {chain[label]['status']}")
         except Exception as exc:
-            chain[label] = {"status": "INVALID", "reason": str(exc), "source": str(path)}
-            blockers.append(f"{label} is invalid: {exc}")
+            chain[label] = {"status": "INVALID", "source": directory, "reason": str(exc)}
+            blockers.append(f"{label}: INVALID")
+
+    if all(label in selected for label in ("decision", "order_intent", "canary_manifest", "live_execution_approval", "real_money_authorization", "execution_activation")):
+        decision, _ = selected["decision"]; intent, intent_sha = selected["order_intent"]; manifest, manifest_sha = selected["canary_manifest"]
+        approval, approval_sha = selected["live_execution_approval"]; authorization, authorization_sha = selected["real_money_authorization"]; activation, _ = selected["execution_activation"]
+        identity_pairs = (
+            (decision.get("decision_id"), intent.get("decision_id")),
+            (intent.get("order_intent_id"), manifest.get("order_intent_id")),
+            (manifest.get("canary_id"), approval.get("canary_manifest_id")),
+            (approval.get("approval_id"), authorization.get("approval_id")),
+            (authorization.get("authorization_id"), activation.get("authorization_id")),
+            (intent.get("client_order_id"), approval.get("client_order_id"), authorization.get("client_order_id"), activation.get("client_order_id")),
+            (str(intent.get("quote_amount_usd")), str(approval.get("quote_amount_usdt")), str(authorization.get("exact_quote_amount_usdt")), str(activation.get("exact_quote_amount_usdt"))),
+            (str(intent.get("created_at_utc", ""))[:7], approval.get("calendar_month"), authorization.get("calendar_month"), activation.get("calendar_month")),
+            (approval.get("one_shot_identity"), authorization.get("one_shot_identity"), activation.get("one_shot_identity")),
+        )
+        sha_pairs = (
+            (approval.get("canary_manifest_sha256"), manifest_sha),
+            (approval.get("order_intent_sha256"), intent_sha),
+            (authorization.get("approval_sha256"), approval_sha),
+            (activation.get("approval_sha256"), approval_sha),
+            (activation.get("authorization_sha256"), authorization_sha),
+        )
+        if any(len(set(map(str, pair))) != 1 for pair in identity_pairs + sha_pairs):
+            blockers.insert(0, "ceremony artifacts do not share one exact chain: BINDING_MISMATCH")
+            for item in chain.values():
+                if item.get("status") == "VALID":
+                    item.update(status="BINDING_MISMATCH", reason="selected artifacts do not share exact identity/SHA bindings")
+        for payload in (approval, authorization, activation):
+            if payload.get("repository_commit_sha") != current_commit:
+                if "ceremony artifacts are stale for current repository commit" not in blockers:
+                    blockers.insert(0, "ceremony artifacts are stale for current repository commit")
+
+    evidence_result: dict[str, object] = {"status": "MISSING"}
+    evidence_found = _readiness_latest(store, ArtifactType.PRODUCTION_EVIDENCE, "production_evidence")
+    if evidence_found:
+        evidence, evidence_sha = evidence_found
+        evidence_status = "VALID" if evidence.get("repository_commit") == current_commit and evidence.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" else ("STALE_REPOSITORY" if evidence.get("repository_commit") != current_commit else "NOT_READY")
+        try:
+            if datetime.fromisoformat(str(evidence["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC) <= now:
+                evidence_status = "EXPIRED"
+        except (KeyError, TypeError, ValueError):
+            evidence_status = "INVALID"
+        evidence_result = {"status": evidence_status, "id": evidence.get("evidence_id"), "sha256": evidence_sha, "repository_commit": evidence.get("repository_commit")}
+    if evidence_result["status"] != "VALID":
+        blockers.append(f"production evidence: {evidence_result['status']}")
+    stale = any(item.get("status") == "STALE_REPOSITORY" for item in chain.values()) or evidence_result["status"] == "STALE_REPOSITORY"
+    if stale and "ceremony artifacts are stale for current repository commit" not in blockers:
+        blockers.insert(0, "ceremony artifacts are stale for current repository commit")
+    next_command = "btc-dca collect-production-evidence --data-root data --ledger ledger/executions.jsonl" if stale or evidence_result["status"] in {"MISSING", "EXPIRED", "NOT_READY", "INVALID"} else "btc-dca production-enable-prepare"
     safety = {"live_execution_enabled": config.live_execution_enabled, "kill_switch": config.kill_switch, "order_submission": config.order_submission, "monthly_cap_usd": str(config.monthly_cap_usd)}
     if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
         blockers.append("checked-in execution policy is not fail-safe")
-    if not blockers:
-        blockers.append("no execution is permitted by the checked-in fail-safe policy")
-    next_command = "btc-dca canary-prepare" if chain.get("canary_manifest", {}).get("status") == "MISSING" else (
-        "btc-dca canary-approve" if chain.get("live_execution_approval", {}).get("status") == "MISSING" else (
-            "btc-dca live-authorize" if chain.get("real_money_authorization", {}).get("status") in {"MISSING", "NOT_AUTHORIZED"} else (
-                "btc-dca live-activate" if chain.get("execution_activation", {}).get("status") in {"MISSING", "NOT_ACTIVATED"} else "btc-dca production-enable-prepare"
-            )
-        )
-    )
-    return ({"status": "BLOCKED", "final_state": "BLOCKED", "chain": chain, "safety": safety, "blockers": blockers, "next_allowed_command": next_command, "message": "NO ORDER EXECUTED"}, EXIT_BLOCKED)
+    return ({"status": "BLOCKED", "final_state": "BLOCKED", "repository_commit": current_commit, "chain": chain, "production_evidence": evidence_result, "safety": safety, "blockers": list(dict.fromkeys(blockers)), "next_allowed_command": next_command, "message": "NO ORDER EXECUTED"}, EXIT_BLOCKED)
 
 
 def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:

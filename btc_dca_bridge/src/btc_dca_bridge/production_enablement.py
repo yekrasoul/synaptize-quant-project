@@ -18,8 +18,9 @@ from .live_readiness import GateStatus, LiveExecutionGate, LiveExecutionApproval
 from .live_activation import issue_execution_capability
 from .real_money_authorization import artifact_sha256
 from .readiness_checks import project_gate_d_evidence
+from .ttl_policy import PRODUCTION_ENABLEMENT_TTL
 
-ENABLEMENT_TTL = timedelta(hours=24)
+ENABLEMENT_TTL = PRODUCTION_ENABLEMENT_TTL
 ENABLEMENT_SCHEMA_VERSION = "5.4.0E"
 ENABLEMENT_CONFIRMATION = "ENABLE CONTROLLED BYBIT SPOT BTCUSDT ONE-SHOT EXECUTION POLICY"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
