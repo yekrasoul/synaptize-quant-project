@@ -111,6 +111,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertTrue(pro_ok)
         self.assertIn("UTA 2.0 Pro status 6", pro_reason)
 
+    def test_account_mode_accepts_current_uta_2_timestamp(self):
+        now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+        current = str(int(now.timestamp() * 1000))
+        self.assertTrue(classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", current), now=now)[0])
+
+    def test_account_mode_rejects_timestamp_beyond_small_clock_tolerance(self):
+        now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+        future = str(int((now + timedelta(seconds=6)).timestamp() * 1000))
+        ok, reason = classify_production_account_mode(AccountInfo(5, "REGULAR_MARGIN", "OFF", future), now=now)
+        self.assertFalse(ok)
+        self.assertIn("clock tolerance", reason)
+
     def test_account_mode_rejects_unsupported_shapes_and_timestamps(self):
         now = datetime(2026, 10, 7, 12, tzinfo=UTC)
         for account in (
