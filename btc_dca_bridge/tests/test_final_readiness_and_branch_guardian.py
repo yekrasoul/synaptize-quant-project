@@ -108,6 +108,44 @@ class FinalReadinessTests(unittest.TestCase):
         self.assertIn("headRefOid", trusted_text)
         self.assertIn("behind_by", trusted_text)
         self.assertIn("HEAD_SHA", trusted_text)
+        self.assertIn("fetch-depth: 0", trusted_text)
+        self.assertNotIn("--depth=1", trusted_text)
+        self.assertIn(
+            '"+refs/heads/main:refs/remotes/origin/main"',
+            trusted_text,
+        )
+        self.assertIn(
+            '"+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"',
+            trusted_text,
+        )
+        self.assertIn("source_tip", trusted_text)
+        self.assertIn(
+            "source branch tip no longer matches validated HEAD_SHA",
+            trusted_text,
+        )
+        self.assertIn(
+            'git merge-base "$base_sha" "$HEAD_SHA"',
+            trusted_text,
+        )
+        self.assertIn(
+            '"$merge_base" != "$base_sha"',
+            trusted_text,
+        )
+        self.assertIn(
+            "no merge base between current main and validated source head",
+            trusted_text,
+        )
+        self.assertIn(
+            "source branch is behind or diverged from current main",
+            trusted_text,
+        )
+        self.assertIn('refs/heads/$BRANCH:refs/remotes/origin/$BRANCH', trusted_text)
+        self.assertIn('git rev-parse "$source_ref^{commit}"', trusted_text)
+        self.assertIn('merge_base=$(git merge-base "$base_sha" "$HEAD_SHA") || {', trusted_text)
+        self.assertIn(
+            "no merge base between current main and validated source head",
+            trusted_text,
+        )
         for runtime_state in ("NOT_AUTHORIZED", "NOT_ACTIVATED", "NOT_ENABLED", "BLOCKED"):
             self.assertIn(runtime_state, trusted_text)
         ci = yaml.safe_load((Path(__file__).parents[2] / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8"))

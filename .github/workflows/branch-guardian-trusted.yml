@@ -57,22 +57,50 @@ jobs:
           test "${{ github.event.workflow_run.conclusion }}" = success
           test "${{ github.event.workflow_run.name }}" = "BTC DCA Branch Guardian"
 
-      - name: Fetch exact source commit and compute trusted diff
+      - name: Fetch exact source branch and compute trusted diff
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin main --depth=1
-          git fetch origin "$HEAD_SHA" --depth=1
-          base_sha=$(git rev-parse origin/main)
+
+          # Full history is required for a trustworthy merge-base check.
+          # Never introduce shallow fetches in this comparison path.
+          git fetch --no-tags origin \
+            "+refs/heads/main:refs/remotes/origin/main" \
+            "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+
+          base_sha=$(git rev-parse "refs/remotes/origin/main^{commit}")
+          source_ref="refs/remotes/origin/$BRANCH"
+          source_tip=$(git rev-parse "$source_ref^{commit}")
+
+          # The branch must still point at the exact commit validated by the
+          # originating Branch Guardian run. Force-pushes fail closed.
+          if [[ "$source_tip" != "$HEAD_SHA" ]]; then
+            echo "source branch tip no longer matches validated HEAD_SHA" >&2
+            exit 1
+          fi
+
+          if [[ "$(git cat-file -t "$HEAD_SHA")" != "commit" ]]; then
+            echo "validated HEAD_SHA is not a commit" >&2
+            exit 1
+          fi
+
+          merge_base=$(git merge-base "$base_sha" "$HEAD_SHA") || {
+            echo "no merge base between current main and validated source head" >&2
+            exit 1
+          }
+
+          # Current main must be an ancestor of the exact validated head.
+          # Behind or diverged branches fail closed.
+          if [[ "$merge_base" != "$base_sha" ]]; then
+            echo "source branch is behind or diverged from current main" >&2
+            exit 1
+          fi
+
+          test "$(git rev-list --count "$base_sha..$HEAD_SHA")" -ge 1
+
           printf '%s\n' "$base_sha" > /tmp/guardian-base-sha
           git diff --name-only "$base_sha...$HEAD_SHA" > /tmp/guardian-files.txt
           git diff "$base_sha...$HEAD_SHA" > /tmp/guardian-diff.txt
-          test "$(git rev-parse "$HEAD_SHA")" = "$HEAD_SHA"
-          test "$(git rev-list --count "$base_sha..$HEAD_SHA")" -ge 1
-          if ! git merge-base --is-ancestor "$base_sha" "$HEAD_SHA"; then
-            echo "source branch is behind main" >&2
-            exit 1
-          fi
 
       - name: Recompute Guardian classification from trusted main
         working-directory: btc_dca_bridge
