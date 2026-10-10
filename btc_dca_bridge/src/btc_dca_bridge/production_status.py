@@ -272,7 +272,13 @@ class ProductionStatusService:
             evidence = self.evidence_service_factory(data_root=self.data_root, ledger_path=self.ledger_path, now=self.now)
             preauth = self.preauthorization_evaluator(evidence)
             latest_evidence = evidence.latest()
-            evidence_status = "MISSING" if latest_evidence is None else str(evidence.verify(str(latest_evidence["evidence_id"])).get("status", "INVALID"))
+            verification = preauth.get("verification") if isinstance(preauth, Mapping) else None
+            if isinstance(verification, Mapping):
+                evidence_status = str(verification.get("status", "INVALID"))
+            else:
+                evidence_status = "MISSING" if latest_evidence is None else str(
+                    evidence.verify(str(latest_evidence["evidence_id"])).get("status", "INVALID")
+                )
         except Exception:
             evidence, latest_evidence, preauth = None, None, {"status": "BLOCKED"}
             evidence_status, local_error = "UNAVAILABLE", True
