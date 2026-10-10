@@ -35,6 +35,7 @@ from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
 from .real_money_authorization import authorize_persisted_approval, read_authorization_status
 from .live_activation import create_execution_activation, read_activation_status
+from .production_enablement import prepare_production_enablement, read_enablement_status
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -184,6 +185,20 @@ def _parser() -> argparse.ArgumentParser:
     activation_status = subparsers.add_parser("live-activation-status", help="read-only status of the latest one-shot activation")
     activation_status.add_argument("--activation-id")
     activation_status.add_argument("--data-root", type=Path, default=DATA_PATH)
+    enable = subparsers.add_parser("production-enable-prepare", help="prepare governance-only production enablement; never enables execution")
+    enable.add_argument("--evidence-json", type=Path, required=True)
+    enable.add_argument("--repository-commit-sha", required=True)
+    enable.add_argument("--execution-policy-fingerprint", required=True)
+    enable.add_argument("--production-contract-fingerprint", required=True)
+    enable.add_argument("--account-identity-fingerprint", required=True)
+    enable.add_argument("--account-mode", required=True)
+    enable.add_argument("--credential-scope", required=True)
+    enable.add_argument("--confirm", required=True)
+    enable.add_argument("--run-id", required=True)
+    enable.add_argument("--data-root", type=Path, default=DATA_PATH)
+    enable_status = subparsers.add_parser("production-enablement-status", help="read-only production enablement status")
+    enable_status.add_argument("--enablement-id")
+    enable_status.add_argument("--data-root", type=Path, default=DATA_PATH)
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -633,6 +648,25 @@ def _live_activation_status(args: argparse.Namespace) -> tuple[dict[str, object]
     return read_activation_status(store=ArtifactStore(args.data_root), activation_id=args.activation_id), 0
 
 
+def _production_enable_prepare(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    enablement, receipt = prepare_production_enablement(
+        store=ArtifactStore(args.data_root), evidence=read_json_object(args.evidence_json),
+        repository_commit_sha=args.repository_commit_sha,
+        execution_policy_fingerprint=args.execution_policy_fingerprint,
+        production_contract_fingerprint=args.production_contract_fingerprint,
+        account_identity_fingerprint=args.account_identity_fingerprint,
+        account_mode=args.account_mode, credential_scope=args.credential_scope,
+        confirmation=args.confirm, run_id=args.run_id, now_utc=datetime.now(UTC),
+    )
+    return {"enablement": "PREPARED", "enablement_id": enablement.enablement_id,
+            "enablement_sha256": receipt.sha256, "execution": "BLOCKED",
+            "message": "NO ORDER EXECUTED"}, EXIT_BLOCKED
+
+
+def _production_enable_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    return read_enablement_status(store=ArtifactStore(args.data_root), enablement_id=args.enablement_id), 0
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -721,29 +755,8 @@ def _load_exact_execution_artifacts(args: argparse.Namespace) -> tuple[ArtifactS
 
 
 def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    store, manifest, _, approval, manifest_sha, approval_sha, intent, decision = _load_exact_execution_artifacts(args)
     config = load_execution_config()
-    # Checked-in config blocks before client/transport construction. The
-    # guarded engine remains the sole future submission implementation.
-    if not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented":
-        return {"status": "blocked", "reason": "checked-in production defaults prohibit execution", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
-    # The legacy CLI has no activation-capability input.  Stop before client
-    # or transport construction until a future controlled invocation supplies
-    # the exact Phase 5.4D capability.
-    return {"status": "blocked", "reason": "one-shot execution activation required", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED
-    # The persisted intent documents the fail-safe prepared mode.  The exact
-    # immutable identity is retained while the separately approved runtime
-    # gate supplies the only execution-mode transition.
-    intent = replace(intent, live_execution_enabled=True)
-    client = _private_read_client_factory()
-    lock = OperationLock(args.data_root, client_order_id=intent.client_order_id, approval_id=approval.approval_id, canary_id=str(manifest["canary_id"]), now=lambda: datetime.now(UTC))
-    lock.acquire()
-    try:
-        engine = LiveOrderEngine(artifact_store=store, availability_policy=PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
-        result = engine.submit(intent, decision, calendar_month=args.month, ledger_path=args.ledger, execution_config=config, approval=approval, approval_sha256=approval_sha, manifest=manifest, manifest_sha256=manifest_sha, read_client=client, transport=_submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", "")), run_id=args.run_id, post_ack_reconciler=_post_ack_reconciler_factory(client))
-    finally:
-        lock.release()
-    return result.outcome.to_dict(), 0 if result.outcome.outcome_category == "confirmed_execution" else EXIT_RECONCILIATION
+    return ({"status": "blocked", "reason": "checked-in production defaults prohibit execution" if (not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented") else "controlled production invocation required", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
 
 
 def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], int]:
@@ -889,6 +902,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _live_activate(args)
         elif args.command == "live-activation-status":
             result, exit_code = _live_activation_status(args)
+        elif args.command == "production-enable-prepare":
+            result, exit_code = _production_enable_prepare(args)
+        elif args.command == "production-enablement-status":
+            result, exit_code = _production_enable_status(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:

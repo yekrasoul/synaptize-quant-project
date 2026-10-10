@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "revocation_id", "created_at_utc", "enablement_id", "enablement_sha256", "reason_digest", "no_order_executed"],
+  "properties": {
+    "schema_version": {"const": "5.4.0E-R"}, "revocation_id": {"type": "string", "pattern": "^enablement-revocation-[a-f0-9]{32}$"},
+    "created_at_utc": {"type": "string", "format": "date-time"}, "enablement_id": {"type": "string", "pattern": "^enablement-[a-f0-9]{32}$"},
+    "enablement_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "reason_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "no_order_executed": {"const": true}
+  }
+}

@@ -49,6 +49,8 @@ class ArtifactType(str, Enum):
     LIVE_EXECUTION_ATTEMPT = "live_execution_attempt"
     REAL_MONEY_AUTHORIZATION = "real_money_authorization"
     EXECUTION_ACTIVATION = "execution_activation"
+    PRODUCTION_ENABLEMENT = "production_enablement"
+    PRODUCTION_ENABLEMENT_REVOCATION = "production_enablement_revocation"
     SUBMISSION_RECONCILIATION = "submission_reconciliation"
     PRODUCTION_EVIDENCE = "production_evidence"
     PRODUCTION_STATUS = "production_status"
@@ -70,6 +72,8 @@ _DIRECTORIES = {
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "live_execution_attempts",
     ArtifactType.REAL_MONEY_AUTHORIZATION: "real_money_authorizations",
     ArtifactType.EXECUTION_ACTIVATION: "execution_activations",
+    ArtifactType.PRODUCTION_ENABLEMENT: "production_enablements",
+    ArtifactType.PRODUCTION_ENABLEMENT_REVOCATION: "production_enablement_revocations",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliations",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
     ArtifactType.PRODUCTION_STATUS: "production_status",
@@ -90,6 +94,8 @@ _SCHEMAS = {
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "live_execution_attempt",
     ArtifactType.REAL_MONEY_AUTHORIZATION: "real_money_authorization",
     ArtifactType.EXECUTION_ACTIVATION: "execution_activation",
+    ArtifactType.PRODUCTION_ENABLEMENT: "production_enablement",
+    ArtifactType.PRODUCTION_ENABLEMENT_REVOCATION: "production_enablement_revocation",
     ArtifactType.SUBMISSION_RECONCILIATION: "submission_reconciliation",
     ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
     ArtifactType.PRODUCTION_STATUS: "production_status",
@@ -110,6 +116,8 @@ _TIMESTAMPS = {
     ArtifactType.LIVE_EXECUTION_ATTEMPT: "created_at_utc",
     ArtifactType.REAL_MONEY_AUTHORIZATION: "created_at_utc",
     ArtifactType.EXECUTION_ACTIVATION: "created_at_utc",
+    ArtifactType.PRODUCTION_ENABLEMENT: "created_at_utc",
+    ArtifactType.PRODUCTION_ENABLEMENT_REVOCATION: "created_at_utc",
     ArtifactType.SUBMISSION_RECONCILIATION: "reconciled_at_utc",
     ArtifactType.PRODUCTION_EVIDENCE: "created_at_utc",
     ArtifactType.PRODUCTION_STATUS: "captured_at_utc",

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "enablement_id", "created_at_utc", "expires_at_utc", "status", "repository_commit_sha", "strategy_id", "strategy_version", "exchange", "market_type", "symbol", "allowed_side", "allowed_order_type", "allowed_market_unit", "leverage_allowed", "monthly_cap_usd", "execution_policy_fingerprint", "production_contract_fingerprint", "expected_account_identity_fingerprint", "expected_account_mode", "allowed_credential_scope", "kill_switch_policy", "explicit_authorization_required", "explicit_activation_required", "one_shot_only", "auto_retry_allowed", "standing_authorization_allowed", "standing_activation_allowed", "created_by_operator_ceremony", "operator_confirmation_digest", "no_order_executed"],
+  "properties": {
+    "schema_version": {"const": "5.4.0E"},
+    "enablement_id": {"type": "string", "pattern": "^enablement-[a-f0-9]{32}$"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "expires_at_utc": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["PREPARED", "ACTIVE", "EXPIRED", "REVOKED"]},
+    "repository_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+    "strategy_id": {"const": "btc_adaptive_dca_v1"},
+    "strategy_version": {"const": "1.0.0"},
+    "exchange": {"const": "Bybit"}, "market_type": {"const": "spot"}, "symbol": {"const": "BTCUSDT"},
+    "allowed_side": {"const": "Buy"}, "allowed_order_type": {"const": "Market"}, "allowed_market_unit": {"const": "quoteCoin"},
+    "leverage_allowed": {"const": false}, "monthly_cap_usd": {"const": 500},
+    "execution_policy_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "production_contract_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "expected_account_identity_fingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "expected_account_mode": {"type": "string", "minLength": 1}, "allowed_credential_scope": {"type": "string", "minLength": 1},
+    "kill_switch_policy": {"const": "REQUIRED"}, "explicit_authorization_required": {"const": true}, "explicit_activation_required": {"const": true},
+    "one_shot_only": {"const": true}, "auto_retry_allowed": {"const": false}, "standing_authorization_allowed": {"const": false}, "standing_activation_allowed": {"const": false},
+    "created_by_operator_ceremony": {"const": true}, "operator_confirmation_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "no_order_executed": {"const": true}
+  }
+}
