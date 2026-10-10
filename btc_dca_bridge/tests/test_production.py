@@ -5,6 +5,8 @@ from pathlib import Path
 
 from btc_dca_bridge.errors import (
     DataUnavailableError,
+    InsufficientHistoryError,
+    RateLimitedError,
     ShadowRunAlreadyCompletedError,
     ShadowRunError,
     ShadowRunErrorCode,
@@ -120,8 +122,7 @@ class ProductionShadowTest(unittest.TestCase):
         )
         self.assertTrue(result["no_order_executed"])
 
-    def test_pipeline_failure_is_structured_by_stage_and_cause(self):
-        cause = DataUnavailableError("offline", source="bybit_api")
+    def _run_failure(self, cause):
         failure = ShadowRunError(
             "market snapshot acquisition failed",
             code=ShadowRunErrorCode.MARKET_DATA_FAILED,
@@ -133,11 +134,62 @@ class ProductionShadowTest(unittest.TestCase):
             pipeline_factory=lambda **_: pipeline,
             clock=lambda: datetime(2026, 10, 7, 11, 5, tzinfo=UTC),
         ).to_dict()
+        return result
+
+    def test_pipeline_failure_exposes_http_diagnostics(self):
+        result = self._run_failure(
+            DataUnavailableError(
+                "Bybit returned HTTP 403 (forbidden, IP restriction, or IP rate limit)",
+                status_code=403,
+                retryable=False,
+                source="bybit_api",
+            )
+        )
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failure"]["stage"], "MARKET_DATA")
         self.assertEqual(result["failure"]["category"], "SOURCE_UNAVAILABLE")
         self.assertEqual(result["failure"]["source"], "bybit_api")
+        self.assertEqual(result["failure"]["status_code"], 403)
+        self.assertFalse(result["failure"]["retryable"])
+        self.assertIn("Bybit returned HTTP 403", result["failure"]["cause_message"])
         self.assertTrue(result["no_order_executed"])
+
+    def test_pipeline_failure_exposes_rate_limit_diagnostics(self):
+        result = self._run_failure(
+            RateLimitedError(
+                "Bybit rate limit persisted",
+                status_code=429,
+                retryable=True,
+                source="bybit_api",
+            )
+        )
+        self.assertEqual(result["failure"]["category"], "RATE_LIMITED")
+        self.assertEqual(result["failure"]["status_code"], 429)
+        self.assertTrue(result["failure"]["retryable"])
+        self.assertIn("Bybit rate limit persisted", result["failure"]["cause_message"])
+
+    def test_pipeline_failure_without_http_status_remains_distinguishable(self):
+        result = self._run_failure(
+            DataUnavailableError(
+                "Bybit connection failed: timed out",
+                retryable=True,
+                source="bybit_api",
+            )
+        )
+        self.assertIsNone(result["failure"]["status_code"])
+        self.assertTrue(result["failure"]["retryable"])
+        self.assertIn("timed out", result["failure"]["cause_message"])
+
+    def test_pipeline_failure_exposes_insufficient_history_diagnostics(self):
+        result = self._run_failure(
+            InsufficientHistoryError(
+                "Bybit returned incomplete candle history",
+                retryable=False,
+                source="bybit_api",
+            )
+        )
+        self.assertEqual(result["failure"]["category"], "INSUFFICIENT_HISTORY")
+        self.assertIn("incomplete candle history", result["failure"]["cause_message"])
 
     def test_completed_duplicate_suppresses_success_notification(self):
         pipeline = FakePipeline(ShadowRunAlreadyCompletedError(self.context.run_id))
