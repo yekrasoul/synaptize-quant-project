@@ -93,6 +93,58 @@ class ProductionStatusTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_status_verifies_evidence_before_additional_readiness_work(self):
+        calls = []
+
+        class Evidence:
+            def latest(self):
+                return {
+                    "evidence_id": "evidence-" + "b" * 32,
+                    "account_identity_status": "PROVEN",
+                }
+
+        evidence = Evidence()
+
+        class Readiness:
+            def evaluate(self):
+                calls.append("readiness")
+                return self_outer.fake.service.readiness_factory().evaluate()
+
+        self_outer = self
+
+        def evidence_factory(**kwargs):
+            return evidence
+
+        def preauth_evaluator(_):
+            calls.append("preauthorization")
+            return {
+                "status": "BLOCKED",
+                "verification": {
+                    "status": "VALID_NOT_READY",
+                    "evidence_id": "evidence-" + "b" * 32,
+                },
+            }
+
+        service = ProductionStatusService(
+            data_root=self.root,
+            ledger_path=self.ledger,
+            now=self.clock,
+            readiness_factory=lambda **kwargs: Readiness(),
+            operations_factory=self.fake.service.operations_factory,
+            evidence_service_factory=evidence_factory,
+            preauthorization_evaluator=preauth_evaluator,
+            contract_provider=self.fake.service.contract_provider,
+            blocker_provider=self.fake.service.blocker_provider,
+            repo_probe=self.fake.service.repo_probe,
+            hostname=self.fake.service.hostname,
+        )
+
+        snapshot = service.evaluate().to_dict()
+
+        self.assertEqual(calls[:2], ["preauthorization", "readiness"])
+        self.assertEqual(snapshot["evidence_status"], "VALID_NOT_READY")
+        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+
     def test_status_reuses_preauthorization_verification_without_late_reverify(self):
         class Evidence:
             def __init__(self):
