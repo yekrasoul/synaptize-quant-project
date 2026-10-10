@@ -1,0 +1,358 @@
+name: System health monitor
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+    - cron: "43 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Monitoring mode
+        type: choice
+        options:
+          - critical
+          - full
+        default: full
+        required: true
+      send_test_alert:
+        description: Send a test alert without changing monitor state
+        type: boolean
+        default: false
+        required: true
+      send_test_summary:
+        description: Send a test summary without changing monitor state
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: system-health-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Read-only system health monitor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Check out canonical repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Derive monitoring mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          MODE=$(uv run python -c 'import os; from btc_dca_bridge.health_monitor import derive_mode; print(derive_mode(event_name=os.environ["EVENT_NAME"], schedule=os.environ.get("EVENT_SCHEDULE") or None, requested_mode=os.environ.get("REQUESTED_MODE") or None))')
+          echo "mode=${MODE}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect GitHub operational evidence
+        id: github_evidence
+        uses: actions/github-script@v8
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        with:
+          script: |
+            const runsFor = async (workflow) => github.paginate(
+              github.rest.actions.listWorkflowRuns,
+              { owner: context.repo.owner, repo: context.repo.repo, workflow_id: workflow, per_page: 100 }
+            );
+            const shadowRuns = await runsFor('production-shadow.yml');
+            const monitorRuns = await runsFor('system-health-monitor.yml');
+            const ciRuns = await runsFor('ci.yml');
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const scheduledShadow = shadowRuns.filter(run => run.event === 'schedule' && run.head_branch === 'main');
+            const shadowJobsByRunId = {};
+            for (const run of scheduledShadow) {
+              shadowJobsByRunId[String(run.id)] = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 }
+              );
+            }
+            core.setOutput('evidence_json', JSON.stringify({
+              observed_at: new Date().toISOString(),
+              shadow_runs: shadowRuns,
+              shadow_jobs_by_run_id: shadowJobsByRunId,
+              monitor_runs: monitorRuns,
+              ci_runs: ciRuns,
+              artifacts,
+              telegram_configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
+            }));
+
+      - name: Locate prior monitor state
+        id: prior
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const match = artifacts
+              .filter(a => a.name === 'system-health-state' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            core.setOutput('artifact_id', match ? String(match.id) : '');
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+
+      - name: Restore prior monitor state
+        if: steps.prior.outputs.artifact_id != ''
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ steps.prior.outputs.artifact_id }}
+          path: /tmp/system-health-previous
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.prior.outputs.run_id }}
+
+      - name: Locate latest retained shadow evidence
+        id: shadow_artifact
+        if: steps.mode.outputs.mode == 'full'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
+            );
+            const match = artifacts
+              .filter(a => !a.expired && a.name.startsWith('production-shadow-') && !a.name.includes('-partial-'))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+            core.setOutput('artifact_id', match ? String(match.id) : '');
+            core.setOutput('run_id', match ? String(match.workflow_run.id) : '');
+
+      - name: Restore latest retained shadow evidence
+        if: steps.shadow_artifact.outputs.artifact_id != ''
+        uses: actions/download-artifact@v5
+        with:
+          artifact-ids: ${{ steps.shadow_artifact.outputs.artifact_id }}
+          path: /tmp/latest-shadow-evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.shadow_artifact.outputs.run_id }}
+
+      - name: Evaluate local read-only health
+        id: evaluate
+        shell: bash
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          GITHUB_EVIDENCE_JSON: ${{ steps.github_evidence.outputs.evidence_json }}
+          SEND_TEST_ALERT: ${{ inputs.send_test_alert }}
+          SEND_TEST_SUMMARY: ${{ inputs.send_test_summary }}
+        run: |
+          set -euo pipefail
+          state_dir=/tmp/system-health-current
+          mkdir -p "$state_dir"
+          previous_file=$(find /tmp/system-health-previous -type f -name '*.json' -print -quit 2>/dev/null || true)
+          ledger_integrity=UNKNOWN
+          if ! uv run python -m btc_dca_bridge validate >/tmp/system-health-validate.json; then
+            ledger_integrity=ALERT
+          else
+            ledger_integrity=HEALTHY
+          fi
+          if [[ "$MODE" == "full" ]]; then
+            uv run python -m btc_dca_bridge production-connectivity --json >/tmp/system-health-bybit.json 2>/dev/null || true
+            uv run python -m btc_dca_bridge production-status --json >/tmp/system-health-status.json 2>/dev/null || true
+          fi
+          MODE="$MODE" EVIDENCE="$GITHUB_EVIDENCE_JSON" LEDGER="$ledger_integrity" PREVIOUS_FILE="$previous_file" SEND_TEST_ALERT="$SEND_TEST_ALERT" SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<'PY'
+          import json, os, pathlib, sys
+          from btc_dca_bridge.health_monitor import (
+              authorization_from_canonical, canonical_contract_state,
+              classify_artifact_integrity, classify_canonical_ci,
+              classify_market_data_artifacts, classify_production_shadow,
+              classify_self_hosted_runner,
+              classify_production_status,
+          )
+          evidence = json.loads(os.environ["EVIDENCE"])
+          observed_at = evidence["observed_at"]
+          previous = json.loads(pathlib.Path(os.environ["PREVIOUS_FILE"]).read_text()) if os.environ.get("PREVIOUS_FILE") else None
+          shadow = classify_production_shadow(observed_at, evidence.get("shadow_runs", []))
+          ci = classify_canonical_ci(evidence.get("ci_runs", []))
+          artifacts = evidence.get("artifacts", [])
+          try:
+              from datetime import datetime, timezone
+              now = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+              recent = [a for a in artifacts if not a.get("expired") and str(a.get("name", "")).startswith("production-shadow-") and (now - datetime.fromisoformat(a["created_at"].replace("Z", "+00:00"))).total_seconds() <= 8 * 3600]
+              artifact_state = "HEALTHY" if recent else "ALERT"
+          except (KeyError, TypeError, ValueError):
+              artifact_state = "UNKNOWN"
+          runner_state = classify_self_hosted_runner(shadow, evidence.get("shadow_jobs_by_run_id", {}))
+          contract = __import__("btc_dca_bridge.blocked_production", fromlist=["contract_status"]).contract_status()
+          blockers = [item.to_dict() for item in __import__("btc_dca_bridge.blocked_production", fromlist=["active_production_blockers"]).active_production_blockers()]
+          contract_state = canonical_contract_state(contract, blockers)
+          status_payload = None
+          if os.environ["MODE"] == "full":
+              try: status_payload = json.loads(pathlib.Path("/tmp/system-health-status.json").read_text())
+              except (OSError, ValueError): pass
+          safety = {
+              "live_execution_enabled": None,
+              "kill_switch": None,
+              "order_submission": None,
+              "authorization": authorization_from_canonical(contract, status_payload),
+          }
+          try:
+              import yaml
+              execution = yaml.safe_load(pathlib.Path("config/execution.yaml").read_text())
+              safety.update({key: execution.get(key) for key in ("live_execution_enabled", "kill_switch", "order_submission")})
+          except (OSError, TypeError, ValueError): pass
+          from datetime import timedelta
+          monitor_fresh = any(
+              run.get("id") != os.environ.get("GITHUB_RUN_ID")
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+              and timedelta(0) <= now - datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")) <= timedelta(hours=2)
+              for run in evidence.get("monitor_runs", [])
+              if isinstance(run.get("created_at"), str)
+          )
+          checks = {
+              "self_hosted_runner": runner_state,
+              "production_shadow": shadow["state"],
+              "watchdog": "HEALTHY" if monitor_fresh else "UNKNOWN",
+              "canonical_ci": ci,
+              "artifacts": artifact_state,
+              "artifact_consistency": classify_artifact_integrity("/tmp/latest-shadow-evidence") if os.environ["MODE"] == "full" else "NOT_RUN",
+              "ledger_integrity": os.environ["LEDGER"],
+              "telegram": "HEALTHY" if previous and previous.get("last_telegram_delivery_at") else ("CONFIGURED" if evidence.get("telegram_configured") else "UNKNOWN"),
+              "contract_state": contract_state,
+              "fingerprints": {"external_dependencies": contract_state["fingerprint"]},
+              "bybit_spot_connectivity": "NOT_RUN",
+              "market_data_freshness": "NOT_RUN",
+              "production_status": "NOT_RUN",
+              "external_dependencies": contract_state["state"],
+              "schedule_drift": "HEALTHY" if shadow["state"] == "HEALTHY" else shadow["state"],
+              "infrastructure": "HEALTHY" if isinstance(evidence.get("monitor_runs"), list) and isinstance(evidence.get("artifacts"), list) else "UNKNOWN",
+          }
+          if os.environ["MODE"] == "full":
+              try:
+                  connectivity = json.loads(pathlib.Path("/tmp/system-health-bybit.json").read_text())
+                  checks["bybit_spot_connectivity"] = "HEALTHY" if connectivity.get("status") in {"READS_OK", "HEALTHY", "PASS"} else "ALERT"
+              except (OSError, ValueError): checks["bybit_spot_connectivity"] = "UNKNOWN"
+              checks["market_data_freshness"] = classify_market_data_artifacts("/tmp/latest-shadow-evidence", observed_at)
+              checks["production_status"] = classify_production_status(status_payload)
+          payload = {"mode": os.environ["MODE"], "checks": checks, "safety": safety, "observed_at": observed_at, "previous": previous, "send_test_alert": os.environ["SEND_TEST_ALERT"] == "true", "send_test_summary": os.environ["SEND_TEST_SUMMARY"] == "true"}
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(payload), encoding="utf-8")
+          PY
+          uv run python -m btc_dca_bridge.health_monitor --evaluate "$state_dir/input.json" > "$state_dir/result.json"
+          python - "$state_dir/result.json" <<'PY'
+          import json, pathlib, sys
+          result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          messages = []
+          for notification in result["pending_notifications"]:
+              messages.append(f"BTC DCA SYSTEM HEALTH — {notification['kind']}\nComponent: {notification['component']}\nObserved: {result['observed_at_utc']}\nOverall: {result['overall']}\nNO ORDER EXECUTED")
+          pathlib.Path("/tmp/system-health-messages.json").write_text(json.dumps(messages), encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"notify={'true' if messages else 'false'}\n")
+              output.write(f"summary={'true' if result['daily_summary_due'] else 'false'}\n")
+              output.write(f"overall={result['overall']}\n")
+          PY
+          cp "$state_dir/result.json" /tmp/system-health-result.json
+
+      - name: Send immediate alerts and recoveries
+        id: alert_delivery
+        if: steps.evaluate.outputs.notify == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          token, chat_id = os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"]
+          for message in json.load(open("/tmp/system-health-messages.json", encoding="utf-8")):
+              request = urllib.request.Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=json.dumps({"chat_id": chat_id, "text": message}).encode(),
+                  headers={"Content-Type": "application/json"}, method="POST")
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  body = json.loads(response.read().decode())
+                  if response.status != 200 or body.get("ok") is not True:
+                      raise SystemExit("Telegram alert delivery failed")
+          PY
+
+      - name: Send daily Telegram summary
+        id: summary_delivery
+        if: steps.evaluate.outputs.summary == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary=$(uv run python -c 'import json; from btc_dca_bridge.health_monitor import render_summary; print(render_summary(json.load(open("/tmp/system-health-result.json"))))')
+          python - "$summary" <<'PY'
+          import json, os, sys, urllib.request
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage",
+              data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": sys.argv[1]}).encode(),
+              headers={"Content-Type": "application/json"}, method="POST")
+          with urllib.request.urlopen(request, timeout=10) as response:
+              body = json.loads(response.read().decode())
+              if response.status != 200 or body.get("ok") is not True:
+                  raise SystemExit("Telegram summary delivery failed")
+          PY
+
+      - name: Commit acknowledged monitor state
+        id: commit_state
+        if: (github.event_name != 'workflow_dispatch' || (!inputs.send_test_alert && !inputs.send_test_summary)) && steps.evaluate.outcome == 'success' && (steps.evaluate.outputs.notify != 'true' || steps.alert_delivery.outcome == 'success') && (steps.evaluate.outputs.summary != 'true' || steps.summary_delivery.outcome == 'success')
+        shell: bash
+        env:
+          ALERTS_DELIVERED: ${{ steps.evaluate.outputs.notify }}
+          SUMMARY_DELIVERED: ${{ steps.evaluate.outputs.summary }}
+        run: |
+          set -euo pipefail
+          uv run python -m btc_dca_bridge.health_monitor \
+            --commit /tmp/system-health-result.json \
+            --previous "$(find /tmp/system-health-previous -type f -name '*.json' -print -quit 2>/dev/null || true)" \
+            --output /tmp/system-health-committed.json \
+            $([[ "$ALERTS_DELIVERED" == "true" ]] && echo --alerts-delivered || true) \
+            $([[ "$SUMMARY_DELIVERED" == "true" ]] && echo --summary-delivered || true)
+
+      - name: Persist acknowledged monitor state
+        if: steps.commit_state.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: system-health-state
+          path: /tmp/system-health-committed.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Write monitor summary
+        if: always()
+        run: |
+          {
+            echo "## System health monitor"
+            echo
+            echo "- Mode: ${{ steps.mode.outputs.mode }}"
+            echo "- Overall: ${{ steps.evaluate.outputs.overall }}"
+            echo "- Immediate notifications: ${{ steps.evaluate.outputs.notify }}"
+            echo "- Daily summary: ${{ steps.evaluate.outputs.summary }}"
+            echo "- Read-only: yes"
+            echo "- No order executed"
+          } >> "$GITHUB_STEP_SUMMARY"
