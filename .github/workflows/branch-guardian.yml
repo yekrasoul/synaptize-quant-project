@@ -93,7 +93,7 @@ jobs:
           {
             echo '## BTC DCA BRANCH GUARDIAN'
             echo
-            jq -r '"Classification: \(.classification)\nTests: " + (if .tests_passed then "PASS" else "FAIL" end) + "\nProtected files: " + (if .protected_files_unchanged then "UNCHANGED" else "CHANGED" end) + "\nLedger: " + (if .ledger_unchanged then "UNCHANGED" else "CHANGED" end) + "\n\nAuthorization: \(.authorization)\nActivation: \(.activation)\nProduction Enablement: \(.production_enablement)\nExecution: \(.execution)\n\nAuto-merge eligible: " + (if .auto_merge_eligible then "YES" else "NO" end) + "\n\nNO ORDER EXECUTED"' branch-guardian-result.json
+            jq -r '"Classification: \(.classification)\nTests: " + (if .tests_passed then "PASS" else "FAIL" end) + "\nProtected files: " + (if .protected_files_unchanged then "UNCHANGED" else "CHANGED" end) + "\nLedger: " + (if .ledger_unchanged then "UNCHANGED" else "CHANGED" end) + "\n\nAuthorization: \(.authorization)\nActivation: \(.activation)\nProduction Enablement: \(.production_enablement)\nExecution: \(.execution)\n\nAuto-merge eligible: " + (if .auto_merge_eligible then "YES" else "NO" end) + "\n\nNO ORDER EXECUTED"' $GITHUB_WORKSPACE/branch-guardian-result.json
           } >> "$GITHUB_STEP_SUMMARY"
 
   guardian:
