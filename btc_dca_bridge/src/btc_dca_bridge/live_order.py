@@ -271,7 +271,7 @@ class LiveOrderEngine:
         if category is None: category = {"blocked": "request_not_sent", "ambiguous": "reconciliation_required", "rejected_by_exchange": "exchange_rejected", "acknowledged": "acknowledgement_received"}.get(state, "reconciliation_required")
         return SubmissionOutcome(run_id, intent.decision_id, intent.order_intent_id, intent.client_order_id, state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), code, msg, order_id, returned_link, reconciliation, True, category)
 
-    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval, approval_sha256: str, manifest: Mapping[str, Any], manifest_sha256: str, read_client: FreshBybitReadClient, transport: SubmissionTransport, run_id: str, post_ack_reconciler: PostAckReconciler, activation: Mapping[str, Any] | None = None, activation_sha256: str | None = None, capability: Any = None) -> SubmissionResult:
+    def submit(self, intent: OrderIntent, decision: Mapping[str, Any], *, calendar_month: str, ledger_path, execution_config: ExecutionConfig, approval: LiveApproval, approval_sha256: str, manifest: Mapping[str, Any], manifest_sha256: str, read_client: FreshBybitReadClient, transport: SubmissionTransport | None = None, transport_factory: Callable[[], SubmissionTransport] | None = None, run_id: str, post_ack_reconciler: PostAckReconciler, activation: Mapping[str, Any] | None = None, activation_sha256: str | None = None, capability: Any = None) -> SubmissionResult:
         if not execution_config.live_execution_enabled: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="LIVE EXECUTION DISABLED"))
         if execution_config.kill_switch: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="KILL SWITCH ACTIVE"))
         if execution_config.order_submission not in {"implemented_disabled", "implemented"}: return SubmissionResult(None, self._outcome(intent, run_id, "blocked", msg="ORDER SUBMISSION MODE DISABLED"))
@@ -308,6 +308,10 @@ class LiveOrderEngine:
             capability.consume()
         except Exception as exc:
             raise LiveOrderSafetyError(f"final activation boundary blocked: {exc}") from exc
+        if transport is None:
+            if transport_factory is None:
+                raise LiveOrderSafetyError("lazy submission transport factory is required")
+            transport = transport_factory()
         try:
             response = transport.submit_spot_market_buy(request)
             outcome, evidence = self._parse_response(intent, run_id, response, post_ack_reconciler, canary_id=manifest["canary_id"], approval_id=approval.approval_id)
