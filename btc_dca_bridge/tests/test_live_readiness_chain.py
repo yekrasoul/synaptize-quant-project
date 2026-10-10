@@ -13,6 +13,40 @@ COMMIT = "a" * 40
 
 
 class LiveReadinessChainTests(unittest.TestCase):
+    def evidence_store(self, payloads):
+        root = Path(tempfile.mkdtemp()) / "production_evidence" / "2026" / "10" / "10"
+        root.mkdir(parents=True)
+        for evidence_id in payloads:
+            (root / f"{evidence_id}.json").write_text("{}\n", encoding="utf-8")
+        class Store:
+            def __init__(self, base, rows): self.root, self.rows = base, rows
+            def read_production_evidence(self, evidence_id): return self.rows[evidence_id]
+        return Store(root.parents[3], payloads)
+
+    def evidence(self, evidence_id, *, commit=COMMIT, created="2026-10-10T11:00:00Z", expires="2026-10-10T12:30:00Z", status="EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION"):
+        return {"evidence_id": evidence_id, "repository_commit": commit, "created_at_utc": created, "expires_at_utc": expires, "status": status}
+
+    def test_newer_ready_with_smaller_id_beats_older_expired_evidence(self):
+        rows = {"evidence-z": self.evidence("evidence-z", created="2026-10-10T10:00:00Z", expires="2026-10-10T11:00:00Z"), "evidence-a": self.evidence("evidence-a", created="2026-10-10T11:30:00Z")}
+        selected = cli._select_production_evidence(self.evidence_store(rows), current_commit=COMMIT, now=NOW)[0]
+        self.assertEqual(selected["evidence_id"], "evidence-a")
+
+    def test_current_head_beats_foreign_commit(self):
+        rows = {"evidence-z": self.evidence("evidence-z", commit="b" * 40, created="2026-10-10T12:00:00Z"), "evidence-a": self.evidence("evidence-a", created="2026-10-10T11:00:00Z")}
+        selected = cli._select_production_evidence(self.evidence_store(rows), current_commit=COMMIT, now=NOW)[0]
+        self.assertEqual(selected["evidence_id"], "evidence-a")
+
+    def test_expired_and_not_ready_do_not_beat_ready(self):
+        rows = {"evidence-a": self.evidence("evidence-a", created="2026-10-10T11:50:00Z", expires="2026-10-10T11:59:00Z"), "evidence-b": self.evidence("evidence-b", created="2026-10-10T11:55:00Z", status="EVIDENCE_COMPLETE_NOT_READY"), "evidence-c": self.evidence("evidence-c", created="2026-10-10T11:40:00Z")}
+        selected = cli._select_production_evidence(self.evidence_store(rows), current_commit=COMMIT, now=NOW)[0]
+        self.assertEqual(selected["evidence_id"], "evidence-c")
+
+    def test_deterministic_selection_uses_newest_created_then_id(self):
+        rows = {"evidence-b": self.evidence("evidence-b"), "evidence-a": self.evidence("evidence-a")}
+        for _ in range(3):
+            selected = cli._select_production_evidence(self.evidence_store(rows), current_commit=COMMIT, now=NOW)[0]
+            self.assertEqual(selected["evidence_id"], "evidence-b")
+
     def test_old_approval_is_stale_for_current_repository(self):
         result = cli._assess_readiness_artifact(
             "live_execution_approval",

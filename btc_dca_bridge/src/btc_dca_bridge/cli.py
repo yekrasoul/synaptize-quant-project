@@ -636,6 +636,8 @@ def _current_commit() -> str:
 
 
 def _readiness_latest(store: ArtifactStore, kind: ArtifactType, directory: str) -> tuple[dict[str, object], str] | None:
+    if kind is ArtifactType.PRODUCTION_EVIDENCE:
+        return _select_production_evidence(store, current_commit=_current_commit(), now=datetime.now(UTC))
     paths = sorted((store.root / directory).glob("*/*/*/*.json"))
     if not paths:
         return None
@@ -643,6 +645,48 @@ def _readiness_latest(store: ArtifactStore, kind: ArtifactType, directory: str) 
     date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
     payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
     return payload, artifact_sha256(payload)
+
+
+def _select_production_evidence(store: ArtifactStore, *, current_commit: str, now: datetime) -> tuple[dict[str, object], str] | None:
+    """Select evidence by validated metadata, never by filename ordering."""
+    root = store.root / "production_evidence"
+    candidates: list[tuple[dict[str, object], str, datetime, bool, bool]] = []
+    for path in root.glob("*/*/*/*.json"):
+        try:
+            payload = store.read_production_evidence(path.stem)
+            created = datetime.fromisoformat(str(payload["created_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+            expires = datetime.fromisoformat(str(payload["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+            if created.tzinfo is None or expires.tzinfo is None:
+                continue
+            digest = artifact_sha256(payload)
+            current = payload.get("repository_commit") == current_commit
+            unexpired = expires > now
+            ready = payload.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION"
+            candidates.append((payload, digest, created, current, unexpired and ready))
+        except Exception:
+            # Corrupt, schema-invalid, or malformed evidence is never a
+            # selection candidate and must not shadow a valid bundle.
+            continue
+    if not candidates:
+        return None
+
+    def newest(rows: list[tuple[dict[str, object], str, datetime, bool, bool]]) -> tuple[dict[str, object], str] | None:
+        if not rows:
+            return None
+        payload, digest, _, _, _ = max(rows, key=lambda row: (row[2], str(row[0].get("evidence_id", ""))))
+        return payload, digest
+
+    current_rows = [row for row in candidates if row[3]]
+    selected = newest([row for row in current_rows if row[4]])
+    if selected is not None:
+        return selected
+    selected = newest([row for row in current_rows if row[2] and row[0].get("expires_at_utc") and datetime.fromisoformat(str(row[0]["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC) > now])
+    if selected is not None:
+        return selected
+    # Keep an expired current-HEAD candidate visible so the report can say
+    # EXPIRED. If there is no current-HEAD evidence, expose the newest foreign
+    # candidate only so the report can say STALE_REPOSITORY; it is never valid.
+    return newest(current_rows) or newest(candidates)
 
 
 def _assess_readiness_artifact(label: str, payload: Mapping[str, object], digest: str, *, current_commit: str, now: datetime, identity_key: str, created_key: str, ttl: timedelta | None) -> dict[str, object]:
