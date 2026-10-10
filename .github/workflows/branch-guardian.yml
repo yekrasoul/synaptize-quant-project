@@ -1,0 +1,145 @@
+name: BTC DCA Branch Guardian
+
+on:
+  push:
+    branches:
+      - "feat/**"
+      - "fix/**"
+      - "refactor/**"
+
+permissions: {}
+
+jobs:
+  validation:
+    name: Branch Guardian / Validation
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        working-directory: btc_dca_bridge
+    steps:
+      - name: Check out branch with history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python and uv
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+      - name: Capture canonical ledger digest
+        run: sha256sum ledger/executions.jsonl | tee /tmp/guardian-ledger-before
+      - name: Compile
+        run: uv run python -m compileall -q src tests
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Canonical validation
+        run: uv run python -m btc_dca_bridge validate
+
+      - name: Read-only runtime safety checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_blocked() {
+            set +e
+            "$@"
+            status=$?
+            set -e
+            test "$status" -eq 2
+          }
+          check_blocked uv run python -m btc_dca_bridge live-readiness
+          uv run python -m btc_dca_bridge live-authorization-status
+          uv run python -m btc_dca_bridge live-activation-status
+          uv run python -m btc_dca_bridge production-enablement-status
+          check_blocked uv run python -m btc_dca_bridge final-readiness-audit
+
+      - name: Assert canonical ledger is unchanged
+        run: test "$(sha256sum ledger/executions.jsonl)" = "$(cat /tmp/guardian-ledger-before)"
+
+      - name: Classify diff and persist guardian result
+        shell: bash
+        env:
+          BOOTSTRAPPED: ${{ vars.BRANCH_GUARDIAN_BOOTSTRAPPED }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --depth=1
+          git diff --name-only origin/main...HEAD > /tmp/guardian-files.txt
+          git diff origin/main...HEAD > /tmp/guardian-diff.txt
+          base_sha=$(git rev-parse origin/main)
+          args=(--branch "$GITHUB_REF_NAME" --head-sha "$GITHUB_SHA" --base-sha "$base_sha" --changed-files /tmp/guardian-files.txt --diff /tmp/guardian-diff.txt --output /tmp/branch-guardian-result.json)
+          if [[ "$BOOTSTRAPPED" != "true" ]]; then args+=(--bootstrap); fi
+          uv run python -m btc_dca_bridge branch-guardian-classify "${args[@]}"
+          cp /tmp/branch-guardian-result.json "$GITHUB_WORKSPACE/branch-guardian-result.json"
+
+      - name: Publish Guardian result
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-guardian-result
+          path: branch-guardian-result.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Guardian summary
+        shell: bash
+        run: |
+          {
+            echo '## BTC DCA BRANCH GUARDIAN'
+            echo
+            jq -r '"Classification: \(.classification)\nTests: " + (if .tests_passed then "PASS" else "FAIL" end) + "\nProtected files: " + (if .protected_files_unchanged then "UNCHANGED" else "CHANGED" end) + "\nLedger: " + (if .ledger_unchanged then "UNCHANGED" else "CHANGED" end) + "\n\nAuthorization: \(.authorization)\nActivation: \(.activation)\nProduction Enablement: \(.production_enablement)\nExecution: \(.execution)\n\nAuto-merge eligible: " + (if .auto_merge_eligible then "YES" else "NO" end) + "\n\nNO ORDER EXECUTED"' $GITHUB_WORKSPACE/branch-guardian-result.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  guardian:
+    name: Branch Guardian / Safety classification
+    needs: validation
+    if: needs.validation.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Download classified result
+        uses: actions/download-artifact@v5
+        with:
+          name: branch-guardian-result
+          path: /tmp/guardian
+
+      - name: Create exactly one pull request and request guarded auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          HEAD_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=/tmp/guardian/branch-guardian-result.json
+          pr_number=$(gh pr list --repo "$REPOSITORY" --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [[ -z "$pr_number" ]]; then
+            title=$(gh api "repos/$REPOSITORY/commits/$HEAD_SHA" --jq '.commit.message' | head -n1)
+            body=$(cat <<EOF
+          Branch Guardian classification: $(jq -r .classification "$result")
+          Tests: $(jq -r .tests_passed "$result")
+          Protected-file status: $(jq -r .protected_files_unchanged "$result")
+          Runtime safety: $(jq -r .execution "$result")
+          Ledger unchanged: $(jq -r .ledger_unchanged "$result")
+
+          NO ORDER EXECUTED
+          EOF
+          )
+            pr_number=$(gh pr create --repo "$REPOSITORY" --base main --head "$BRANCH" --title "$title" --body "$body" | sed -E 's#.*/##')
+          fi
+          if [[ "$(jq -r .auto_merge_eligible "$result")" == "true" ]]; then
+            behind=$(gh api "repos/$REPOSITORY/compare/main...$HEAD_SHA" --jq '.behind_by')
+            if [[ "$behind" == "0" ]]; then
+              gh pr merge "$pr_number" --repo "$REPOSITORY" --auto --merge
+            fi
+          fi

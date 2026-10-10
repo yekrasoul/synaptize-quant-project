@@ -36,6 +36,8 @@ from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTran
 from .real_money_authorization import authorize_persisted_approval, read_authorization_status
 from .live_activation import create_execution_activation, read_activation_status
 from .production_enablement import prepare_production_enablement, read_enablement_status
+from .final_readiness import final_readiness_audit
+from .branch_guardian import classify_branch, write_result
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -199,6 +201,11 @@ def _parser() -> argparse.ArgumentParser:
     enable_status = subparsers.add_parser("production-enablement-status", help="read-only production enablement status")
     enable_status.add_argument("--enablement-id")
     enable_status.add_argument("--data-root", type=Path, default=DATA_PATH)
+    subparsers.add_parser("final-readiness-audit", help="read-only final production readiness audit")
+    guardian = subparsers.add_parser("branch-guardian-classify", help="classify a branch diff without merging")
+    guardian.add_argument("--branch", required=True); guardian.add_argument("--head-sha", required=True); guardian.add_argument("--base-sha", required=True)
+    guardian.add_argument("--changed-files", type=Path, required=True); guardian.add_argument("--diff", type=Path, required=True); guardian.add_argument("--output", type=Path, required=True)
+    guardian.add_argument("--bootstrap", action="store_true")
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -667,6 +674,19 @@ def _production_enable_status(args: argparse.Namespace) -> tuple[dict[str, objec
     return read_enablement_status(store=ArtifactStore(args.data_root), enablement_id=args.enablement_id), 0
 
 
+def _final_readiness_audit() -> tuple[dict[str, object], int]:
+    result = final_readiness_audit()
+    return result, {"CORRUPT": EXIT_CORRUPT, "RECONCILIATION_REQUIRED": EXIT_RECONCILIATION}.get(result["readiness"], EXIT_BLOCKED)
+
+
+def _branch_guardian_classify(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = classify_branch(branch=args.branch, head_sha=args.head_sha, base_sha=args.base_sha,
+        changed_files=args.changed_files.read_text(encoding="utf-8").splitlines(), diff_text=args.diff.read_text(encoding="utf-8"), bootstrap=args.bootstrap)
+    validate_artifact("branch_guardian_result", result)
+    write_result(result, args.output)
+    return result, 0 if result["classification"] != "FAIL" else EXIT_CORRUPT
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -906,6 +926,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _production_enable_prepare(args)
         elif args.command == "production-enablement-status":
             result, exit_code = _production_enable_status(args)
+        elif args.command == "final-readiness-audit":
+            result, exit_code = _final_readiness_audit()
+        elif args.command == "branch-guardian-classify":
+            result, exit_code = _branch_guardian_classify(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:
