@@ -36,3 +36,5 @@ Required checks are `Canonical validation`, `Branch Guardian / Validation`,
 and `Branch Guardian / Safety classification`. No required check is bypassed.
 Guardian workflow, classifier, and other trust-surface changes always require
 manual review.
+
+Trusted auto-merge pilot v2 verified.
