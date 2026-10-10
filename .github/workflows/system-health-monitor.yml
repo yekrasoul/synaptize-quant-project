@@ -192,7 +192,7 @@ jobs:
               classify_artifact_integrity, classify_canonical_ci,
               classify_market_data_artifacts, classify_production_shadow,
               classify_self_hosted_runner,
-              classify_production_status,
+              classify_production_status, classify_watchdog,
           )
           evidence_path = pathlib.Path("/tmp/system-health-github-evidence.json")
           try:
@@ -233,23 +233,17 @@ jobs:
               safety.update({key: execution.get(key) for key in ("live_execution_enabled", "kill_switch", "order_submission")})
           except (OSError, TypeError, ValueError): pass
           from datetime import timedelta
-          monitor_fresh = any(
-              run.get("id") != os.environ.get("GITHUB_RUN_ID")
-              and run.get("status") == "completed"
-              and run.get("conclusion") == "success"
-              and timedelta(0) <= now - datetime.fromisoformat(run["created_at"].replace("Z", "+00:00")) <= timedelta(hours=2)
-              for run in evidence.get("monitor_runs", [])
-              if isinstance(run.get("created_at"), str)
-          )
+          watchdog_state = classify_watchdog(observed_at, evidence.get("monitor_runs", []), current_run_id=os.environ.get("GITHUB_RUN_ID"))
+          telegram_state = "HEALTHY" if previous and previous.get("last_telegram_delivery_at") else ("CONFIGURED" if evidence.get("telegram_configured") else "ALERT")
           checks = {
               "self_hosted_runner": runner_state,
               "production_shadow": shadow["state"],
-              "watchdog": "HEALTHY" if monitor_fresh else "UNKNOWN",
+              "watchdog": watchdog_state,
               "canonical_ci": ci,
               "artifacts": artifact_state,
               "artifact_consistency": classify_artifact_integrity("/tmp/latest-shadow-evidence") if os.environ["MODE"] == "full" else "NOT_RUN",
               "ledger_integrity": os.environ["LEDGER"],
-              "telegram": "HEALTHY" if previous and previous.get("last_telegram_delivery_at") else ("CONFIGURED" if evidence.get("telegram_configured") else "UNKNOWN"),
+              "telegram": telegram_state,
               "contract_state": contract_state,
               "fingerprints": {"external_dependencies": contract_state["fingerprint"]},
               "bybit_spot_connectivity": "NOT_RUN",
@@ -275,7 +269,10 @@ jobs:
           result = json.loads(pathlib.Path(sys.argv[1]).read_text())
           messages = []
           for notification in result["pending_notifications"]:
-              messages.append(f"BTC DCA SYSTEM HEALTH — {notification['kind']}\nComponent: {notification['component']}\nObserved: {result['observed_at_utc']}\nOverall: {result['overall']}\nNO ORDER EXECUTED")
+              if notification["kind"] == "TEST_ALERT":
+                  messages.append(f"BTC DCA SYSTEM HEALTH — TEST_ALERT\nComponent: system\nObserved: {result['observed_at_utc']}\nOverall: {result['overall']}\nTEST ONLY\nAuthorization: NOT_AUTHORIZED\nNO ORDER EXECUTED")
+              else:
+                  messages.append(f"BTC DCA SYSTEM HEALTH — {notification['kind']}\nComponent: {notification['component']}\nObserved: {result['observed_at_utc']}\nOverall: {result['overall']}\nNO ORDER EXECUTED")
           pathlib.Path("/tmp/system-health-messages.json").write_text(json.dumps(messages), encoding="utf-8")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"notify={'true' if messages else 'false'}\n")

@@ -17,6 +17,7 @@ from btc_dca_bridge.health_monitor import (
     classify_production_shadow,
     classify_production_status,
     classify_self_hosted_runner,
+    classify_watchdog,
     commit_state,
     derive_mode,
     evaluate,
@@ -56,6 +57,8 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertEqual(inputs["mode"]["default"], "full")
         self.assertTrue(all(inputs[name]["type"] == "boolean" for name in ("send_test_alert", "send_test_summary")))
         self.assertNotIn("continue-on-error", self.text)
+        self.assertIn("TEST ONLY", self.text)
+        self.assertIn("Authorization: NOT_AUTHORIZED", self.text)
 
     def test_github_evidence_uses_filesystem_transport(self):
         self.assertNotIn("GITHUB_EVIDENCE_JSON", self.text)
@@ -132,6 +135,45 @@ class SystemHealthMonitorTest(unittest.TestCase):
         for conclusion in ("failure", "cancelled", "timed_out"):
             self.assertEqual(classify_canonical_ci([{**base, "conclusion": conclusion}]), "ALERT")
         self.assertEqual(classify_canonical_ci([{**base, "conclusion": "success", "created_at": "bad"}]), "UNKNOWN")
+        pr = {"event": "pull_request", "base_ref": "main", "head_branch": "feature", "created_at": "2026-10-10T06:00:00Z", "status": "completed"}
+        self.assertEqual(classify_canonical_ci([{**pr, "conclusion": "success"}]), "HEALTHY")
+        self.assertEqual(classify_canonical_ci([{**pr, "conclusion": "failure"}]), "ALERT")
+        self.assertEqual(classify_canonical_ci([{**pr, "conclusion": "success", "created_at": "bad"}]), "UNKNOWN")
+        self.assertEqual(classify_canonical_ci([{**base, "event": "push", "conclusion": "success"}]), "UNKNOWN")
+
+    def test_watchdog_cold_start_and_fail_closed_history(self):
+        observed = "2026-10-10T17:17:00Z"
+        self.assertEqual(classify_watchdog(observed, []), "INITIALIZING")
+        successful = {"id": 10, "event": "schedule", "head_branch": "main", "created_at": "2026-10-10T16:00:00Z", "status": "completed", "conclusion": "success"}
+        self.assertEqual(classify_watchdog(observed, [successful]), "HEALTHY")
+        self.assertEqual(classify_watchdog(observed, [{**successful, "created_at": "2026-10-10T10:00:00Z"}]), "ALERT")
+        self.assertEqual(classify_watchdog(observed, [{**successful, "status": "completed", "conclusion": "failure"}]), "ALERT")
+        self.assertEqual(classify_watchdog(observed, [{**successful, "created_at": "malformed"}]), "UNKNOWN")
+
+    def test_test_alert_is_isolated_and_does_not_acknowledge_incidents(self):
+        checks = {**healthy_checks(), "watchdog": "ALERT", "canonical_ci": "ALERT", "telegram": "ALERT"}
+        previous = {"delivered_alerts": {"existing": "fingerprint"}, "summary_delivery_date": "2026-10-09", "last_telegram_delivery_at": "2026-10-09T17:00:00Z"}
+        result = evaluate(mode="critical", checks=checks, safety=SAFETY, observed_at="2026-10-10T17:17:00Z", previous=previous, send_test_alert=True)
+        self.assertEqual([(item["kind"], item["component"]) for item in result["pending_notifications"]], [("TEST_ALERT", "system")])
+        self.assertFalse(result["daily_summary_due"])
+        self.assertEqual(commit_state(result, previous, alerts_delivered=True, summary_delivered=True), previous)
+
+    def test_test_summary_is_isolated_and_does_not_consume_daily_acknowledgement(self):
+        previous = {"summary_delivery_date": "2026-10-10", "last_telegram_delivery_at": "2026-10-10T08:00:00Z"}
+        result = evaluate(mode="critical", checks={**healthy_checks(), "watchdog": "ALERT"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z", previous=previous, send_test_summary=True)
+        self.assertEqual(result["pending_notifications"], [])
+        self.assertTrue(result["daily_summary_due"])
+        self.assertEqual(commit_state(result, previous, alerts_delivered=False, summary_delivered=True), previous)
+
+    def test_telegram_startup_state_is_non_alerting_until_delivery(self):
+        configured = evaluate(mode="critical", checks={**healthy_checks(), "telegram": "CONFIGURED"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertEqual(configured["overall"], "UNKNOWN")
+        self.assertFalse(any(item["component"] == "telegram" for item in configured["pending_notifications"]))
+        healthy = evaluate(mode="critical", checks=healthy_checks(), safety=SAFETY, observed_at="2026-10-10T17:17:00Z", previous={"last_telegram_delivery_at": "2026-10-10T16:00:00Z"})
+        self.assertEqual(healthy["overall"], "HEALTHY")
+        missing = evaluate(mode="critical", checks={**healthy_checks(), "telegram": "ALERT"}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertEqual(missing["overall"], "CRITICAL")
+        self.assertTrue(any(item["component"] == "telegram" for item in missing["pending_notifications"]))
 
     def test_contract_state_contains_material_watch_features_and_fingerprint(self):
         contract = {"production_quote_limit_conclusion": "QUOTE_UNIT_MAX_NOT_REQUIRED", "approved_quote_unit_limit_source_count": 0, "real_money_authorization": {"status": "NOT_AUTHORIZED"}, "capabilities": {"quote_unit_maximum_supported": False, "quote_unit_maximum_source": None, "spot_quote_availability_supported": True, "market_unit_quote_coin_supported": True}}
