@@ -193,7 +193,7 @@ class ProductionEvidenceTests(unittest.TestCase):
         result = preauthorization_status(self.service)
         self.assertNotEqual(result["status"], "AUTHORIZED")
         self.assertEqual(result["real_money_authorization"], AUTHORIZATION)
-        self.assertEqual(result["quote_unit_limit"]["status"], "UNAVAILABLE")
+        self.assertEqual(result["quote_unit_limit"]["status"], "NOT_APPLICABLE")
 
     def test_cli_entrypoints_are_read_only_and_machine_readable(self):
         class Receipt:

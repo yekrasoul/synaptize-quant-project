@@ -42,7 +42,7 @@ class FakeStatusService:
     def __init__(self, root, ledger, clock, *, unresolved=False, health=None, readiness_status="NOT_READY", checks=None):
         self.root, self.ledger, self.clock = root, ledger, clock
         self.unresolved = unresolved
-        self.health_status = health or "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY"
+        self.health_status = health or "HEALTHY"
         self.readiness_status = readiness_status
         self.checks = checks or {check: "PASS" for check in CHECK_IDS}
         self.service = ProductionStatusService(
@@ -143,7 +143,7 @@ class ProductionStatusTests(unittest.TestCase):
 
         self.assertEqual(calls[:2], ["preauthorization", "readiness"])
         self.assertEqual(snapshot["evidence_status"], "VALID_NOT_READY")
-        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(snapshot["overall_operator_state"], "ACTION_REQUIRED")
 
     def test_status_reuses_preauthorization_verification_without_late_reverify(self):
         class Evidence:
@@ -191,17 +191,17 @@ class ProductionStatusTests(unittest.TestCase):
 
         self.assertEqual(snapshot["evidence_status"], "VALID_NOT_READY")
         self.assertEqual(snapshot["account_identity_status"], "PROVEN")
-        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(snapshot["overall_operator_state"], "ACTION_REQUIRED")
         self.assertEqual(evidence.verify_calls, 0)
 
-    def test_current_production_state_is_healthy_but_external_blocked(self):
+    def test_current_production_state_has_no_quote_maximum_blocker(self):
         snapshot = self.fake.service.evaluate().to_dict()
-        self.assertEqual(snapshot["software_health"], "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY")
+        self.assertEqual(snapshot["software_health"], "HEALTHY")
         self.assertEqual(snapshot["production_readiness"], "NOT_READY")
         self.assertEqual(snapshot["preauthorization_status"], "BLOCKED")
-        self.assertEqual(snapshot["blocker_ids"], [QUOTE_LIMIT_BLOCKER_ID])
+        self.assertEqual(snapshot["blocker_ids"], [])
         self.assertEqual(snapshot["quote_unit_limit_status"], "NOT_EXPOSED")
-        self.assertEqual(snapshot["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(snapshot["overall_operator_state"], "ACTION_REQUIRED")
         self.assertEqual(snapshot["canonical_execution_count"], 0)
         self.assertEqual(snapshot["ledger_event_count"], 0)
         self.assertEqual(snapshot["schema_version"], "6.1.0")
@@ -380,7 +380,7 @@ class ProductionStatusTests(unittest.TestCase):
         baseline = self.fake.service.evaluate().to_dict()
         self.assertEqual(compare_status_snapshots(baseline, dict(baseline)).classification, "NO_MATERIAL_CHANGE")
         external = dict(baseline, blocker_ids=[])
-        self.assertEqual(compare_status_snapshots(baseline, external).classification, "EXTERNAL_DEPENDENCY_CHANGE")
+        self.assertEqual(compare_status_snapshots(baseline, external).classification, "NO_MATERIAL_CHANGE")
         secret_failure = dict(baseline, secret_hygiene_status="FAIL")
         self.assertEqual(compare_status_snapshots(baseline, secret_failure).classification, "SAFETY_REGRESSION")
         identity_mismatch = dict(baseline, account_identity_status="MISMATCH")
@@ -414,7 +414,7 @@ class ProductionStatusTests(unittest.TestCase):
         self.assertEqual(compare_status_snapshots(baseline, changed).classification, "EXTERNAL_DEPENDENCY_CHANGE")
         self.assertEqual(changed["real_money_authorization"]["granted"], False)
         self.assertEqual(changed["production_readiness"], "NOT_READY")
-        self.assertEqual(len(baseline["blocker_ids"]), 1)
+        self.assertEqual(len(baseline["blocker_ids"]), 0)
 
     def test_alert_policy_deduplicates_material_change_and_formats_no_secrets(self):
         self.fake.service.collect()
@@ -442,20 +442,20 @@ class ProductionStatusTests(unittest.TestCase):
         approval_root = self.root / "live_approvals"
         outputs = []
         with patch.object(cli, "_production_status_service_factory", side_effect=lambda **kw: FakeStatusService(kw["data_root"], kw.get("ledger_path", self.ledger), self.clock).service), patch.object(cli, "_submission_transport_factory", side_effect=lambda *args: transport_calls.append(args)):
-            for argv in (
+            for index, argv in enumerate((
                 ["production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"],
                 ["collect-production-status", "--data-root", str(self.root), "--ledger", str(self.ledger), "--json"],
                 ["production-status-history", "--data-root", str(self.root), "--json"],
-            ):
+            )):
                 stream = __import__("io").StringIO()
                 with patch("sys.stdout", stream):
-                    self.assertEqual(cli.main(argv), 0)
+                    self.assertEqual(cli.main(argv), 2 if index < 2 else 0)
                 outputs.append(json.loads(stream.getvalue()))
         self.assertEqual(transport_calls, [])
         self.assertEqual(self.ledger.read_bytes(), ledger_before)
         self.assertFalse(attempt_root.exists())
         self.assertFalse(approval_root.exists())
-        self.assertEqual(outputs[0]["overall_operator_state"], "EXTERNAL_DEPENDENCY_BLOCKED")
+        self.assertEqual(outputs[0]["overall_operator_state"], "ACTION_REQUIRED")
         self.assertEqual(outputs[1]["snapshot"]["production_readiness"], "NOT_READY")
         self.assertEqual(outputs[2]["count"], 1)
 

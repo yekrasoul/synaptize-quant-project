@@ -104,14 +104,12 @@ class LiveOrderHardeningTests(unittest.TestCase):
             self.submit(transport=transport)
         self.assertEqual(transport.calls, [])
 
-    def test_missing_quote_unit_limit_blocks_before_attempt_and_post(self):
+    def test_missing_quote_unit_limit_does_not_block_quote_sized_submission(self):
         self.reader.quote_unit_limit_evidence = lambda: unavailable_quote_unit_limit(observed_at_utc="2026-10-07T12:00:00Z")
         transport = FakeTransport(self.ack)
-        with self.assertRaises(LiveOrderSafetyError):
-            self.submit(transport=transport)
-        self.assertEqual(transport.calls, [])
-        attempts = list((self.data / "order_submission_attempts").rglob("*.json")) if (self.data / "order_submission_attempts").exists() else []
-        self.assertEqual(attempts, [])
+        result = self.submit(transport=transport)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
 
     def test_unpersisted_tampered_or_wrong_hash_approval_blocks(self):
         self.approval = replace(self.approval, approval_id="approval-" + "b" * 32)

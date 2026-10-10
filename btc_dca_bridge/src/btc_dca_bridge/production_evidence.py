@@ -128,12 +128,8 @@ class ProductionEvidenceService:
         required_unavailable = any(item.get("required") and item.get("status") == "UNAVAILABLE" and item.get("check_id") in incomplete_ids for item in checks)
         connectivity_complete = connectivity.get("status") == "READS_OK"
         quote_limit_raw = QuoteUnitLimitEvidence.from_mapping(readiness.get("quote_unit_limit_evidence", unavailable_quote_unit_limit(observed_at_utc=created.isoformat().replace("+00:00", "Z"))))
-        try:
-            validate_quote_unit_limit_evidence(quote_limit_raw, now=created, policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
-            quote_limit_valid = True
-        except QuoteUnitLimitValidationError:
-            quote_limit_valid = False
-        ready = readiness.get("status") == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and connectivity_complete and account_status == "PROVEN" and quote_limit_valid
+        quote_limit_valid = True
+        ready = readiness.get("status") == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and connectivity_complete and account_status == "PROVEN"
         status = "EVIDENCE_INCOMPLETE" if required_unavailable or not connectivity_complete else ("EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" if ready else "EVIDENCE_COMPLETE_NOT_READY")
         evidence_id = "evidence-" + hashlib.sha256(f"{repo.get('commit')}|{socket.gethostname()}|{created.isoformat()}".encode()).hexdigest()[:32]
         by_id = {item.get("check_id"): item for item in checks}
@@ -255,13 +251,7 @@ def preauthorization_status(service: ProductionEvidenceService) -> dict[str, Any
     readiness = service._readiness()
     state = readiness.get("status")
     quote_limit = QuoteUnitLimitEvidence.from_mapping(readiness.get("quote_unit_limit_evidence", unavailable_quote_unit_limit(observed_at_utc=service.now().astimezone(UTC).isoformat().replace("+00:00", "Z"))))
-    try:
-        validate_quote_unit_limit_evidence(quote_limit, now=service.now(), policy=PRODUCTION_QUOTE_UNIT_LIMIT_POLICY)
-        quote_limit_status = "PASS"
-        quote_limit_reason = "authoritative quote-unit maximum is valid"
-    except QuoteUnitLimitValidationError as exc:
-        quote_limit_status = "UNAVAILABLE"
-        quote_limit_reason = str(exc)
-        state = "NOT_READY"
+    quote_limit_status = "NOT_APPLICABLE"
+    quote_limit_reason = "independent quote-unit maximum is not required for the exact quote-sized Market Buy operation"
     mapped = "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" if state == "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION" and verification["status"] == "VALID_READY_FOR_SEPARATE_AUTHORIZATION" else ("READY_FOR_OPERATOR_PREPARATION" if state == "READY_FOR_OPERATOR_PREPARATION" else "BLOCKED")
     return {"status": mapped, "evidence_id": latest["evidence_id"], "readiness_status": state, "quote_unit_limit": {"status": quote_limit_status, "reason": quote_limit_reason, "evidence": quote_limit.to_dict() if hasattr(quote_limit, "to_dict") else quote_limit}, "verification": verification, "real_money_authorization": dict(AUTHORIZATION)}

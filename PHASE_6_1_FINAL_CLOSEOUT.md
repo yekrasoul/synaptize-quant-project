@@ -132,3 +132,13 @@ production Bybit requests, submit an order, create a live approval, or mutate
 the ledger. Fresh account-specific production evidence must be collected by an
 operator only through the established read-only readiness/evidence commands
 when separately required.
+# Current contract interpretation
+
+The final safety model treats `marketUnit=quoteCoin` as the unit selector for
+the exact USDT `qty` in the Spot Market Buy payload. It does not use deprecated
+`maxOrderAmt`, and it does not convert `maxMarketOrderQty` into a quote limit.
+The absence of a separate quote maximum can result in an exchange rejection,
+but cannot create an overspend path; explicit rejection is never retried and
+never enters the ledger. Readiness and preauthorization therefore report this
+check as not applicable while retaining every account, cap, identity,
+availability, reconciliation, and ledger control.

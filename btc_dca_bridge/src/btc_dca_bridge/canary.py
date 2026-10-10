@@ -21,8 +21,7 @@ from .execution import make_order_intent
 from .ledger import confirmed_executions, read_executions, validate_calendar_month
 from .live_order import SpotMarketBuyRequest
 from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
-from .blocked_production import QUOTE_LIMIT_BLOCKED_MESSAGE
-from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
+from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy
 from .schemas import validate_artifact
 
 CANARY_SCHEMA_VERSION = "5.4.0"
@@ -254,13 +253,8 @@ class CanaryPreparer:
             rules.validate_quote(amount)
         except Exception:
             reasons.append("authoritative Spot instrument verification failed")
-        try:
-            quote_limit = self.client.quote_unit_limit_evidence()
-            maximum = validate_quote_unit_limit_evidence(quote_limit, now=now, policy=self.quote_limit_policy)
-            if maximum < amount:
-                reasons.append("authoritative quote-unit market-buy maximum is below exact V1 amount")
-        except Exception as exc:
-            reasons.append(f"{QUOTE_LIMIT_BLOCKED_MESSAGE} ({exc})")
+        # marketUnit=quoteCoin binds the exact approved USDT amount. An
+        # exchange-side quantity/risk violation is handled as a rejection.
         try:
             pre_state = self.client.submission_state(intent.client_order_id)
             if pre_state != "conclusively_absent": reasons.append("pre-submission reconciliation is not conclusively absent")

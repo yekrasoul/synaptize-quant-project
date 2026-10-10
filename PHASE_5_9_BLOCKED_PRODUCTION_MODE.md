@@ -82,3 +82,16 @@ permit observation and recovery only; none permits an order.
 NO REAL ORDER EXECUTED
 LIVE TRADING NOT ACTIVATED
 REAL-MONEY CANARY STILL REQUIRES SEPARATE EXPLICIT USER AUTHORIZATION
+# Quote maximum policy transition
+
+`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` is no longer an active production blocker.
+For the approved quote-denominated Spot Market Buy, `marketUnit=quoteCoin`
+already bounds the submitted `qty` to the approved USDT amount. Missing quote
+maximum evidence is therefore informational capability state
+(`quote_unit_maximum_supported=false`, `quote_unit_maximum_required=false`),
+not an overspend path. Exchange-side rejection remains explicit, non-retried,
+and produces no fill claim or ledger append.
+
+All other blockers and safety gates remain active, including account-scoped
+`spotMaxTradeAmount`, monthly cap, instrument minimum, identity, approval,
+freshness, liabilities, reconciliation, and exactly-once ledger rules.
