@@ -1084,7 +1084,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
             activation=chain["activation"], activation_sha256=chain["activation_sha"],
             capability=None, approval=chain["approval"], approval_sha256=chain["approval_sha"],
             manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"], intent=chain["intent"],
-            decision=chain["decision"], runtime_config=config, evidence=chain["evidence"],
+            decision=chain["decision"], runtime_config=runtime_config, evidence=chain["evidence"],
             repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
             calendar_month=args.month, ledger_path=args.ledger, read_client=client,
             reconciler=reconciler, run_id=args.run_id, transport_factory=lazy_transport,

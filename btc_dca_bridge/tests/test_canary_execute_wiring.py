@@ -175,6 +175,7 @@ class CanaryExecuteWiringTests(unittest.TestCase):
         transport = _Transport()
         engine = _Engine(transport)
         intent = SimpleNamespace(order_intent_id="intent-1", decision_id="decision-1", client_order_id=approval["client_order_id"], quote_amount_usdt=Decimal("25"))
+        observed_runtime = []
         chain = {
             "store": Mock(), "manifest": {"canary_id": "canary-1"}, "manifest_sha": "d" * 64,
             "approval": approval, "approval_sha": approval_sha,
@@ -202,9 +203,11 @@ class CanaryExecuteWiringTests(unittest.TestCase):
                  redirect_stdout(output):
                 # Use the real executor instance so the CLI's transport factory
                 # is exercised, while bypassing filesystem-only chain setup.
-                with patch("btc_dca_bridge.cli.ControlledProductionExecutor", side_effect=lambda **kwargs: ControlledProductionExecutor(engine=engine, store=chain["store"])), \
+                with patch("btc_dca_bridge.cli.ControlledProductionExecutor") as executor_cls, \
                      patch("btc_dca_bridge.production_enablement.ControlledProductionExecutor._verify_persisted_chain"), \
                      patch("btc_dca_bridge.production_enablement.issue_execution_capability", return_value=object()):
+                    real_executor = ControlledProductionExecutor(engine=engine, store=chain["store"])
+                    executor_cls.return_value.execute.side_effect = lambda **kwargs: (observed_runtime.append(kwargs["runtime_config"]), real_executor.execute(**kwargs))[1]
                     code = main([
                         "canary-execute", "--run-id", "run_20261010T120000Z_wiretest4",
                         "--canary-id", "canary-1", "--approval-id", approval["approval_id"],
@@ -218,6 +221,13 @@ class CanaryExecuteWiringTests(unittest.TestCase):
             self.assertEqual(engine.calls, 1)
             self.assertEqual(transport.calls, 1)
             transport_factory.assert_called_once()
+            self.assertEqual(len(observed_runtime), 1)
+            self.assertTrue(observed_runtime[0].live_execution_enabled)
+            self.assertFalse(observed_runtime[0].kill_switch)
+            self.assertEqual(observed_runtime[0].order_submission, "implemented")
+            self.assertFalse(canonical_config.live_execution_enabled)
+            self.assertTrue(canonical_config.kill_switch)
+            self.assertEqual(canonical_config.order_submission, "not_implemented")
 
     def test_cli_gate_b_drift_prevents_transport(self):
         now, approval, approval_sha, authorization, authorization_sha = self._ceremony()
