@@ -7,6 +7,7 @@ from btc_dca_bridge.live_activation import ACTIVATION_TTL
 from btc_dca_bridge.live_readiness import APPROVAL_TTL
 from btc_dca_bridge.real_money_authorization import AUTHORIZATION_TTL
 from btc_dca_bridge.readiness_checks import ReadinessCheckId, project_gate_d_evidence
+from btc_dca_bridge.cli import _gate_d_evidence
 from btc_dca_bridge.ttl_policy import (
     CANARY_MANIFEST_TTL,
     EXECUTION_ACTIVATION_TTL,
@@ -35,6 +36,25 @@ class LiveExecutionArchitectureTests(unittest.TestCase):
         self.assertTrue(projected["no_artifact_corruption"])
         self.assertTrue(projected["production_shadow_healthy"])
         self.assertNotIn("LEDGER_INTEGRITY", {item["check_id"] for item in bundle["check_results"]})
+
+    def test_gate_d_projection_uses_enablement_contract_fingerprint(self):
+        bundle = {"check_results": [
+            {"check_id": check_id.value, "status": "PASS"}
+            for check_id in (
+                ReadinessCheckId.CANONICAL_LEDGER,
+                ReadinessCheckId.STRATEGY_IDENTITY,
+                ReadinessCheckId.BYBIT_ACCOUNT,
+                ReadinessCheckId.BYBIT_CREDENTIAL_SCOPE,
+                ReadinessCheckId.BYBIT_LIABILITIES,
+                ReadinessCheckId.BYBIT_SPOT_AVAILABLE_BALANCE,
+                ReadinessCheckId.BYBIT_INSTRUMENT,
+                ReadinessCheckId.CLOCK_SKEW,
+                ReadinessCheckId.UNRESOLVED_OPERATIONS,
+                ReadinessCheckId.ARTIFACT_INTEGRITY,
+            )
+        ]}
+        projected = _gate_d_evidence(bundle, enablement={"production_contract_fingerprint": "a" * 64})
+        self.assertTrue(projected["production_contract_valid"])
 
     def test_ttls_are_shared_by_all_ceremony_modules(self):
         self.assertEqual(CANARY_EXPIRY, CANARY_MANIFEST_TTL)

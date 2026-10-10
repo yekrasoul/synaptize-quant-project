@@ -1372,7 +1372,10 @@ def _gate_d_evidence(bundle: dict[str, object], *, enablement: dict[str, object]
     """
     projected = project_gate_d_evidence(
         bundle,
-        contract_valid=bool(bundle.get("production_contract_fingerprint")),
+        # The persisted evidence bundle intentionally does not carry this
+        # governance fingerprint.  Gate D receives it from the separately
+        # persisted, digest-checked ProductionEnablement below.
+        contract_valid=bool(enablement.get("production_contract_fingerprint")),
     )
     projected.update({
         "account_identity_fingerprint": bundle.get("account_identity_fingerprint"),
