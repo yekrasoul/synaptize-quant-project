@@ -61,7 +61,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def _check(checks: list[Mapping[str, Any]], check_id: str) -> dict[str, Any]:
-    return next((dict(item) for item in checks if item.get("check_id") == check_id), {"check_id": check_id, "status": "UNAVAILABLE", "reason": "check not present"})
+    return next((dict(item) for item in checks if item.get("check_id") == check_id), {"check_id": check_id, "category": "unknown", "status": "UNAVAILABLE", "required": True, "evidence": "check not present", "reason": "check not present", "remediation": "Restore the required readiness check"})
 
 
 def _account_fingerprint(client: Any) -> tuple[str | None, str]:

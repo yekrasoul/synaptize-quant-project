@@ -48,6 +48,41 @@ class ProductionEvidenceTests(unittest.TestCase):
         self.assertTrue(receipt.path.name.startswith("evidence-"))
         self.assertEqual(self.service.verify(bundle["evidence_id"])["status"], "VALID_NOT_READY")
 
+    def test_collect_persists_schema_valid_fallback_for_absent_projected_check(self):
+        def readiness_without_account_check():
+            result = readiness()
+            result["checks"] = [item for item in result["checks"] if item["check_id"] != "BYBIT_ACCOUNT"]
+            return result
+
+        service = ProductionEvidenceService(
+            data_root=self.root / "missing-check-data",
+            ledger_path=self.root / "ledger.jsonl",
+            now=lambda: self.now,
+            client_factory=lambda: FakeClient(),
+            readiness_factory=lambda **kwargs: type(
+                "Readiness",
+                (),
+                {"evaluate": lambda self: readiness_without_account_check()},
+            )(),
+            connectivity_probe=self.connectivity,
+            repo_probe=self.repo,
+        )
+
+        bundle, _ = service.collect()
+
+        self.assertEqual(
+            bundle["account_mode_result"],
+            {
+                "check_id": "BYBIT_ACCOUNT",
+                "category": "unknown",
+                "status": "UNAVAILABLE",
+                "required": True,
+                "evidence": "check not present",
+                "reason": "check not present",
+                "remediation": "Restore the required readiness check",
+            },
+        )
+
     def test_sanitizer_removes_secret_material(self):
         sanitized = sanitize_evidence({"X-BAPI-API-KEY": "key", "X_BAPI_API_KEY": "key2", "X-BAPI-SIGN": "sig", "Authorization": "Bearer x", "Bearer": "x", "api_secret": "secret", "apiKey": "key3", "TELEGRAM_BOT_TOKEN": "tg", "headers": {"authorization": "Bearer x", "nested": {"X-BAPI-SIGN": "sig"}}, "safe": "ok"})
         self.assertEqual(sanitized, {"safe": "ok", "headers": {}})
