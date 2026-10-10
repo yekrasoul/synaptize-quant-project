@@ -153,6 +153,7 @@ def _parser() -> argparse.ArgumentParser:
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
+    subparsers.add_parser("live-readiness", help="read-only Phase 5.4B live boundary status")
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -535,6 +536,23 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
 
 
+def _live_readiness() -> tuple[dict[str, object], int]:
+    """Report the checked-in boundary without collecting private data or mutating anything."""
+    config = load_execution_config()
+    return ({
+        "status": "BLOCKED",
+        "authorization": "NOT_AUTHORIZED",
+        "reason": "Phase 5.4B is preparation-only; checked-in execution defaults remain disabled",
+        "safety": {
+            "live_execution_enabled": config.live_execution_enabled,
+            "kill_switch": config.kill_switch,
+            "explicit_live_approval_required": config.explicit_live_approval_required,
+            "order_submission": config.order_submission,
+        },
+        "message": "NO ORDER EXECUTED",
+    }, EXIT_BLOCKED)
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -777,6 +795,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _private_verify(args)
         elif args.command == "live-submit":
             result = _live_submit(args)
+        elif args.command == "live-readiness":
+            result, exit_code = _live_readiness()
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:
