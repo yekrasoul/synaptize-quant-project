@@ -24,6 +24,7 @@ from .config import ExecutionConfig, load_strategy_config
 from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
 from .ledger import append_execution_once
+from .live_readiness import LiveExecutionApproval
 from .market_data.http import HttpResponse
 from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification
 from .schemas import validate_artifact, validate_live_approval
@@ -356,11 +357,34 @@ class LiveOrderEngine:
         if persisted_sha != manifest_sha256 or persisted != dict(manifest):
             raise LiveOrderSafetyError("persisted CanaryManifest digest or bytes do not match supplied manifest")
 
-    def _validate_persisted_approval(self, approval: LiveApproval, approval_sha256: str, intent: OrderIntent, manifest: Mapping[str, Any], manifest_sha256: str, *, now_utc: datetime) -> None:
+    def _validate_persisted_approval(self, approval: LiveApproval | LiveExecutionApproval, approval_sha256: str, intent: OrderIntent, manifest: Mapping[str, Any], manifest_sha256: str, *, now_utc: datetime) -> None:
         self._validate_persisted_approval_receipt(approval, approval_sha256)
+        if isinstance(approval, LiveExecutionApproval):
+            payload = approval.payload
+            if payload.get("state") != "PREPARED":
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval is not PREPARED")
+            if (payload.get("decision_id"), payload.get("order_intent_id"), payload.get("client_order_id"), payload.get("quote_amount_usdt")) != (intent.decision_id, intent.order_intent_id, intent.client_order_id, str(intent.quote_amount_usdt)):
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval does not bind to the immutable OrderIntent")
+            if payload.get("canary_manifest_id") != manifest.get("canary_id") or payload.get("canary_manifest_sha256") != manifest_sha256:
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval does not bind to the CanaryManifest")
+            if payload.get("one_shot_identity") is None or payload.get("no_order_executed") is not True:
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval safety markers are invalid")
+            return
         approval.validate(intent, now_utc=now_utc, manifest=manifest, manifest_sha256=manifest_sha256)
 
-    def _validate_persisted_approval_receipt(self, approval: LiveApproval, approval_sha256: str) -> None:
+    def _validate_persisted_approval_receipt(self, approval: LiveApproval | LiveExecutionApproval, approval_sha256: str) -> None:
+        if isinstance(approval, LiveExecutionApproval):
+            try:
+                persisted, persisted_sha = self.artifact_store.find_artifact(ArtifactType.LIVE_EXECUTION_APPROVAL, identity_field="approval_id", identity_value=approval.approval_id)
+            except Exception as exc:
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval is required") from exc
+            if persisted_sha != approval_sha256 or persisted != approval.to_dict():
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval digest or bytes do not match supplied approval")
+            try:
+                validate_artifact("live_execution_approval", persisted)
+            except Exception as exc:
+                raise LiveOrderSafetyError("persisted LiveExecutionApproval schema validation failed") from exc
+            return
         try:
             persisted, persisted_sha = self.artifact_store.find_artifact(ArtifactType.LIVE_APPROVAL, identity_field="approval_id", identity_value=approval.approval_id)
         except Exception as exc:

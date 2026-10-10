@@ -14,7 +14,8 @@ from typing import Any, Mapping
 from .artifacts import ArtifactStore, ArtifactType
 from .config import ExecutionConfig
 from .errors import ArtifactNotFoundError
-from .live_readiness import GateStatus, LiveReadinessError, canonical_fingerprint
+from .live_readiness import GateStatus, LiveExecutionGate, LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
+from .live_activation import issue_execution_capability
 from .real_money_authorization import artifact_sha256
 
 ENABLEMENT_TTL = timedelta(hours=24)
@@ -245,21 +246,67 @@ class ControlledProductionExecutor:
                 decision: Mapping[str, Any], runtime_config: ExecutionConfig,
                 evidence: Mapping[str, Any], repository_commit_sha: str,
                 calendar_month: str, ledger_path: Any, read_client: Any,
-                reconciler: Any, run_id: str, transport_factory: Any):
+                reconciler: Any, run_id: str, transport_factory: Any,
+                decision_sha256: str | None = None,
+                order_intent_sha256: str | None = None,
+                evidence_sha256: str | None = None,
+                gate_a_current: Mapping[str, Any] | None = None,
+                gate_b_current: Mapping[str, Any] | None = None):
+        """Run the sole controlled composition path.
+
+        The CLI supplies persisted, digest-checked artifacts.  Gate D is
+        evaluated before the private client or lazy transport can be created;
+        Gate A/B are evaluated from separately supplied fresh snapshots, and
+        the existing LiveOrderEngine then owns attempt-before-POST, Gate C,
+        reconciliation, and confirmation-only ledger append.
+        """
         result = gate_d(enablement=enablement, enablement_sha256=enablement_sha256,
                         runtime_config=runtime_config, store=self.store,
                         repository_commit_sha=repository_commit_sha,
                         evidence=evidence, now_utc=datetime.now(UTC))
         if result.status is not GateStatus.READY_FOR_SUBMISSION:
             return {"status": "blocked", "gate": "D", "reasons": result.reasons, "message": "NO ORDER EXECUTED"}
-        if authorization.get("status") != "AUTHORIZED" or activation.get("status") != "ACTIVE":
-            return {"status": "blocked", "gate": "authorization_or_activation", "message": "NO ORDER EXECUTED"}
-        # LiveOrderEngine performs the fresh Gate A/B checks and persists the
-        # attempt before Gate C.  The factory is deliberately passed through
-        # untouched and is called only after that engine reaches Gate C.
+        try:
+            self._verify_persisted_chain(
+                enablement=enablement, enablement_sha256=enablement_sha256,
+                authorization=authorization, authorization_sha256=authorization_sha256,
+                activation=activation, activation_sha256=activation_sha256,
+                approval=approval, approval_sha256=approval_sha256,
+                manifest=manifest, manifest_sha256=manifest_sha256,
+                intent=intent, decision=decision,
+                decision_sha256=decision_sha256, order_intent_sha256=order_intent_sha256,
+                evidence=evidence, evidence_sha256=evidence_sha256,
+                repository_commit_sha=repository_commit_sha,
+                calendar_month=calendar_month,
+            )
+        except LiveReadinessError as exc:
+            return {"status": "blocked", "gate": "artifact_chain", "reasons": (str(exc),), "message": "NO ORDER EXECUTED"}
+        if gate_a_current is None or gate_b_current is None:
+            return {"status": "blocked", "gate": "A/B", "reasons": ("fresh Gate A and Gate B evidence is required",), "message": "NO ORDER EXECUTED"}
+        gate = LiveExecutionGate(
+            LiveExecutionApproval(dict(approval)),
+            authorization=authorization,
+            approval_sha256=approval_sha256,
+            authorization_sha256=authorization_sha256,
+        )
+        gate_a, gate_b = gate.evaluate_a_then_b(gate_a_current, gate_b_current)
+        if not gate_a.allowed or not gate_b.allowed:
+            return {"status": "blocked", "gate": "A/B", "reasons": tuple(dict.fromkeys((*gate_a.reasons, *gate_b.reasons))), "message": "NO ORDER EXECUTED"}
+        try:
+            capability = issue_execution_capability(
+                activation=activation, activation_sha256=activation_sha256,
+                gate_a=gate_a, gate_b=gate_b,
+                request_fingerprint=str(gate_b_current.get("request_fingerprint", "")),
+                runtime_config=runtime_config, now_utc=datetime.now(UTC),
+            )
+        except LiveReadinessError as exc:
+            return {"status": "blocked", "gate": "capability", "reasons": (str(exc),), "message": "NO ORDER EXECUTED"}
+        # LiveOrderEngine performs the final fresh checks, persists the
+        # submission attempt before Gate C, and calls this factory only after
+        # all pre-network gates pass.
         submission = self.engine.submit(
             intent, decision, calendar_month=calendar_month, ledger_path=ledger_path,
-            execution_config=runtime_config, approval=approval,
+            execution_config=runtime_config, approval=LiveExecutionApproval(dict(approval)),
             approval_sha256=approval_sha256, manifest=manifest,
             manifest_sha256=manifest_sha256, read_client=read_client,
             transport_factory=transport_factory, run_id=run_id,
@@ -267,3 +314,56 @@ class ControlledProductionExecutor:
             activation_sha256=activation_sha256, capability=capability,
         )
         return submission
+
+    def _verify_persisted_chain(self, *, enablement: Mapping[str, Any], enablement_sha256: str,
+                                authorization: Mapping[str, Any], authorization_sha256: str,
+                                activation: Mapping[str, Any], activation_sha256: str,
+                                approval: Any, approval_sha256: str,
+                                manifest: Mapping[str, Any], manifest_sha256: str,
+                                intent: Any, decision: Mapping[str, Any],
+                                decision_sha256: str | None, order_intent_sha256: str | None,
+                                evidence: Mapping[str, Any], evidence_sha256: str | None,
+                                repository_commit_sha: str, calendar_month: str) -> None:
+        from .real_money_authorization import artifact_sha256, verify_authorization_binding
+        from .schemas import validate_artifact
+
+        def exact(kind: ArtifactType, field: str, value: str, payload: Mapping[str, Any], digest: str) -> None:
+            persisted, persisted_digest = self.store.find_artifact(kind, identity_field=field, identity_value=value)
+            if persisted != dict(payload) or persisted_digest != digest or artifact_sha256(persisted) != digest:
+                raise LiveReadinessError(f"{kind.value} bytes or SHA-256 binding is invalid")
+
+        exact(ArtifactType.PRODUCTION_ENABLEMENT, "enablement_id", str(enablement.get("enablement_id")), enablement, enablement_sha256)
+        exact(ArtifactType.REAL_MONEY_AUTHORIZATION, "authorization_id", str(authorization.get("authorization_id")), authorization, authorization_sha256)
+        exact(ArtifactType.EXECUTION_ACTIVATION, "activation_id", str(activation.get("activation_id")), activation, activation_sha256)
+        exact(ArtifactType.LIVE_EXECUTION_APPROVAL, "approval_id", str(approval.get("approval_id")), approval, approval_sha256)
+        exact(ArtifactType.CANARY_MANIFEST, "canary_id", str(manifest.get("canary_id")), manifest, manifest_sha256)
+        exact(ArtifactType.DECISION, "decision_id", str(decision.get("decision_id")), decision, decision_sha256 or artifact_sha256(decision))
+        exact(ArtifactType.ORDER_INTENT, "order_intent_id", str(intent.order_intent_id), intent.to_dict(), order_intent_sha256 or artifact_sha256(intent.to_dict()))
+        if evidence_sha256 is not None and artifact_sha256(evidence) != evidence_sha256:
+            raise LiveReadinessError("production evidence SHA-256 binding is invalid")
+        if evidence.get("status") not in {"EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "EVIDENCE_COMPLETE_NOT_READY"}:
+            raise LiveReadinessError("production evidence is incomplete or stale")
+        if evidence.get("real_money_authorization", {}).get("status") != "NOT_AUTHORIZED":
+            raise LiveReadinessError("production evidence authorization boundary is invalid")
+        if authorization.get("status") != "AUTHORIZED" or authorization.get("consumed") is not False:
+            raise LiveReadinessError("RealMoneyAuthorization is not currently usable")
+        if activation.get("status") != "ACTIVE" or activation.get("consumed") is not False:
+            raise LiveReadinessError("ExecutionActivation is not currently usable")
+        valid, reasons = verify_authorization_binding(
+            LiveExecutionApproval(dict(approval)), authorization,
+            approval_sha256=approval_sha256, authorization_sha256=authorization_sha256,
+            now_utc=datetime.now(UTC),
+        )
+        if not valid:
+            raise LiveReadinessError("authorization binding is invalid: " + "; ".join(reasons))
+        identity_pairs = (
+            ("canary_id", manifest.get("canary_id"), approval.get("canary_manifest_id")),
+            ("decision_id", decision.get("decision_id"), intent.decision_id),
+            ("order_intent_id", intent.order_intent_id, approval.get("order_intent_id")),
+            ("client_order_id", intent.client_order_id, approval.get("client_order_id")),
+            ("calendar_month", calendar_month, approval.get("calendar_month")),
+            ("repository_commit_sha", repository_commit_sha, approval.get("repository_commit_sha")),
+        )
+        if any(str(left) != str(right) for _, left, right in identity_pairs):
+            raise LiveReadinessError("immutable execution identity binding is invalid")
+        validate_artifact("production_enablement", dict(enablement))

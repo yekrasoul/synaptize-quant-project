@@ -222,7 +222,10 @@ class LiveExecutionGate:
         if current.get("account_identity_fingerprint") != p.get("account_identity_fingerprint"): reasons.append("account identity changed")
         current_for_fingerprint = dict(current)
         current_for_fingerprint["safety_config"] = safety
-        fingerprint = canonical_fingerprint({"gate": gate, "approval": p, "current": current_for_fingerprint})
+        # Gate A and Gate B must compare the same canonical evidence shape;
+        # including the label itself would make identical fresh evidence look
+        # like drift merely because one snapshot is named A and the other B.
+        fingerprint = canonical_fingerprint({"approval": p, "current": current_for_fingerprint})
         if reasons: return GateResult(GateStatus.BLOCKED, gate, tuple(dict.fromkeys(reasons)), fingerprint)
         return GateResult(GateStatus.READY_FOR_SUBMISSION, gate, (), fingerprint)
 

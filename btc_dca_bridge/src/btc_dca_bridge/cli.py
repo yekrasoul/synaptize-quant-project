@@ -31,11 +31,13 @@ from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
 from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
 from .canary import CanaryPreparer
-from .availability import PRODUCTION_AVAILABILITY_POLICY
-from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
-from .real_money_authorization import authorize_persisted_approval, read_authorization_status
+from .availability import PRODUCTION_AVAILABILITY_POLICY, validate_spot_quote_availability
+from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport, SubmissionResult
+from .real_money_authorization import authorize_persisted_approval, read_authorization_status, artifact_sha256
 from .live_activation import create_execution_activation, read_activation_status
-from .production_enablement import prepare_production_enablement, read_enablement_status
+from .production_enablement import ControlledProductionExecutor, gate_d, prepare_production_enablement, read_enablement_status
+from .live_readiness import ORDER_CONTRACT, canonical_fingerprint
+from .errors import ArtifactNotFoundError
 from .final_readiness import final_readiness_audit
 from .branch_guardian import classify_branch, write_result
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
@@ -235,6 +237,10 @@ def _parser() -> argparse.ArgumentParser:
     execute = subparsers.add_parser("canary-execute", help="one exact manual invocation of the guarded engine")
     execute.add_argument("--run-id", required=True); execute.add_argument("--canary-id", required=True); execute.add_argument("--approval-id", required=True)
     execute.add_argument("--manifest-sha", required=True); execute.add_argument("--approval-sha", required=True)
+    execute.add_argument("--authorization-id"); execute.add_argument("--authorization-sha")
+    execute.add_argument("--activation-id"); execute.add_argument("--activation-sha")
+    execute.add_argument("--enablement-id"); execute.add_argument("--enablement-sha")
+    execute.add_argument("--evidence-id"); execute.add_argument("--evidence-sha")
     execute.add_argument("--data-root", type=Path, default=DATA_PATH); execute.add_argument("--ledger", type=Path, default=LEDGER_PATH); execute.add_argument("--month", required=True); execute.add_argument("--json", action="store_true")
     recover = subparsers.add_parser("reconcile-existing", help="no-POST recovery of one exact prior identity")
     recover.add_argument("--run-id", required=True); recover.add_argument("--canary-id", required=True); recover.add_argument("--approval-id", required=True)
@@ -783,9 +789,213 @@ def _load_exact_execution_artifacts(args: argparse.Namespace) -> tuple[ArtifactS
     return store, manifest, approval_payload, approval, manifest_sha, approval_sha, _intent_from_dict(intent_payload), decision
 
 
+def _latest_artifact(store: ArtifactStore, kind: ArtifactType) -> tuple[dict[str, object], str]:
+    directories = {
+        ArtifactType.PRODUCTION_ENABLEMENT: "production_enablements",
+        ArtifactType.PRODUCTION_EVIDENCE: "production_evidence",
+    }
+    root = store.root / directories[kind]
+    paths = sorted(root.glob("*/*/*/*.json"))
+    if not paths:
+        raise ArtifactNotFoundError(f"{kind.value} is not persisted")
+    path = paths[-1]
+    date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+    payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
+    return payload, artifact_sha256(payload)
+
+
+def _load_controlled_execution_artifacts(args: argparse.Namespace) -> dict[str, object]:
+    """Load the complete Phase 5.4B-E chain from verified immutable bytes."""
+    store = ArtifactStore(args.data_root)
+    approval, approval_sha = store.find_artifact(ArtifactType.LIVE_EXECUTION_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
+    manifest, manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
+    decision, decision_sha = store.find_artifact(ArtifactType.DECISION, identity_field="decision_id", identity_value=str(approval["decision_id"]))
+    intent, intent_sha = store.find_artifact(ArtifactType.ORDER_INTENT, identity_field="order_intent_id", identity_value=str(approval["order_intent_id"]))
+    authorization_id = getattr(args, "authorization_id", None)
+    authorization, authorization_sha = store.find_artifact(
+        ArtifactType.REAL_MONEY_AUTHORIZATION,
+        identity_field="authorization_id" if authorization_id else "one_shot_identity",
+        identity_value=authorization_id or str(approval["one_shot_identity"]),
+    )
+    activation_id = getattr(args, "activation_id", None)
+    activation, activation_sha = store.find_artifact(
+        ArtifactType.EXECUTION_ACTIVATION,
+        identity_field="activation_id" if activation_id else "one_shot_identity",
+        identity_value=activation_id or str(approval["one_shot_identity"]),
+    )
+    enablement_id = getattr(args, "enablement_id", None)
+    enablement, enablement_sha = (
+        store.find_artifact(ArtifactType.PRODUCTION_ENABLEMENT, identity_field="enablement_id", identity_value=enablement_id)
+        if enablement_id else _latest_artifact(store, ArtifactType.PRODUCTION_ENABLEMENT)
+    )
+    evidence_id = getattr(args, "evidence_id", None)
+    evidence, evidence_sha = (
+        (store.read_production_evidence(evidence_id), artifact_sha256(store.read_production_evidence(evidence_id)))
+        if evidence_id else _latest_artifact(store, ArtifactType.PRODUCTION_EVIDENCE)
+    )
+    supplied = {
+        "manifest_sha": getattr(args, "manifest_sha", None),
+        "approval_sha": getattr(args, "approval_sha", None),
+        "authorization_sha": getattr(args, "authorization_sha", None),
+        "activation_sha": getattr(args, "activation_sha", None),
+        "enablement_sha": getattr(args, "enablement_sha", None),
+        "evidence_sha": getattr(args, "evidence_sha", None),
+    }
+    actual = {"manifest_sha": manifest_sha, "approval_sha": approval_sha, "authorization_sha": authorization_sha, "activation_sha": activation_sha, "enablement_sha": enablement_sha, "evidence_sha": evidence_sha}
+    if any(value is not None and value != actual[key] for key, value in supplied.items()):
+        raise ValueError("supplied immutable artifact SHA does not match persisted bytes")
+    if manifest.get("canary_id") != args.canary_id or approval.get("approval_id") != args.approval_id:
+        raise ValueError("canary or approval identity does not match persisted artifacts")
+    if manifest.get("decision_id") != approval.get("decision_id") or manifest.get("order_intent_id") != approval.get("order_intent_id"):
+        raise ValueError("manifest and approval identity binding is invalid")
+    return {
+        "store": store, "manifest": manifest, "manifest_sha": manifest_sha,
+        "approval": approval, "approval_sha": approval_sha,
+        "authorization": authorization, "authorization_sha": authorization_sha,
+        "activation": activation, "activation_sha": activation_sha,
+        "enablement": enablement, "enablement_sha": enablement_sha,
+        "evidence": evidence, "evidence_sha": evidence_sha,
+        "decision": decision, "decision_sha": decision_sha,
+        "intent": _intent_from_dict(intent), "intent_sha": intent_sha,
+    }
+
+
+def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, object], authorization: dict[str, object], approval_sha256: str, authorization_sha256: str, config, ledger_path: Path, now_utc: datetime) -> dict[str, object]:
+    """Collect one independent Gate A/B snapshot from live read-only sources."""
+    credential = client.credential_info()
+    account = client.account_info()
+    balances = {row.coin: row for row in client.wallet_balances()}
+    availability = client.spot_quote_availability()
+    available_usdt = validate_spot_quote_availability(availability, now=now_utc, policy=PRODUCTION_AVAILABILITY_POLICY)
+    instrument = client.instrument_rules()
+    instrument.validate_quote(intent.quote_amount_usdt)
+    server_ms = client.server_time_ms()
+    local_ms = int(now_utc.timestamp() * 1000)
+    clock_delta_ms = server_ms - local_ms
+    submission_state = client.submission_state(intent.client_order_id)
+    if submission_state != "conclusively_absent":
+        raise ValueError("fresh reconciliation is not conclusively absent")
+    usdt, btc = balances.get("USDT"), balances.get("BTC")
+    if usdt is None or btc is None:
+        raise ValueError("fresh BTC/USDT wallet evidence is incomplete")
+    if usdt.has_liability or btc.has_liability:
+        raise ValueError("fresh wallet liability detected")
+    permissions = {str(key): tuple(str(value) for value in values) for key, values in credential.permissions.items()}
+    spot_actions = set(permissions.get("Spot", ()))
+    credential_scope_accepted = (
+        credential.classification.value == "TRADE_CAPABLE"
+        and not (set(permissions) - {"Spot", "Wallet"})
+        and bool(spot_actions & {"SpotTrade", "OrderEntry", "SpotOrder"})
+        and not any(action.lower() in {"withdrawal", "withdraw"} for action in permissions.get("Wallet", ()))
+    )
+    if not credential_scope_accepted:
+        raise ValueError("fresh credential scope is not accepted")
+    if abs(clock_delta_ms) > 5000:
+        raise ValueError("fresh Bybit clock evidence exceeds the five-second drift bound")
+    if account.unified_margin_status not in {5, 6, "5", "6"} or account.margin_mode not in {"REGULAR_MARGIN", "ISOLATED_MARGIN", "PORTFOLIO_MARGIN"} or account.spot_hedging_status != "OFF":
+        raise ValueError("fresh account mode is not compatible with Spot BTCUSDT")
+    expected_mode = str(approval.get("account_mode"))
+    actual_mode = expected_mode if expected_mode in {"spot", "UTA"} else str(account.margin_mode)
+    if credential.identity is None:
+        raise ValueError("fresh account identity is unavailable")
+    account_identity = canonical_fingerprint({
+        "exchange": "Bybit", "identity": credential.identity,
+        "unified_margin_status": str(account.unified_margin_status),
+        "margin_mode": str(account.margin_mode),
+        "spot_hedging_status": str(account.spot_hedging_status),
+    })
+    if account_identity != str(approval.get("account_identity_fingerprint")):
+        raise ValueError("fresh account identity differs from the approved identity")
+    monthly_spent = sum((execution.executed_usd for execution in confirmed_executions(read_executions(ledger_path)) if execution.executed_at_utc[:7] == str(approval["calendar_month"])), Decimal("0"))
+    remaining = Decimal("500") - monthly_spent
+    request = {**ORDER_CONTRACT, "qty": str(intent.quote_amount_usdt), "orderLinkId": intent.client_order_id}
+    return {
+        "safety_config": config,
+        "real_money_authorization": authorization,
+        "approval_sha256": approval_sha256,
+        "authorization_sha256": authorization_sha256,
+        "repository_commit_sha": approval.get("repository_commit_sha"),
+        "calendar_month": approval.get("calendar_month"),
+        "monthly_spent_usdt": str(monthly_spent),
+        "remaining_monthly_budget_usdt": str(remaining),
+        "account_identity_fingerprint": account_identity,
+        "account_mode": actual_mode,
+        "credential_scope_classification": "SPOT_TRADE_NO_WITHDRAW",
+        "liability_state": "NONE",
+        # Availability contains Decimal values; fingerprint an explicit,
+        # JSON-stable read-only projection rather than the dataclass repr.
+        "spot_usdt_availability_fingerprint": canonical_fingerprint({
+            "amount_usdt": str(availability.amount_usdt),
+            "source_endpoint": availability.source_endpoint,
+            "source_field": availability.source_field,
+            "account_type": availability.account_type,
+            "authoritative": availability.authoritative,
+            "observed_at_utc": availability.observed_at_utc,
+        }),
+        "instrument_metadata_fingerprint": canonical_fingerprint({key: str(value) for key, value in instrument.__dict__.items()}),
+        "clock_skew_evidence_fingerprint": canonical_fingerprint({"server_ms": server_ms, "local_ms": local_ms, "delta_ms": clock_delta_ms}),
+        "reconciliation_evidence_fingerprint": canonical_fingerprint({"client_order_id": intent.client_order_id, "state": submission_state}),
+        "production_contract_fingerprint": str(approval.get("production_contract_fingerprint")),
+        "execution_safety_config_fingerprint": str(approval.get("execution_safety_config_fingerprint")),
+        "ledger_valid": True,
+        "credential_scope_accepted": True,
+        "withdrawal_enabled": False,
+        "btc_liability": False,
+        "usdt_liability": False,
+        "borrow_state": False,
+        "spot_usdt_sufficient": available_usdt >= intent.quote_amount_usdt,
+        "spot_availability_fresh": True,
+        "instrument_metadata_fresh": True,
+        "clock_evidence_fresh": True,
+        "reconciliation_evidence_fresh": True,
+        "duplicate_execution": False,
+        "duplicate_attempt": False,
+        "reconciliation_required": False,
+        "request_fingerprint": canonical_fingerprint(request),
+    }
+
+
 def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     config = load_execution_config()
-    return ({"status": "blocked", "reason": "checked-in production defaults prohibit execution" if (not config.live_execution_enabled or config.kill_switch or config.order_submission == "not_implemented") else "controlled production invocation required", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
+    if not config.live_execution_enabled or config.kill_switch or config.order_submission != "implemented":
+        return ({"status": "blocked", "reason": "checked-in production defaults prohibit execution", "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
+    try:
+        chain = _load_controlled_execution_artifacts(args)
+        preliminary_d = gate_d(
+            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
+            runtime_config=config, store=chain["store"],
+            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
+            evidence=chain["evidence"], now_utc=datetime.now(UTC),
+        )
+        if preliminary_d.status.value != "READY_FOR_SUBMISSION":
+            return ({"status": "blocked", "gate": "D", "reasons": preliminary_d.reasons, "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
+        client = _private_read_client_factory()
+        reconciler = _post_ack_reconciler_factory(client)
+        gate_a_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
+        gate_b_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
+
+        def lazy_transport():
+            return _submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", ""))
+
+        result = ControlledProductionExecutor(engine=LiveOrderEngine(artifact_store=chain["store"]), store=chain["store"]).execute(
+            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
+            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
+            activation=chain["activation"], activation_sha256=chain["activation_sha"],
+            capability=None, approval=chain["approval"], approval_sha256=chain["approval_sha"],
+            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"], intent=chain["intent"],
+            decision=chain["decision"], runtime_config=config, evidence=chain["evidence"],
+            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
+            calendar_month=args.month, ledger_path=args.ledger, read_client=client,
+            reconciler=reconciler, run_id=args.run_id, transport_factory=lazy_transport,
+            decision_sha256=chain["decision_sha"], order_intent_sha256=chain["intent_sha"], evidence_sha256=chain["evidence_sha"],
+            gate_a_current=gate_a_current, gate_b_current=gate_b_current,
+        )
+        if isinstance(result, SubmissionResult):
+            payload = result.outcome.to_dict()
+            return payload, 0 if payload.get("outcome_category") == "confirmed_execution" else EXIT_RECONCILIATION
+        return dict(result), EXIT_BLOCKED
+    except (ArtifactNotFoundError, ValueError, KeyError) as exc:
+        return ({"status": "blocked", "reason": str(exc), "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
 
 
 def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], int]:
