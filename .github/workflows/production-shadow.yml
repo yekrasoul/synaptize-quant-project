@@ -35,18 +35,13 @@ jobs:
           echo "CONTEXT_JSON=${RUNNER_TEMP}/production-context.json" >> "$GITHUB_ENV"
           echo "RESULT_JSON=${RUNNER_TEMP}/production-result.json" >> "$GITHUB_ENV"
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
       - name: Install locked dependencies
-        run: uv sync --frozen
+        run: uv sync --frozen --python /usr/bin/python3
 
       - name: Verify notification secrets
         shell: bash
