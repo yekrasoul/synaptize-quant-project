@@ -19,6 +19,25 @@ quote-denominated maximum for the exact BTCUSDT Spot Market Buy using
 price: execution price and slippage semantics would be invented. The Pre Check
 Order POST is not used, and no order-create probe is used.
 
+## Contract research verification — 2026-10-10
+
+Official Bybit documentation was re-reviewed on 2026-10-10. The Spot borrow
+quota contract still documents `spotMaxTradeAmount` as the actual non-borrowed
+quote-coin amount available for Spot trading, so the existing account
+availability source remains semantically valid.
+
+The Spot order contract still supports Market Buy by quote value through
+`marketUnit=quoteCoin`. However, the Spot instruments contract exposes
+`maxMarketOrderQty` as a maximum order quantity, while the former
+`maxOrderAmt` field remains deprecated. Bybit's current Spot trading rules
+likewise describe the single-order maximum as a quantity limit, not an
+authoritative quote-denominated ceiling for this exact API operation.
+
+No reviewed official source therefore satisfies the production
+`QuoteUnitLimitEvidence` contract. The approved source set remains empty and
+`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` remains active. No conversion, heuristic,
+POST pre-check, or order probe was introduced.
+
 The operator commands `production-blockers` and `contract-status` are read-only.
 They report the active `MARKET_CONTRACT` blocker, current capability snapshot,
 and the immutable authorization state. The blocker clears only when both an

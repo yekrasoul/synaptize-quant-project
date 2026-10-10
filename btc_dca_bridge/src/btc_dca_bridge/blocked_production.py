@@ -129,7 +129,7 @@ def current_contract_capabilities(
         instrument_minimum_supported=True,
         account_mode_supported=True,
         verified_at_utc=_utc(now),
-        documentation_version="Phase 5.8 reviewed Bybit V5 contract; verified 2026-10-07",
+        documentation_version="Phase 5.8 reviewed Bybit V5 contract; verified 2026-10-10",
     )
 
 
@@ -200,6 +200,6 @@ def contract_status(
         "create_order_assumptions": {"category": "spot", "symbol": "BTCUSDT", "orderType": "Market", "marketUnit": "quoteCoin", "isLeverage": 0, "orderFilter": "Order"},
         "instrument_metadata_assumptions": {"source": "/v5/market/instruments-info", "base_quantity_max_is_not_quote_max": True},
         "account_mode_assumptions": {"unifiedMarginStatus": 6, "marginMode": "REGULAR_MARGIN", "spotHedgingStatus": "OFF"},
-        "last_research_verification_date": "2026-10-07",
+        "last_research_verification_date": "2026-10-10",
         "real_money_authorization": {"granted": False, "source": "none", "required": True, "status": "NOT_AUTHORIZED"},
     }
