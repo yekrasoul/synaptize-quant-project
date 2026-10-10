@@ -17,9 +17,11 @@ from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType, make_run_id
 from btc_dca_bridge.availability import SpotQuoteAvailabilityPolicy
 from btc_dca_bridge.canary import CanaryPreparer
 from btc_dca_bridge.cli import main
-from btc_dca_bridge.config import ExecutionConfig
+from btc_dca_bridge.config import ExecutionConfig, load_execution_config
 from btc_dca_bridge.execution import InstrumentRules, make_order_intent
 from btc_dca_bridge.live_order import ConfirmedFill, ReconciliationEvidence
+from btc_dca_bridge.live_readiness import execution_safety_config_fingerprint, production_contract_fingerprint
+from btc_dca_bridge.schemas import validate_artifact
 from btc_dca_bridge.market_data.http import HttpResponse
 from btc_dca_bridge.errors import ArtifactCorruptError
 from btc_dca_bridge.operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, EXIT_UNAVAILABLE, OperationLock, OperationLockError, OperationsService
@@ -72,6 +74,15 @@ class CliOperationsTests(unittest.TestCase):
         self.manifest = CanaryPreparer(artifact_store=store, client=self.reader, execution_config=disabled, now=lambda: self.now, availability_policy=self.availability_policy, quote_limit_policy=test_quote_policy).prepare(self.decision, run_id=self.run_id, calendar_month=self.now.strftime("%Y-%m"), ledger_path=self.ledger).manifest.to_dict()
         self.manifest_payload, self.manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=self.manifest["canary_id"])
         self.enabled = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
+        self.production_evidence = {
+            "evidence_id": "evidence-" + "e" * 32,
+            "repository_commit": __import__("subprocess").run(("git", "rev-parse", "HEAD"), capture_output=True, text=True, check=True).stdout.strip(),
+            "account_identity_fingerprint": "a" * 64,
+            "check_results": [
+                {"check_id": check_id, "status": "PASS"}
+                for check_id in ("BYBIT_ACCOUNT", "BYBIT_CREDENTIAL_SCOPE", "BYBIT_LIABILITIES", "BYBIT_SPOT_AVAILABLE_BALANCE", "BYBIT_INSTRUMENT", "CLOCK_SKEW", "UNRESOLVED_OPERATIONS")
+            ],
+        }
 
     def invoke(self, arguments):
         output, error = StringIO(), StringIO()
@@ -79,7 +90,8 @@ class CliOperationsTests(unittest.TestCase):
         return code, json.loads(output.getvalue()) if output.getvalue() else {}, error.getvalue()
 
     def approve(self):
-        code, result, _ = self.invoke(["canary-approve", "--run-id", self.run_id, "--canary-id", self.manifest["canary_id"], "--manifest-sha", self.manifest_sha, "--amount", "25", "--client-order-id", self.manifest["client_order_id"], "--payload-fingerprint", self.manifest["order_payload_fingerprint"], "--data-root", str(self.data)])
+        with patch("btc_dca_bridge.cli._latest_verified_production_evidence", return_value=(self.production_evidence, "e" * 64)):
+            code, result, _ = self.invoke(["canary-approve", "--run-id", self.run_id, "--canary-id", self.manifest["canary_id"], "--manifest-sha", self.manifest_sha, "--amount", "25", "--client-order-id", self.manifest["client_order_id"], "--payload-fingerprint", self.manifest["order_payload_fingerprint"], "--data-root", str(self.data)])
         self.assertEqual(code, 0)
         self.approval_id, self.approval_sha = result["approval_id"], result["approval_sha256"]
 
@@ -145,6 +157,57 @@ class CliOperationsTests(unittest.TestCase):
         conflicting = dict(repeated, run_id=self.recovery_run, reconciled_at_utc=(self.now + timedelta(seconds=2)).isoformat().replace("+00:00", "Z"), fills=[dict(repeated["fills"][0], quote_value_usdt="99.99")])
         store.persist(ArtifactType.SUBMISSION_RECONCILIATION, conflicting, run_id=self.recovery_run + "_extra02")
         with self.assertRaises(ArtifactCorruptError): OperationsService(data_root=self.data, ledger_path=self.ledger, now=lambda: self.now).snapshot(run_id=self.run_id)
+
+    def test_canary_approve_persists_canonical_live_execution_approval(self):
+        self.approve()
+        store = ArtifactStore(self.data)
+        approval, digest = store.find_artifact(ArtifactType.LIVE_EXECUTION_APPROVAL, identity_field="approval_id", identity_value=self.approval_id)
+        validate_artifact("live_execution_approval", approval)
+        self.assertEqual(digest, self.approval_sha)
+        self.assertEqual(approval["canary_manifest_id"], self.manifest["canary_id"])
+        self.assertEqual(approval["canary_manifest_sha256"], self.manifest_sha)
+        self.assertEqual(approval["decision_id"], self.manifest["decision_id"])
+        self.assertEqual(approval["decision_sha256"], store.find_artifact(ArtifactType.DECISION, identity_field="decision_id", identity_value=self.manifest["decision_id"])[1])
+        self.assertEqual(approval["order_intent_id"], self.manifest["order_intent_id"])
+        self.assertEqual(approval["order_intent_sha256"], store.find_artifact(ArtifactType.ORDER_INTENT, identity_field="order_intent_id", identity_value=self.manifest["order_intent_id"])[1])
+        self.assertEqual(approval["production_contract_fingerprint"], production_contract_fingerprint())
+        self.assertEqual(approval["execution_safety_config_fingerprint"], execution_safety_config_fingerprint(load_execution_config()))
+        self.assertEqual(approval["state"], "PREPARED")
+        self.assertTrue(approval["no_order_executed"])
+        self.assertTrue((self.data / "live_approvals").exists())
+
+    def test_canary_approve_fails_closed_without_current_source_evidence(self):
+        with patch("btc_dca_bridge.cli._latest_verified_production_evidence", side_effect=ValueError("verified production evidence is required before approval")):
+            code, _, _ = self.invoke(["canary-approve", "--run-id", self.run_id, "--canary-id", self.manifest["canary_id"], "--manifest-sha", self.manifest_sha, "--amount", "25", "--client-order-id", self.manifest["client_order_id"], "--payload-fingerprint", self.manifest["order_payload_fingerprint"], "--data-root", str(self.data)])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.data / "live_execution_approvals").exists())
+
+    def test_canary_approve_rejects_mismatched_manual_identity_inputs(self):
+        cases = (
+            ("--manifest-sha", "0" * 64),
+            ("--amount", "10"),
+            ("--client-order-id", "dca-" + "b" * 32),
+            ("--payload-fingerprint", "0" * 64),
+        )
+        for option, value in cases:
+            with self.subTest(option=option):
+                arguments = ["canary-approve", "--run-id", self.run_id, "--canary-id", self.manifest["canary_id"], "--manifest-sha", self.manifest_sha, "--amount", "25", "--client-order-id", self.manifest["client_order_id"], "--payload-fingerprint", self.manifest["order_payload_fingerprint"], "--data-root", str(self.data)]
+                arguments[arguments.index(option) + 1] = value
+                with patch("btc_dca_bridge.cli._latest_verified_production_evidence", return_value=(self.production_evidence, "e" * 64)):
+                    code, _, _ = self.invoke(arguments)
+                self.assertEqual(code, 2)
+                self.assertFalse((self.data / "live_execution_approvals").exists())
+
+    def test_canary_approve_rejects_expired_source_evidence(self):
+        fake_service = type("EvidenceService", (), {
+            "latest": lambda self: self.payload,
+            "verify": lambda self, *args, **kwargs: {"status": "EXPIRED", "reason": "evidence TTL is not currently valid"},
+            "payload": self.production_evidence,
+        })()
+        with patch("btc_dca_bridge.cli.ProductionEvidenceService", return_value=fake_service):
+            code, _, _ = self.invoke(["canary-approve", "--run-id", self.run_id, "--canary-id", self.manifest["canary_id"], "--manifest-sha", self.manifest_sha, "--amount", "25", "--client-order-id", self.manifest["client_order_id"], "--payload-fingerprint", self.manifest["order_payload_fingerprint"], "--data-root", str(self.data)])
+        self.assertEqual(code, 2)
+        self.assertFalse((self.data / "live_execution_approvals").exists())
 
     def test_cli_exit_codes_artifact_failures_and_unavailable_reads(self):
         code, _, _ = self.invoke(["audit-run", self.run_id, "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
