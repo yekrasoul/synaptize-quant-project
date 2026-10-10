@@ -255,19 +255,9 @@ class ProductionStatusService:
         evidence: Any
         preauth: Mapping[str, Any]
         local_error = False
-        try:
-            readiness = self.readiness_factory(**readiness_kwargs).evaluate()
-        except Exception:
-            readiness = {"status": "UNAVAILABLE", "checks": []}
-            local_error = True
-        try:
-            operations = self.operations_factory(**operations_kwargs)
-            health = operations.health()
-            ops_snapshot = operations.snapshot()
-        except Exception:
-            health = {"status": "CORRUPT"}
-            ops_snapshot = None
-            local_error = True
+        # Verify the latest production evidence before running additional
+        # readiness/operations work. Dynamic evidence can have a shorter TTL
+        # than the aggregate status orchestration itself.
         try:
             evidence = self.evidence_service_factory(data_root=self.data_root, ledger_path=self.ledger_path, now=self.now)
             preauth = self.preauthorization_evaluator(evidence)
@@ -282,6 +272,19 @@ class ProductionStatusService:
         except Exception:
             evidence, latest_evidence, preauth = None, None, {"status": "BLOCKED"}
             evidence_status, local_error = "UNAVAILABLE", True
+        try:
+            readiness = self.readiness_factory(**readiness_kwargs).evaluate()
+        except Exception:
+            readiness = {"status": "UNAVAILABLE", "checks": []}
+            local_error = True
+        try:
+            operations = self.operations_factory(**operations_kwargs)
+            health = operations.health()
+            ops_snapshot = operations.snapshot()
+        except Exception:
+            health = {"status": "CORRUPT"}
+            ops_snapshot = None
+            local_error = True
         checks = _check_map(readiness)
         try:
             config = load_execution_config()
