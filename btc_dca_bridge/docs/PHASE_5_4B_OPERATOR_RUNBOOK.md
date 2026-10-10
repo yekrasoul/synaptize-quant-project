@@ -5,7 +5,7 @@ disabled and unauthorized.
 
 1. Collect read-only readiness and canonical artifacts.
 2. Prepare the controlled canary and inspect the exact V1 amount.
-3. Prepare one short-lived `LiveExecutionApproval`.
+3. Run `canary-approve` to persist one short-lived `LiveExecutionApproval`.
 4. Human review verifies the artifact ID, SHA, amount, symbol, and client order
    ID.
 5. A future explicit authorization ceremony binds a one-shot authorization to

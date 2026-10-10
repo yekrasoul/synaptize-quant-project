@@ -14,9 +14,9 @@ The terms are intentionally separate:
 - `SubmissionAttempt`: immutable pre-network evidence.
 - `SubmissionOutcome`/`Reconciliation`: execution evidence.
 
-The older `LiveApproval` in `live_order.py`, produced by `canary-approve`, is a
-legacy preparation-layer artifact. It cannot satisfy the Phase 5.4C gate by
-itself and is not renamed or reinterpreted.
+`canary-approve` now persists the canonical `LiveExecutionApproval` required by
+this phase. The older `LiveApproval` remains readable only for legacy recovery
+artifacts and cannot satisfy the Phase 5.4C gate by itself.
 
 ## Ceremony
 

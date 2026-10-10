@@ -82,6 +82,16 @@ def _safety_dict(config: ExecutionConfig | Mapping[str, Any]) -> dict[str, Any]:
     return dict(config)
 
 
+def execution_safety_config_fingerprint(config: ExecutionConfig | Mapping[str, Any]) -> str:
+    """Fingerprint the canonical execution-safety projection."""
+    return canonical_fingerprint(_safety_dict(config))
+
+
+def production_contract_fingerprint() -> str:
+    """Fingerprint the exact approved order contract."""
+    return canonical_fingerprint(ORDER_CONTRACT)
+
+
 @dataclass(frozen=True)
 class LiveExecutionApproval:
     payload: Mapping[str, Any]

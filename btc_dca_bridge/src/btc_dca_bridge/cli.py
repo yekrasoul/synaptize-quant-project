@@ -36,7 +36,13 @@ from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTran
 from .real_money_authorization import authorize_persisted_approval, read_authorization_status, artifact_sha256
 from .live_activation import create_execution_activation, read_activation_status
 from .production_enablement import ControlledProductionExecutor, gate_d, prepare_production_enablement, read_enablement_status
-from .live_readiness import ORDER_CONTRACT, canonical_fingerprint
+from .live_readiness import (
+    ORDER_CONTRACT,
+    LiveExecutionApproval,
+    canonical_fingerprint,
+    execution_safety_config_fingerprint,
+    production_contract_fingerprint,
+)
 from .runtime_execution import derive_ephemeral_execution_policy
 from .errors import ArtifactNotFoundError
 from .final_readiness import final_readiness_audit
@@ -783,7 +789,9 @@ def _ops(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     return audit, 0 if audit["status"] == "complete" else EXIT_BLOCKED
 
 
-def _approval_from_dict(payload: dict[str, object]) -> LiveApproval:
+def _approval_from_dict(payload: dict[str, object]) -> LiveApproval | LiveExecutionApproval:
+    if str(payload.get("schema_version")) == "5.4.0B":
+        return LiveExecutionApproval(payload)
     return LiveApproval(str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["client_order_id"]), Decimal(str(payload["approved_amount_usdt"])), str(payload["approved_at_utc"]), str(payload["expires_at_utc"]), str(payload["approval_id"]), str(payload["canary_id"]), str(payload["manifest_sha256"]), str(payload["order_payload_fingerprint"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), str(payload["order_type"]), bool(payload["standing_authorization"]))
 
 
@@ -791,21 +799,93 @@ def _intent_from_dict(payload: dict[str, object]) -> OrderIntent:
     return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)))
 
 
+def _latest_verified_production_evidence(store: ArtifactStore) -> tuple[dict[str, object], str]:
+    service = ProductionEvidenceService(data_root=store.root, ledger_path=LEDGER_PATH)
+    evidence = service.latest()
+    if evidence is None:
+        raise ValueError("verified production evidence is required before approval")
+    repository = ProductionReadinessService._repo_status()
+    if repository.get("dirty"):
+        raise ValueError("repository must be clean before approval")
+    if evidence.get("repository_commit") != repository.get("commit"):
+        raise ValueError("production evidence repository commit does not match the current repository")
+    verification = service.verify(
+        str(evidence.get("evidence_id")),
+        current_commit=str(repository.get("commit")),
+        current_account_fingerprint=str(evidence.get("account_identity_fingerprint")),
+    )
+    if verification.get("status") != "VALID_READY_FOR_SEPARATE_AUTHORIZATION":
+        raise ValueError(f"production evidence is not currently valid and ready: {verification.get('reason', verification.get('status'))}")
+    checks = {str(item.get("check_id")): item for item in evidence.get("check_results", []) if isinstance(item, dict)}
+    required = ("BYBIT_ACCOUNT", "BYBIT_CREDENTIAL_SCOPE", "BYBIT_LIABILITIES", "BYBIT_SPOT_AVAILABLE_BALANCE", "BYBIT_INSTRUMENT", "CLOCK_SKEW", "UNRESOLVED_OPERATIONS")
+    if any(checks.get(check_id, {}).get("status") != "PASS" for check_id in required):
+        raise ValueError("required production evidence checks are incomplete")
+    return evidence, artifact_sha256(evidence)
+
+
 def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
     store = ArtifactStore(args.data_root)
     manifest, digest = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
-    if digest != args.manifest_sha or manifest["client_order_id"] != args.client_order_id or manifest["approved_amount_usdt"] != args.amount or manifest["order_payload_fingerprint"] != args.payload_fingerprint:
+    if digest != args.manifest_sha or manifest.get("canary_status") != "READY_FOR_MANUAL_APPROVAL" or manifest["client_order_id"] != args.client_order_id or manifest["approved_amount_usdt"] != args.amount or manifest["order_payload_fingerprint"] != args.payload_fingerprint:
         raise ValueError("approval inputs do not bind exactly to the persisted manifest")
-    approval = LiveApproval.for_manifest(manifest, digest, now_utc=datetime.now(UTC))
-    receipt = store.persist(ArtifactType.LIVE_APPROVAL, approval, run_id=args.run_id)
-    OperationsService(data_root=args.data_root, ledger_path=LEDGER_PATH).record_event(action="approval_created", result="persisted", reason="exact manifest-bound manual approval", run_id=args.run_id, artifact_ids={"canary_id": approval.canary_id, "approval_id": approval.approval_id, "client_order_id": approval.client_order_id})
-    return {"status": "approval_persisted", "approval_id": approval.approval_id, "approval_sha256": receipt.sha256, "summary": {"exchange": "Bybit", "market": "Spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "quote_amount_usdt": str(approval.approved_amount_usdt), "leverage": 0, "canary_id": approval.canary_id, "client_order_id": approval.client_order_id, "manifest_sha256": approval.manifest_sha256, "expires_at_utc": approval.expires_at_utc}}
+    decision, decision_sha = store.find_artifact(ArtifactType.DECISION, identity_field="decision_id", identity_value=str(manifest["decision_id"]))
+    intent_payload, intent_sha = store.find_artifact(ArtifactType.ORDER_INTENT, identity_field="order_intent_id", identity_value=str(manifest["order_intent_id"]))
+    if any((decision.get("decision_id") != manifest.get("decision_id"), intent_payload.get("decision_id") != manifest.get("decision_id"), intent_payload.get("client_order_id") != manifest.get("client_order_id"))):
+        raise ValueError("manifest, Decision, and OrderIntent identity binding is invalid")
+    evidence, _ = _latest_verified_production_evidence(store)
+    now = datetime.now(UTC)
+    try:
+        manifest_expires = datetime.fromisoformat(str(manifest["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+    except (KeyError, ValueError) as exc:
+        raise ValueError("CanaryManifest expiry is malformed") from exc
+    if now >= manifest_expires or manifest_expires - now < timedelta(minutes=5):
+        raise ValueError("CanaryManifest does not have a full five-minute approval window remaining")
+    required_manifest = ("monthly_spent_usd", "remaining_budget_usd", "account_mode", "credential_classification", "authoritative_available_usdt", "instrument_min_order_amt", "instrument_qty_step", "instrument_tick_size", "pre_submission_state", "liability_detected")
+    if any(manifest.get(key) is None for key in required_manifest):
+        raise ValueError("CanaryManifest lacks required persisted readiness evidence")
+    if manifest["liability_detected"] is not False or manifest["pre_submission_state"] != "conclusively_absent":
+        raise ValueError("CanaryManifest readiness evidence is not safe for approval")
+    evidence_check = {str(item.get("check_id")): item for item in evidence.get("check_results", []) if isinstance(item, dict)}
+    approval = LiveExecutionApproval.prepare(
+        now_utc=now,
+        repository_commit_sha=str(evidence["repository_commit"]),
+        strategy_id=str(manifest["strategy_id"]), strategy_version=str(manifest["strategy_version"]),
+        canary_manifest_id=str(manifest["canary_id"]), canary_manifest_sha256=digest,
+        decision_id=str(manifest["decision_id"]), decision_sha256=decision_sha,
+        order_intent_id=str(manifest["order_intent_id"]), order_intent_sha256=intent_sha,
+        client_order_id=str(manifest["client_order_id"]), quote_amount_usdt=manifest["approved_amount_usdt"],
+        calendar_month=str(manifest["calendar_month"]), monthly_spent_usdt=manifest["monthly_spent_usd"],
+        remaining_monthly_budget_usdt=manifest["remaining_budget_usd"],
+        account_identity_fingerprint=str(evidence["account_identity_fingerprint"]),
+        account_mode=str(manifest["account_mode"]), credential_scope_classification="SPOT_TRADE_NO_WITHDRAW",
+        liability_state="NONE",
+        spot_usdt_availability_fingerprint=canonical_fingerprint({"authoritative_available_usdt": manifest["authoritative_available_usdt"], "availability_method": manifest["availability_method"]}),
+        instrument_metadata_fingerprint=canonical_fingerprint({key: manifest[key] for key in ("instrument_min_order_amt", "instrument_qty_step", "instrument_tick_size")} ),
+        clock_skew_evidence_fingerprint=canonical_fingerprint(evidence_check["CLOCK_SKEW"]),
+        reconciliation_evidence_fingerprint=canonical_fingerprint({"client_order_id": manifest["client_order_id"], "state": manifest["pre_submission_state"]}),
+        production_contract_fingerprint=production_contract_fingerprint(),
+        execution_safety_config_fingerprint=execution_safety_config_fingerprint(load_execution_config()),
+        manifest_expires_at_utc=str(manifest["expires_at_utc"]), state="PREPARED", ttl=timedelta(minutes=5),
+    )
+    receipt = approval.persist(store, run_id=args.run_id)
+    # Keep the older preparation artifact for legacy operations/recovery
+    # readers; the returned approval and all Phase 5.4C+ consumers use the
+    # canonical LiveExecutionApproval above.
+    legacy_approval = LiveApproval.for_manifest(manifest, digest, now_utc=now)
+    store.persist(ArtifactType.LIVE_APPROVAL, legacy_approval, run_id=args.run_id)
+    OperationsService(data_root=args.data_root, ledger_path=LEDGER_PATH).record_event(action="approval_created", result="persisted", reason="exact manifest-bound manual approval", run_id=args.run_id, artifact_ids={"canary_id": approval.payload["canary_manifest_id"], "approval_id": approval.approval_id, "client_order_id": approval.payload["client_order_id"]})
+    return {"status": "approval_persisted", "approval_id": approval.approval_id, "approval_sha256": receipt.sha256, "summary": {"exchange": "Bybit", "market": "Spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "quote_amount_usdt": str(approval.payload["quote_amount_usdt"]), "leverage": 0, "canary_id": approval.payload["canary_manifest_id"], "client_order_id": approval.payload["client_order_id"], "manifest_sha256": approval.payload["canary_manifest_sha256"], "expires_at_utc": approval.expires_at_utc}}
 
 
-def _load_exact_execution_artifacts(args: argparse.Namespace) -> tuple[ArtifactStore, dict[str, object], dict[str, object], LiveApproval, str, str, OrderIntent, dict[str, object]]:
+def _load_exact_execution_artifacts(args: argparse.Namespace) -> tuple[ArtifactStore, dict[str, object], dict[str, object], LiveApproval | LiveExecutionApproval, str, str, OrderIntent, dict[str, object]]:
     store = ArtifactStore(args.data_root)
     manifest, manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
-    approval_payload, approval_sha = store.find_artifact(ArtifactType.LIVE_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
+    try:
+        approval_payload, approval_sha = store.find_artifact(ArtifactType.LIVE_EXECUTION_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
+    except ArtifactNotFoundError:
+        # Existing legacy recovery artifacts remain readable; new operator
+        # approvals always use LIVE_EXECUTION_APPROVAL above.
+        approval_payload, approval_sha = store.find_artifact(ArtifactType.LIVE_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
     if manifest_sha != args.manifest_sha or approval_sha != args.approval_sha:
         raise ValueError("supplied immutable digest does not match persisted artifact")
     approval = _approval_from_dict(approval_payload)

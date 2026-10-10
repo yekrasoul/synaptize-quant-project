@@ -9,7 +9,8 @@ kill_switch: true
 order_submission: not_implemented
 ```
 
-`LiveApproval` is a separate immutable artifact read back from `ArtifactStore`.
+`LiveExecutionApproval` is the canonical immutable approval artifact read back
+from `ArtifactStore`; older `LiveApproval` artifacts remain legacy-only.
 The manifest is likewise read back and digest-verified before execution. It binds the canary ID,
 manifest SHA-256, V1 Decision and OrderIntent identities, deterministic
 `orderLinkId`, exact quote amount, payload fingerprint, Spot BTCUSDT identity,
