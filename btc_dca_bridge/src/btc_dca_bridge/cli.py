@@ -785,11 +785,43 @@ def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     stale = any(item.get("status") == "STALE_REPOSITORY" for item in chain.values()) or evidence_result["status"] == "STALE_REPOSITORY"
     if stale and "ceremony artifacts are stale for current repository commit" not in blockers:
         blockers.insert(0, "ceremony artifacts are stale for current repository commit")
-    next_command = "btc-dca collect-production-evidence --data-root data --ledger ledger/executions.jsonl" if stale or evidence_result["status"] in {"MISSING", "EXPIRED", "NOT_READY", "INVALID"} else "btc-dca production-enable-prepare"
     safety = {"live_execution_enabled": config.live_execution_enabled, "kill_switch": config.kill_switch, "order_submission": config.order_submission, "monthly_cap_usd": str(config.monthly_cap_usd)}
     if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
         blockers.append("checked-in execution policy is not fail-safe")
-    return ({"status": "BLOCKED", "final_state": "BLOCKED", "repository_commit": current_commit, "chain": chain, "production_evidence": evidence_result, "safety": safety, "blockers": list(dict.fromkeys(blockers)), "next_allowed_command": next_command, "message": "NO ORDER EXECUTED"}, EXIT_BLOCKED)
+
+    blockers = list(dict.fromkeys(blockers))
+
+    if blockers:
+        if stale or evidence_result["status"] in {"MISSING", "EXPIRED", "NOT_READY", "INVALID"}:
+            next_command = "btc-dca collect-production-evidence --data-root data --ledger ledger/executions.jsonl"
+        elif chain.get("production_enablement", {}).get("status") != "VALID":
+            next_command = "btc-dca production-enable-prepare"
+        else:
+            next_command = None
+
+        return ({
+            "status": "BLOCKED",
+            "final_state": "BLOCKED",
+            "repository_commit": current_commit,
+            "chain": chain,
+            "production_evidence": evidence_result,
+            "safety": safety,
+            "blockers": blockers,
+            "next_allowed_command": next_command,
+            "message": "NO ORDER EXECUTED",
+        }, EXIT_BLOCKED)
+
+    return ({
+        "status": "READY_FOR_ONE_SHOT_EXECUTION",
+        "final_state": "READY_FOR_ONE_SHOT_EXECUTION",
+        "repository_commit": current_commit,
+        "chain": chain,
+        "production_evidence": evidence_result,
+        "safety": safety,
+        "blockers": [],
+        "next_allowed_command": "btc-dca canary-execute",
+        "message": "NO ORDER EXECUTED",
+    }, 0)
 
 
 def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:
