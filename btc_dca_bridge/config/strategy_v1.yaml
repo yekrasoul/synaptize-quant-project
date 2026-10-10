@@ -13,8 +13,6 @@ market_policy:
   symbol: BTCUSDT
   approved_spot_source_order:
     - Bybit
-    - Binance
-    - KuCoin
   price_source_requirement: Same approved BTC/USDT Spot venue for current price and rolling 168h high
   prohibited_primary_sources:
     - perpetual

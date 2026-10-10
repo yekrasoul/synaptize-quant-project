@@ -38,8 +38,9 @@ artifacts, no shadow-ledger mutation, no monthly-cap bypass, and no live order
 execution. `runtime.live_execution_enabled` must be false and cannot enable a
 nonexistent Phase 5 path.
 
-The currently approved provider order is Bybit public Spot API, Binance Spot,
-then KuCoin Spot, then fail closed. Alternative.me is the sole sentiment source.
+The canonical V1 provider is the Bybit public Spot API only; if it is
+unavailable or unreliable, the pipeline fails closed. Alternative.me is the
+sole sentiment source.
 Changing an exchange, external symbol, provider, or sentiment source is a
 **DATA-SOURCE CHANGE**: implement an adapter, define identity/provenance,
 extend typed validation, add offline contract tests, review schemas, and approve

@@ -111,24 +111,17 @@ or calendar-day shortcut is accepted.
 
 ## Current approved source selection
 
-The Bybit adapter remains the primary public market-data path. Production
-recommendation runs now use the ordered provider implemented in
-`market_data/approved_spot.py`:
+The Bybit adapter is the sole public market-data path for canonical V1
+production recommendation runs:
 
 ```text
-Bybit BTCUSDT Spot -> Binance BTCUSDT Spot -> KuCoin BTC-USDT Spot -> unavailable
+Bybit BTCUSDT Spot -> if unavailable or unreliable: fail closed / no decision
 ```
 
-Each source is a complete, atomic snapshot candidate. The selected venue must
-supply its own current Spot price plus the complete rolling 168-hour history
-needed for the high. A failed venue contributes no values to the next venue, so
-cross-exchange price/high mixing is impossible.
-
-The ordered provider may continue to the next approved Spot venue after a typed
-market-data failure, but every candidate must still pass market identity,
-freshness, exact-window, completeness, OHLC, and same-source validation. If all
-three approved venues fail, the run fails closed and no V1 recommendation is
-fabricated.
+Bybit must supply its own current Spot price plus the complete rolling 168-hour
+history needed for the high. Any typed Bybit market-data failure causes the
+canonical shadow run to fail closed; no cross-exchange price/high substitution
+is permitted and no V1 recommendation is fabricated.
 
 TradingView is retained only where needed for historical artifact/schema
 compatibility. It is not a current runtime market-data fallback.

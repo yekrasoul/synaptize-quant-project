@@ -52,8 +52,7 @@ The production command composes the existing path only:
 
 ```text
 Bybit BTCUSDT Spot
-→ Binance BTCUSDT Spot fallback
-→ KuCoin BTC-USDT Spot fallback
+→ if unavailable or unreliable: fail closed / no decision
 → Alternative.me Crypto Fear & Greed
 → reconciled execution ledger
 → deterministic V1 engine

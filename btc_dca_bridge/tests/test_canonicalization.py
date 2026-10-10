@@ -39,7 +39,7 @@ class CanonicalizationTest(unittest.TestCase):
                 for forbidden in forbidden_text:
                     self.assertNotIn(forbidden, lowered)
 
-    def test_canonical_market_source_order_is_approved_and_closed(self):
+    def test_generic_ordered_provider_preserves_explicit_research_order(self):
         class Source:
             def __init__(self, source):
                 self.source = source
@@ -79,8 +79,7 @@ class CanonicalizationTest(unittest.TestCase):
         shadow = (ROOT / "docs" / "SHADOW_PIPELINE.md").read_text(encoding="utf-8")
         combined = "\n".join((readme, project, shadow)).lower()
         self.assertIn("bybit btcusdt spot", combined)
-        self.assertIn("binance btcusdt spot", combined)
-        self.assertIn("kucoin btc-usdt spot", combined)
+        self.assertIn("fail closed", combined)
         self.assertIn("alternative.me", combined)
         self.assertIn("ledger/executions.jsonl", combined)
         self.assertNotIn("tradingview exact bybit:btcusdt spot fallback", combined)

@@ -92,7 +92,7 @@ class StrategyConfig:
     monthly_cap_usd: Decimal
     drawdown_bands: tuple[DrawdownBand, ...]
     sentiment_bands: tuple[SentimentBand, ...]
-    approved_spot_exchanges: tuple[str, ...] = ("Bybit", "Binance", "KuCoin")
+    approved_spot_exchanges: tuple[str, ...] = ("Bybit",)
     allocation_rounding: str = ROUND_HALF_UP
 
     def base_allocation(self, drawdown: Decimal) -> Decimal:
@@ -189,10 +189,8 @@ def _load_v1_strategy_config(path: Path) -> StrategyConfig:
     ):
         raise ConfigurationError("V1 market policy must be Bybit BTCUSDT Spot")
     approved_spot_exchanges = market.get("approved_spot_source_order")
-    if approved_spot_exchanges != ["Bybit", "Binance", "KuCoin"]:
-        raise ConfigurationError(
-            "V1 approved Spot source order must be Bybit, Binance, KuCoin"
-        )
+    if approved_spot_exchanges != ["Bybit"]:
+        raise ConfigurationError("V1 approved Spot source order must be Bybit only")
     if market.get("same_source_price_and_high_required") is not True:
         raise ConfigurationError("price and rolling high must use the same source")
 
@@ -478,9 +476,9 @@ def load_market_data_config(path: Path = MARKET_DATA_CONFIG_PATH) -> MarketDataC
     if root["primary_provider"] != "bybit_api":
         raise ConfigurationError("the canonical primary provider must be bybit_api")
     fallbacks = root["fallback_providers"]
-    if fallbacks != ["binance_api", "kucoin_api"]:
-        raise ConfigurationError("approved fallback order must be binance_api then kucoin_api")
-    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", ("binance_api", "kucoin_api"), _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
+    if fallbacks != []:
+        raise ConfigurationError("canonical V1 market data does not permit cross-exchange fallbacks")
+    return MarketDataConfig(OPERATIONAL_CONFIG_VERSION, "Bybit", "spot", "BTCUSDT", "bybit_api", (), _positive_int(root["freshness_max_age_seconds"], "market_data.freshness_max_age_seconds"), _positive_int(root["candle_page_limit"], "market_data.candle_page_limit", maximum=1000), _positive_int(root["candle_max_pages"], "market_data.candle_max_pages", maximum=100), _http_policy(root, "market_data"))
 
 
 def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig:

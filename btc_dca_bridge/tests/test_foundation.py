@@ -62,8 +62,6 @@ class FoundationContractsTest(unittest.TestCase):
             "symbol: BTCUSDT",
             "approved_spot_source_order:",
             "- Bybit",
-            "- Binance",
-            "- KuCoin",
             "window_hours: 168",
             "condition: drawdown_percent >= -5",
             "condition: drawdown_percent < -25",
@@ -76,6 +74,8 @@ class FoundationContractsTest(unittest.TestCase):
             "multiplier: 0.50",
         ):
             self.assertIn(required_fragment, config)
+
+        self.assertEqual(load_strategy_config().approved_spot_exchanges, ("Bybit",))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Approved public BTC spot fallback sources for V1 recommendation runs."""
+"""Reusable ordered public BTC Spot providers for isolated noncanonical paths."""
 
 from __future__ import annotations
 
@@ -434,7 +434,7 @@ def _build_snapshot(
 
 
 class OrderedApprovedSpotProvider:
-    """Bybit Spot -> Binance Spot -> KuCoin Spot, with complete-source atomicity."""
+    """Use an explicitly supplied ordered set of complete Spot sources."""
 
     def __init__(self, sources: tuple[Any, ...]) -> None:
         expected = ("bybit_api", BINANCE_SOURCE, KUCOIN_SOURCE)

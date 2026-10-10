@@ -152,17 +152,13 @@ class EngineTest(unittest.TestCase):
     def test_strategy_exposes_canonical_approved_spot_order(self):
         self.assertEqual(
             self.strategy.approved_spot_exchanges,
-            ("Bybit", "Binance", "KuCoin"),
+            ("Bybit",),
         )
 
-    def test_accepts_each_approved_spot_venue(self):
-        for exchange in ("Bybit", "Binance", "KuCoin"):
-            snap = snapshot_for_drawdown("-6")
-            snap = MarketSnapshot(**{**snap.__dict__, "source_exchange": exchange})
-            with self.subTest(exchange=exchange):
-                decision = calculate_decision(snap, 64, 60, self.strategy).to_dict()
-                self.assertEqual(decision["base_allocation_usd"], 25)
-                self.assertEqual(decision["final_purchase_usd"], 25)
+    def test_accepts_only_canonical_bybit_spot_venue(self):
+        decision = calculate_decision(snapshot_for_drawdown("-6"), 64, 60, self.strategy).to_dict()
+        self.assertEqual(decision["base_allocation_usd"], 25)
+        self.assertEqual(decision["final_purchase_usd"], 25)
 
     def test_rejects_unapproved_market_identity(self):
         cases = (

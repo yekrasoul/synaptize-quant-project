@@ -5,7 +5,7 @@ active_strategy:
   id: btc_adaptive_dca_v1
   version: 1.0.0
   config_path: config/strategy_v1.yaml
-  content_sha256: 04ead05bb9da9ab7230e1d0f8377e651ae202102c53209325fc472ef921eed8f
+  content_sha256: 80861c15fd8b62ce903662d1852f3df57534782a7a0ff1c8a73e7fefabf55f3f
 canonical_resources:
   ledger: ledger/executions.jsonl
   chat_contract: docs/PROJECT_CHAT_CONTRACT.md
