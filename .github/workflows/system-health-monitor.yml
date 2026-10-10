@@ -271,7 +271,7 @@ jobs:
           PY
           uv run python -m btc_dca_bridge.health_monitor --evaluate "$state_dir/input.json" > "$state_dir/result.json"
           python - "$state_dir/result.json" <<'PY'
-          import json, pathlib, sys
+          import json, os, pathlib, sys
           result = json.loads(pathlib.Path(sys.argv[1]).read_text())
           messages = []
           for notification in result["pending_notifications"]:
