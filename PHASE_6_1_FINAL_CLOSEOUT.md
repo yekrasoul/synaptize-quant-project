@@ -31,15 +31,15 @@ attempts, acknowledgements, notifications, and partial fills are not ledger
 rows. Only authoritative confirmed fills can produce a final execution that
 is appended exactly once; historical ledger records are not edited.
 
-Primary market data uses Bybit Spot BTCUSDT. If Bybit Spot is unavailable,
-unreliable, stale, or contradictory, the approved fallback order is Binance
-Spot BTCUSDT, then KuCoin Spot BTC-USDT, then another reputable liquid BTC spot
-venue if necessary. Within a single run, current price and rolling 7-day high
-must come from the same spot-market source. Perpetuals, futures, mark/index
-prices, derivatives, leveraged products, and generic blended BTC prices are
-never approved substitutes. The configured sentiment source is Crypto Fear &
-Greed Index. Missing, stale, or contradictory inputs fail closed rather than
-silently changing market type or mixing sources.
+Canonical V1 market data uses Bybit Spot BTCUSDT only. There is no
+cross-exchange fallback: if Bybit is unavailable, unreliable, stale, or
+contradictory, V1 fails closed and produces no decision. Within a single run,
+current price and rolling 7-day high must come from the same Bybit spot-market
+source. Perpetuals, futures, mark/index prices, derivatives, leveraged
+products, other exchanges, and generic blended BTC prices remain prohibited
+substitutes. The configured sentiment source is Crypto Fear & Greed Index.
+Missing, stale, or contradictory inputs fail closed rather than silently
+changing market type or mixing sources.
 
 The execution chain preserves distinct artifacts:
 
@@ -120,8 +120,9 @@ authorization. Do not activate unattended execution or scheduling.
 
 ## Audit baseline
 
-The canonical ledger baseline inspected for closeout contains 11 reconciled
-historical rows: September 2026 `$220`, October 2026 `$60`, cumulative `$280`.
+The canonical ledger baseline inspected for closeout contains 12
+active/confirmed canonical executions: September 2026 `$220`, October 2026
+`$95`, cumulative `$315`.
 No historical row was changed. The checked-in safety configuration remains
 `false / true / not_implemented` for live enablement, kill switch, and order
 submission respectively.
