@@ -15,6 +15,7 @@ from btc_dca_bridge.real_money_authorization import (
     artifact_sha256,
     authorize_persisted_approval,
     operator_confirmation_digest,
+    read_authorization_status,
 )
 from btc_dca_bridge.schemas import validate_artifact
 from tests.test_live_readiness import LiveReadinessTests, NOW, SHA, safe_config
@@ -148,6 +149,78 @@ class RealMoneyAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["runtime"]["live_execution_enabled"], False)
         self.assertEqual(result["runtime"]["kill_switch"], True)
         self.assertEqual(result["runtime"]["order_submission"], "not_implemented")
+
+    def test_status_without_authorization_is_not_authorized_and_read_only(self):
+        before = sorted(self.root.rglob("*"))
+        result = read_authorization_status(store=self.store, now_utc=NOW)
+        self.assertEqual(result, {
+            "authorization": "NOT_AUTHORIZED", "execution": "BLOCKED",
+            "live_execution_enabled": False, "kill_switch": True,
+            "order_submission": "not_implemented", "message": "NO ORDER EXECUTED",
+        })
+        self.assertEqual(before, sorted(self.root.rglob("*")))
+
+    def test_status_reports_valid_authorization_without_sensitive_material(self):
+        authorization, _ = self.authorize()
+        result = read_authorization_status(store=self.store, now_utc=NOW)
+        self.assertEqual(result["authorization"], "AUTHORIZED")
+        self.assertEqual(result["status"], "AUTHORIZED")
+        self.assertEqual(result["approval_binding"], "VALID")
+        self.assertEqual(result["authorization_id"], authorization.authorization_id)
+        self.assertEqual(result["one_shot_identity"], authorization.one_shot_identity)
+        rendered = json.dumps(result)
+        self.assertNotIn("operator_confirmation_digest", rendered)
+        self.assertNotIn("account_identity_fingerprint", rendered)
+        self.assertNotIn(self.confirmation, rendered)
+        self.assertNotIn("BYBIT_API_KEY", rendered)
+        self.assertEqual(result["execution"], "BLOCKED")
+
+    def test_status_derives_expired_authorization(self):
+        self.authorize()
+        result = read_authorization_status(store=self.store, now_utc=NOW + timedelta(minutes=6))
+        self.assertEqual(result["status"], "EXPIRED")
+        self.assertEqual(result["authorization"], "NOT_AUTHORIZED")
+        self.assertEqual(result["execution"], "BLOCKED")
+
+    def test_status_derives_consumed_from_submission_attempt(self):
+        self.authorize()
+        attempt = {
+            "schema_version": "5.4.0B", "attempt_id": "attempt5b-" + "d" * 32,
+            "created_at_utc": "2026-10-10T17:32:00Z", "approval_id": self.approval.approval_id,
+            "approval_sha256": self.approval_receipt.sha256,
+            "canary_manifest_id": self.approval.payload["canary_manifest_id"], "canary_manifest_sha256": SHA,
+            "decision_id": self.approval.payload["decision_id"], "decision_sha256": SHA,
+            "order_intent_id": self.approval.payload["order_intent_id"], "order_intent_sha256": SHA,
+            "client_order_id": self.approval.payload["client_order_id"], "quote_amount_usdt": "25",
+            "safe_request_fingerprint": SHA, "repository_commit_sha": "b" * 40,
+            "account_identity_fingerprint": SHA, "calendar_month": "2026-10",
+            "safety_gate_fingerprint": SHA, "reconciliation_fingerprint": SHA,
+            "status": "PREPARED_FOR_SUBMISSION", "no_order_executed": True,
+        }
+        self.store.persist(ArtifactType.LIVE_EXECUTION_ATTEMPT, attempt, run_id="run_20261010T173200Z_auth0010")
+        result = read_authorization_status(store=self.store, now_utc=NOW)
+        self.assertEqual(result["status"], "CONSUMED")
+        self.assertTrue(result["consumed"])
+        self.assertEqual(result["authorization"], "NOT_AUTHORIZED")
+
+    def test_corrupt_authorization_fails_closed(self):
+        _, receipt = self.authorize()
+        receipt.path.write_text("{malformed", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            read_authorization_status(store=self.store, now_utc=NOW)
+
+    def test_status_cli_is_read_only_and_parser_accepts_command(self):
+        ledger_before = sorted(self.root.rglob("*.json"))
+        output = StringIO()
+        with patch("http.client.HTTPSConnection") as connection, redirect_stdout(output):
+            self.assertEqual(main(["live-authorization-status", "--data-root", str(self.root)]), 0)
+        connection.assert_not_called()
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["authorization"], "NOT_AUTHORIZED")
+        self.assertEqual(result["execution"], "BLOCKED")
+        self.assertEqual(ledger_before, sorted(self.root.rglob("*.json")))
+        self.assertNotIn("confirmation", output.getvalue().lower())
+        self.assertNotIn("secret", output.getvalue().lower())
 
 
 if __name__ == "__main__": unittest.main()

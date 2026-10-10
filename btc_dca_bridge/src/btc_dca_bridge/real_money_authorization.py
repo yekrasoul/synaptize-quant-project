@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
+from .config import load_execution_config
 from .errors import ArtifactNotFoundError
 from .live_readiness import LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 
@@ -183,3 +184,119 @@ def verify_authorization_binding(
         if now_utc.astimezone(UTC) >= expires: reasons.append("authorization is expired")
     except (KeyError, ValueError): reasons.append("authorization expiry is malformed")
     return not reasons, tuple(dict.fromkeys(reasons))
+
+
+def _not_authorized_status() -> dict[str, Any]:
+    """Return the safe status for an installation with no authorization."""
+    return {
+        "authorization": "NOT_AUTHORIZED",
+        "execution": "BLOCKED",
+        "live_execution_enabled": False,
+        "kill_switch": True,
+        "order_submission": "not_implemented",
+        "message": "NO ORDER EXECUTED",
+    }
+
+
+def _authorization_candidates(store: ArtifactStore) -> list[tuple[dict[str, Any], str]]:
+    """Read every persisted authorization, preserving append-only semantics."""
+    root = store.root / "real_money_authorizations"
+    candidates: list[tuple[datetime, dict[str, Any], str]] = []
+    for path in sorted(root.glob("*/*/*/*.json")):
+        parts = path.parts
+        try:
+            artifact_date = datetime(int(parts[-4]), int(parts[-3]), int(parts[-2]), tzinfo=UTC)
+        except (TypeError, ValueError, IndexError) as exc:
+            from .errors import ArtifactCorruptError
+            raise ArtifactCorruptError("authorization artifact directory date is invalid") from exc
+        payload = store.read(ArtifactType.REAL_MONEY_AUTHORIZATION, run_id=path.stem, artifact_date_utc=artifact_date)
+        try:
+            created = datetime.fromisoformat(str(payload["created_at_utc"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError) as exc:
+            from .errors import ArtifactCorruptError
+            raise ArtifactCorruptError("authorization creation timestamp is malformed") from exc
+        candidates.append((created, payload, artifact_sha256(payload)))
+    candidates.sort(key=lambda item: item[0])
+    return [(payload, digest) for _, payload, digest in candidates]
+
+
+def read_authorization_status(
+    *, store: ArtifactStore, authorization_id: str | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Derive safe authorization status without writing artifacts or external state."""
+    now = now_utc or datetime.now(UTC)
+    if now.tzinfo is None or now.utcoffset() != timedelta(0):
+        raise LiveReadinessError("status observation time must be UTC-aware")
+    if authorization_id is None:
+        candidates = _authorization_candidates(store)
+        if not candidates:
+            return _not_authorized_status()
+        payload, authorization_sha256 = candidates[-1]
+    else:
+        payload, authorization_sha256 = store.find_artifact(
+            ArtifactType.REAL_MONEY_AUTHORIZATION,
+            identity_field="authorization_id",
+            identity_value=authorization_id,
+        )
+
+    binding_valid = False
+    try:
+        approval_payload, approval_sha256 = store.find_artifact(
+            ArtifactType.LIVE_EXECUTION_APPROVAL,
+            identity_field="approval_id",
+            identity_value=str(payload.get("approval_id")),
+        )
+        binding_valid, _ = verify_authorization_binding(
+            LiveExecutionApproval(approval_payload), payload,
+            approval_sha256=approval_sha256,
+            authorization_sha256=authorization_sha256,
+            now_utc=now,
+        )
+    except ArtifactNotFoundError:
+        binding_valid = False
+
+    derived_status = str(payload.get("status", "INVALID"))
+    if str(payload.get("status")) == "REVOKED":
+        derived_status = "REVOKED"
+    elif store.has_submission_artifact(
+        str(payload.get("decision_id")), str(payload.get("client_order_id")),
+        kinds=(ArtifactType.LIVE_EXECUTION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_ATTEMPT, ArtifactType.ORDER_SUBMISSION_OUTCOME),
+    ) or payload.get("consumed") is True:
+        derived_status = "CONSUMED"
+    else:
+        try:
+            expires = datetime.fromisoformat(str(payload["expires_at_utc"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            derived_status = "INVALID"
+        else:
+            if now >= expires:
+                derived_status = "EXPIRED"
+            elif derived_status not in {"AUTHORIZED", "EXPIRED", "CONSUMED", "REVOKED"}:
+                derived_status = "INVALID"
+
+    config = load_execution_config()
+    execution_ready = (
+        binding_valid and derived_status == "AUTHORIZED"
+        and config.live_execution_enabled and not config.kill_switch
+        and config.order_submission != "not_implemented"
+    )
+    result: dict[str, Any] = {
+        "authorization": "AUTHORIZED" if binding_valid and derived_status == "AUTHORIZED" else "NOT_AUTHORIZED",
+        "status": derived_status,
+        "authorization_id": payload.get("authorization_id"),
+        "expires_at_utc": payload.get("expires_at_utc"),
+        "one_shot_identity": payload.get("one_shot_identity"),
+        "exact_quote_amount_usdt": payload.get("exact_quote_amount_usdt"),
+        "client_order_id": payload.get("client_order_id"),
+        "calendar_month": payload.get("calendar_month"),
+        "approval_binding": "VALID" if binding_valid else "INVALID",
+        "consumed": derived_status == "CONSUMED",
+        "revocation_state": "REVOKED" if derived_status == "REVOKED" else "NOT_REVOKED",
+        "execution": "READY" if execution_ready else "BLOCKED",
+        "live_execution_enabled": config.live_execution_enabled,
+        "kill_switch": config.kill_switch,
+        "order_submission": config.order_submission,
+        "message": "NO ORDER EXECUTED",
+    }
+    return result

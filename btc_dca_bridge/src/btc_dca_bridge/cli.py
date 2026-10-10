@@ -33,7 +33,7 @@ from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, Priva
 from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport
-from .real_money_authorization import authorize_persisted_approval
+from .real_money_authorization import authorize_persisted_approval, read_authorization_status
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -166,6 +166,9 @@ def _parser() -> argparse.ArgumentParser:
     authorize.add_argument("--confirm", required=True)
     authorize.add_argument("--run-id", required=True)
     authorize.add_argument("--data-root", type=Path, default=DATA_PATH)
+    authorization_status = subparsers.add_parser("live-authorization-status", help="read-only status of the latest one-shot authorization")
+    authorization_status.add_argument("--authorization-id")
+    authorization_status.add_argument("--data-root", type=Path, default=DATA_PATH)
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -591,6 +594,10 @@ def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     }, 0)
 
 
+def _live_authorization_status(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    return read_authorization_status(store=ArtifactStore(args.data_root), authorization_id=args.authorization_id), 0
+
+
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -837,6 +844,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _live_readiness()
         elif args.command == "live-authorize":
             result, exit_code = _live_authorize(args)
+        elif args.command == "live-authorization-status":
+            result, exit_code = _live_authorization_status(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:
