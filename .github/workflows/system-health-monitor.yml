@@ -185,7 +185,7 @@ jobs:
             uv run python -m btc_dca_bridge production-connectivity --json >/tmp/system-health-bybit.json 2>/dev/null || true
             uv run python -m btc_dca_bridge production-status --json >/tmp/system-health-status.json 2>/dev/null || true
           fi
-          MODE="$MODE" LEDGER="$ledger_integrity" PREVIOUS_FILE="$previous_file" SEND_TEST_ALERT="$SEND_TEST_ALERT" SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<'PY'
+          MODE="$MODE" LEDGER="$ledger_integrity" PREVIOUS_FILE="$previous_file" SEND_TEST_ALERT="$SEND_TEST_ALERT" SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" uv run python - "$state_dir/input.json" <<'PY'
           import json, os, pathlib, sys
           from btc_dca_bridge.health_monitor import (
               authorization_from_canonical, canonical_contract_state,

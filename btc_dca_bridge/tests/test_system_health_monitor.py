@@ -64,6 +64,12 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertIn('read_text(encoding="utf-8")', self.text)
         self.assertIn('/tmp/system-health-github-evidence.json', self.text)
 
+    def test_package_importing_evaluator_uses_uv_project_environment(self):
+        evaluator = self.text.split("- name: Evaluate local read-only health", 1)[1].split("uv run python -m btc_dca_bridge.health_monitor --evaluate", 1)[0]
+        self.assertIn('SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" uv run python - "$state_dir/input.json" <<\'PY\'', evaluator)
+        self.assertIn("from btc_dca_bridge.health_monitor import", evaluator)
+        self.assertNotIn('SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<\'PY\'', evaluator)
+
     def test_large_synthetic_evidence_round_trips_without_environment_transport(self):
         evidence = {"artifacts": [{"name": "production-shadow-evidence", "payload": "x" * (2 * 1024 * 1024)}]}
         with tempfile.TemporaryDirectory() as directory:
