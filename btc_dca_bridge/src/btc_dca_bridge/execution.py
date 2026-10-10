@@ -54,6 +54,7 @@ class OrderIntent:
     live_execution_requested: bool
     live_execution_enabled: bool
     no_order_executed: bool = True
+    calendar_month: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in self.__dict__.items()}
@@ -123,14 +124,14 @@ def client_order_id(strategy_id: str, decision_id: str, run_id: str) -> str:
 
 
 def make_order_intent(decision: Mapping[str, Any], *, run_id: str, created_at_utc: str,
-                      live_execution_requested: bool = False) -> OrderIntent:
+                      live_execution_requested: bool = False, calendar_month: str | None = None) -> OrderIntent:
     amount = Decimal(str(decision["final_purchase_usd"]))
     decision_id = str(decision["decision_id"])
     return OrderIntent("5.1.0", str(decision["strategy_id"]), str(decision["strategy_version"]),
         run_id, decision_id, f"intent_{decision_id}_{run_id}", created_at_utc, "Bybit", "spot", "BTCUSDT", "Buy",
         amount, "recommendation_only", client_order_id(str(decision["strategy_id"]), decision_id, run_id),
         Decimal(str(decision.get("monthly_spent_before_usd", 0))), Decimal(str(decision.get("remaining_budget_before_usd", 0))),
-        "pending", live_execution_requested, False, True)
+        "pending", live_execution_requested, False, True, calendar_month or created_at_utc[:7])
 
 
 def validate_spot_instrument(exchange: str, market_type: str, symbol: str) -> None:

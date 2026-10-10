@@ -1099,7 +1099,7 @@ def _approval_from_dict(payload: dict[str, object]) -> LiveApproval | LiveExecut
 
 
 def _intent_from_dict(payload: dict[str, object]) -> OrderIntent:
-    return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)))
+    return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)), payload.get("calendar_month"))
 
 
 def _latest_verified_production_evidence(store: ArtifactStore) -> tuple[dict[str, object], str]:

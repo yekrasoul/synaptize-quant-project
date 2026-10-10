@@ -279,6 +279,8 @@ class CanaryPreparationTests(unittest.TestCase):
             persisted["run_id"],
             self.run_id,
         )
+        self.assertEqual(persisted["calendar_month"], "2026-10")
+        self.assertEqual(persisted["calendar_month"], result.manifest.calendar_month)
         self.assertEqual(len(digest), 64)
 
     def test_prepare_accepts_exact_existing_order_intent(self):

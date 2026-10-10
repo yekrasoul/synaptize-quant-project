@@ -99,6 +99,22 @@ class RuntimeExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             derive_ephemeral_execution_policy(canonical_config=load_execution_config(), enablement=c["enablement"], enablement_sha256=artifact_sha256(c["enablement"]), authorization=c["authorization"], authorization_sha256=c["authorization_sha"], activation=c["activation"], activation_sha256=artifact_sha256(c["activation"]), approval=c["approval"], approval_sha256=c["approval_sha"], manifest=c["manifest"], manifest_sha256=c["manifest_sha"], decision=c["decision"], decision_sha256=c["decision_sha"], intent=c["intent"], intent_sha256=c["intent_sha"], evidence=c["evidence"], repository_commit_sha=c["commit"], calendar_month="2026-10", now_utc=c["now"])
 
+    def test_runtime_blocks_mismatched_or_missing_intent_month(self):
+        for month in ("2026-09", None):
+            c = self.ceremony()
+            if month is None:
+                c["intent"].pop("calendar_month")
+            else:
+                c["intent"]["calendar_month"] = month
+            c["intent_sha"] = artifact_sha256(c["intent"])
+            with self.assertRaisesRegex(ValueError, "calendar_month"):
+                derive_ephemeral_execution_policy(
+                    canonical_config=load_execution_config(), enablement=c["enablement"], enablement_sha256=artifact_sha256(c["enablement"]),
+                    authorization=c["authorization"], authorization_sha256=c["authorization_sha"], activation=c["activation"], activation_sha256=artifact_sha256(c["activation"]),
+                    approval=c["approval"], approval_sha256=c["approval_sha"], manifest=c["manifest"], manifest_sha256=c["manifest_sha"], decision=c["decision"], decision_sha256=c["decision_sha"],
+                    intent=c["intent"], intent_sha256=c["intent_sha"], evidence=c["evidence"], repository_commit_sha=c["commit"], calendar_month="2026-10", now_utc=c["now"],
+                )
+
     def test_runtime_status_is_read_only_and_reports_absent_capability(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

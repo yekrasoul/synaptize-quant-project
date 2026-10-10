@@ -175,7 +175,7 @@ class CanaryPreparer:
             validate_artifact("decision", dict(decision))
         except Exception as exc:
             raise CanaryPreparationError(f"Decision schema validation failed: {exc}") from exc
-        intent = make_order_intent(decision, run_id=run_id, created_at_utc=str(decision["created_at_utc"]))
+        intent = make_order_intent(decision, run_id=run_id, created_at_utc=str(decision["created_at_utc"]), calendar_month=calendar_month)
         amount = _decimal(decision["final_purchase_usd"], "Decision.final_purchase_usd")
         request = SpotMarketBuyRequest(amount, intent.client_order_id)
         payload = request.to_payload()

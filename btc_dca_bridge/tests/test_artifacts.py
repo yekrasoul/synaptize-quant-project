@@ -187,7 +187,7 @@ class ArtifactStoreTest(unittest.TestCase):
         self.assertFalse(hasattr(self.store, "calculate_decision"))
 
     def test_execution_plan_evidence_is_immutable_and_not_execution(self):
-        intent = OrderIntent("5.1.0", "btc_adaptive_dca_v1", "1.0.0", RUN_ID, "decision_abc123", "intent_abc123", "2026-10-07T12:00:00Z", "Bybit", "spot", "BTCUSDT", "Buy", Decimal("10"), "recommendation_only", client_order_id("btc_adaptive_dca_v1", "decision_abc123", RUN_ID), Decimal("0"), Decimal("500"), "pending", False, False)
+        intent = OrderIntent("5.1.0", "btc_adaptive_dca_v1", "1.0.0", RUN_ID, "decision_abc123", "intent_abc123", "2026-10-07T12:00:00Z", "Bybit", "spot", "BTCUSDT", "Buy", Decimal("10"), "recommendation_only", client_order_id("btc_adaptive_dca_v1", "decision_abc123", RUN_ID), Decimal("0"), Decimal("500"), "pending", False, False, True, "2026-10")
         validation = SafetyValidationResult("5.1.0", RUN_ID, "rejected", ("kill switch is active",), "2026-10-07T12:00:01Z", Decimal("0"), Decimal("500"))
         intent_receipt = self.store.persist(ArtifactType.ORDER_INTENT, intent, run_id=RUN_ID)
         safety_receipt = self.store.persist(ArtifactType.SAFETY_VALIDATION, validation, run_id=RUN_ID)
