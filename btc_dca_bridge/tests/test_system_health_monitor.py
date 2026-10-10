@@ -70,6 +70,9 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertIn("from btc_dca_bridge.health_monitor import", evaluator)
         self.assertNotIn('SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" python - "$state_dir/input.json" <<\'PY\'', evaluator)
 
+    def test_result_processor_imports_os_for_github_output(self):
+        self.assertIn("import json, os, pathlib, sys", self.text)
+
     def test_large_synthetic_evidence_round_trips_without_environment_transport(self):
         evidence = {"artifacts": [{"name": "production-shadow-evidence", "payload": "x" * (2 * 1024 * 1024)}]}
         with tempfile.TemporaryDirectory() as directory:
