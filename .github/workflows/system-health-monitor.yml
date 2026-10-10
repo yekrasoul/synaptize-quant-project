@@ -190,7 +190,8 @@ jobs:
           from btc_dca_bridge.health_monitor import (
               authorization_from_canonical, canonical_contract_state,
               classify_artifact_integrity, classify_canonical_ci,
-              classify_market_data_artifacts, classify_production_shadow,
+              classify_connectivity_payload, classify_market_data_artifacts_detailed,
+              classify_production_shadow,
               classify_self_hosted_runner,
               classify_production_status, classify_watchdog,
           )
@@ -235,6 +236,10 @@ jobs:
           from datetime import timedelta
           watchdog_state = classify_watchdog(observed_at, evidence.get("monitor_runs", []), current_run_id=os.environ.get("GITHUB_RUN_ID"))
           telegram_state = "HEALTHY" if previous and previous.get("last_telegram_delivery_at") else ("CONFIGURED" if evidence.get("telegram_configured") else "ALERT")
+          diagnostics = {
+              "watchdog": {"state": watchdog_state, "reason": {"INITIALIZING": "no prior successful scheduled monitor history", "HEALTHY": "recent successful scheduled monitor history", "ALERT": "scheduled monitor history is stale or failed", "UNKNOWN": "monitor history is malformed or unavailable"}.get(watchdog_state, "monitor state unavailable")},
+              "canonical_ci": {"state": ci, "reason": {"HEALTHY": "latest relevant Canonical CI run succeeded", "ALERT": "latest relevant Canonical CI run failed", "UNKNOWN": "no relevant Canonical CI run found or evidence is malformed"}.get(ci, "Canonical CI state unavailable")},
+          }
           checks = {
               "self_hosted_runner": runner_state,
               "production_shadow": shadow["state"],
@@ -254,12 +259,18 @@ jobs:
               "infrastructure": "HEALTHY" if isinstance(evidence.get("monitor_runs"), list) and isinstance(evidence.get("artifacts"), list) else "UNKNOWN",
           }
           if os.environ["MODE"] == "full":
+              connectivity_detail = {"state": "UNKNOWN", "reason": "missing or unparseable production-connectivity output", "raw": None}
               try:
                   connectivity = json.loads(pathlib.Path("/tmp/system-health-bybit.json").read_text())
-                  checks["bybit_spot_connectivity"] = "HEALTHY" if connectivity.get("status") in {"READS_OK", "HEALTHY", "PASS"} else "ALERT"
-              except (OSError, ValueError): checks["bybit_spot_connectivity"] = "UNKNOWN"
-              checks["market_data_freshness"] = classify_market_data_artifacts("/tmp/latest-shadow-evidence", observed_at)
+                  connectivity_detail = classify_connectivity_payload(connectivity)
+              except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError): pass
+              checks["bybit_spot_connectivity"] = connectivity_detail["state"]
+              diagnostics["bybit_spot_connectivity"] = connectivity_detail
+              market_detail = classify_market_data_artifacts_detailed("/tmp/latest-shadow-evidence", observed_at)
+              checks["market_data_freshness"] = market_detail["state"]
+              diagnostics["market_data_freshness"] = market_detail
               checks["production_status"] = classify_production_status(status_payload)
+          checks["diagnostics"] = diagnostics
           payload = {"mode": os.environ["MODE"], "checks": checks, "safety": safety, "observed_at": observed_at, "previous": previous, "send_test_alert": os.environ["SEND_TEST_ALERT"] == "true", "send_test_summary": os.environ["SEND_TEST_SUMMARY"] == "true"}
           pathlib.Path(sys.argv[1]).write_text(json.dumps(payload), encoding="utf-8")
           PY
