@@ -165,13 +165,13 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(result.manifest.canary_status, "BLOCKED")
         self.assertIn("account verification is incomplete", " ".join(result.manifest.reasons))
 
-    def test_manifest_is_immutable_and_has_fifteen_minute_expiry(self):
+    def test_manifest_is_immutable_and_has_thirty_minute_expiry(self):
         result = self.prepare()
-        self.assertEqual(result.manifest.expires_at_utc, "2026-10-07T12:15:00Z")
-        self.assertFalse(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=14)))
-        self.assertTrue(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=15)))
+        self.assertEqual(result.manifest.expires_at_utc, "2026-10-07T12:30:00Z")
+        self.assertFalse(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=29)))
+        self.assertTrue(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=30)))
         with self.assertRaisesRegex(CanaryPreparationError, "EXPIRED"):
-            result.manifest.validate_for_execution(now_utc=self.now + timedelta(minutes=15))
+            result.manifest.validate_for_execution(now_utc=self.now + timedelta(minutes=30))
         with self.assertRaisesRegex(CanaryPreparationError, "NOT ENABLED"):
             result.manifest.validate_for_execution(now_utc=self.now)
         with self.assertRaises(Exception): self.prepare(data=self.root / "data")

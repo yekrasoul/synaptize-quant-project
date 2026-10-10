@@ -239,7 +239,7 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--data-root", type=Path, default=DATA_PATH)
     audit.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     audit.add_argument("--json", action="store_true")
-    approve = subparsers.add_parser("canary-approve", help="persist a precise five-minute manual approval")
+    approve = subparsers.add_parser("canary-approve", help="persist a precise ten-minute manual approval")
     approve.add_argument("--run-id", required=True); approve.add_argument("--canary-id", required=True)
     approve.add_argument("--manifest-sha", required=True); approve.add_argument("--amount", required=True)
     approve.add_argument("--client-order-id", required=True); approve.add_argument("--payload-fingerprint", required=True)
@@ -838,8 +838,8 @@ def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
         manifest_expires = datetime.fromisoformat(str(manifest["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
     except (KeyError, ValueError) as exc:
         raise ValueError("CanaryManifest expiry is malformed") from exc
-    if now >= manifest_expires or manifest_expires - now < timedelta(minutes=5):
-        raise ValueError("CanaryManifest does not have a full five-minute approval window remaining")
+    if now >= manifest_expires or manifest_expires - now < timedelta(minutes=10):
+        raise ValueError("CanaryManifest does not have a full ten-minute approval window remaining")
     required_manifest = ("monthly_spent_usd", "remaining_budget_usd", "account_mode", "credential_classification", "authoritative_available_usdt", "instrument_min_order_amt", "instrument_qty_step", "instrument_tick_size", "pre_submission_state", "liability_detected")
     if any(manifest.get(key) is None for key in required_manifest):
         raise ValueError("CanaryManifest lacks required persisted readiness evidence")
@@ -865,7 +865,7 @@ def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
         reconciliation_evidence_fingerprint=canonical_fingerprint({"client_order_id": manifest["client_order_id"], "state": manifest["pre_submission_state"]}),
         production_contract_fingerprint=production_contract_fingerprint(),
         execution_safety_config_fingerprint=execution_safety_config_fingerprint(load_execution_config()),
-        manifest_expires_at_utc=str(manifest["expires_at_utc"]), state="PREPARED", ttl=timedelta(minutes=5),
+        manifest_expires_at_utc=str(manifest["expires_at_utc"]), state="PREPARED", ttl=timedelta(minutes=10),
     )
     receipt = approval.persist(store, run_id=args.run_id)
     # Keep the older preparation artifact for legacy operations/recovery

@@ -25,7 +25,7 @@ from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPoli
 from .schemas import validate_artifact
 
 CANARY_SCHEMA_VERSION = "5.4.0"
-CANARY_EXPIRY = timedelta(minutes=15)
+CANARY_EXPIRY = timedelta(minutes=30)
 APPROVED_ACTIONS = {"SpotTrade", "OrderEntry", "SpotOrder"}
 
 
