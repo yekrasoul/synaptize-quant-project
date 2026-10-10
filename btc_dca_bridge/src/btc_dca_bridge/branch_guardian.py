@@ -20,6 +20,21 @@ FAIL_FILES = {"btc_dca_bridge/ledger/executions.jsonl"}
 SENSITIVE = re.compile(r"ignore[._ -]?kill|force[._ -]?live|disable[._ -]?kill|override[._ -]?safety|bypass|auto[._ -]?(authorize|activate|enable)|standing[._ -]?(authorization|activation|enable)|live_execution_enabled|kill_switch|order_submission|monthly[_ -]?cap|market|Bybit|BTCUSDT|leverage|borrow|/v5/order/create|ledger[._ -]?before[._ -]?confirmation", re.IGNORECASE)
 
 
+def changed_diff_lines(diff_text: str) -> str:
+    """Return only added/removed content from a unified diff.
+
+    Context and patch metadata are deliberately excluded so existing safety
+    terminology cannot classify an unrelated documentation edit.
+    """
+    changed: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith(("+++", "---", "diff --git", "index", "@@")):
+            continue
+        if line.startswith(("+", "-")):
+            changed.append(line[1:])
+    return "\n".join(changed)
+
+
 def _safe_runtime(runtime: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if runtime is not None:
         return dict(runtime)
@@ -43,7 +58,7 @@ def classify_branch(*, branch: str, head_sha: str, base_sha: str, changed_files:
     elif PROTECTED_FILES.intersection(files):
         classification = "SAFETY_SENSITIVE"
         reason = "protected production surface changed"
-    elif SENSITIVE.search(diff_text):
+    elif SENSITIVE.search(changed_diff_lines(diff_text)):
         classification = "SAFETY_SENSITIVE"
         reason = "conservative safety-semantic match in diff"
     elif not all((runtime.get(key) == expected) for key, expected in (("execution_config_safe", True), ("authorization", "NOT_AUTHORIZED"), ("activation", "NOT_ACTIVATED"), ("production_enablement", "NOT_ENABLED"), ("execution", "BLOCKED"))):

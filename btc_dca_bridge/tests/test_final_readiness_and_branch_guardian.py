@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import yaml
 
-from btc_dca_bridge.branch_guardian import classify_branch
+from btc_dca_bridge.branch_guardian import changed_diff_lines, classify_branch
 from btc_dca_bridge.final_readiness import final_readiness_audit
 
 
@@ -24,8 +24,27 @@ class BranchGuardianTests(unittest.TestCase):
             self.assertEqual(self.classify([path])["classification"], "SAFETY_SENSITIVE")
 
     def test_safety_semantic_changes_are_conservative_blockers(self):
-        for diff in ("kill_switch: false", "live_execution_enabled: true", "order_submission: implemented", "monthly_cap_usd: 501", "market: Other", "leverage=1", "bypass gate", "POST /v5/order/create"):
+        for diff in ("+kill_switch: false", "+live_execution_enabled: true", "+order_submission: implemented", "+monthly_cap_usd: 501", "+market: Other", "+leverage=1", "+bypass gate", "+POST /v5/order/create"):
             self.assertEqual(self.classify(diff=diff)["classification"], "SAFETY_SENSITIVE")
+
+    def test_changed_line_extraction_ignores_context_and_metadata(self):
+        diff = "\n".join((
+            "diff --git a/docs/BRANCH_GUARDIAN.md b/docs/BRANCH_GUARDIAN.md",
+            "index 1111111..2222222 100644", "--- a/docs/BRANCH_GUARDIAN.md", "+++ b/docs/BRANCH_GUARDIAN.md",
+            "@@ -1,3 +1,3 @@", " kill_switch live_execution_enabled order_submission Bybit BTCUSDT",
+            "+Pilot verified after bootstrap.",
+        ))
+        self.assertEqual(changed_diff_lines(diff), "Pilot verified after bootstrap.")
+        self.assertEqual(self.classify(files=["docs/BRANCH_GUARDIAN.md"], diff=diff)["classification"], "SAFE_ENGINEERING")
+
+    def test_added_and_removed_safety_lines_are_blocked(self):
+        for diff in ("+kill_switch: false", "-kill_switch: true"):
+            self.assertEqual(self.classify(diff=diff)["classification"], "SAFETY_SENSITIVE")
+
+    def test_diff_headers_cannot_trigger_safety_classification(self):
+        diff = "--- a/docs/kill_switch.md\n+++ b/docs/live_execution_enabled.md\n@@ -1 +1 @@\n context"
+        self.assertEqual(changed_diff_lines(diff), "")
+        self.assertEqual(self.classify(files=["docs/note.md"], diff=diff)["classification"], "SAFE_ENGINEERING")
 
     def test_ledger_and_runtime_drift_fail(self):
         self.assertEqual(self.classify(["btc_dca_bridge/ledger/executions.jsonl"])["classification"], "FAIL")
