@@ -28,7 +28,7 @@ SAFETY_EXPECTATIONS = {
 }
 HEALTHY_STATES = {"HEALTHY", "OK", "PASS", "SUCCESS"}
 ALERTING_STATES = {"ALERT", "CRITICAL", "FAILURE", "FAILED"}
-NON_ALERTING_STATES = {"INITIALIZING", "CONFIGURED", "NOT_APPLICABLE", "UNKNOWN", "NOT_RUN"}
+NON_ALERTING_STATES = {"INITIALIZING", "CONFIGURED", "NOT_APPLICABLE", "NOT_CONFIGURED", "UNKNOWN", "NOT_RUN"}
 
 
 def _utc(value: str | datetime) -> datetime:
@@ -230,6 +230,11 @@ def classify_connectivity_payload(payload: Mapping[str, Any] | None) -> dict[str
             if isinstance(endpoint, Mapping):
                 safe["endpoints"].append({key: endpoint[key] for key in endpoint_keys if key in endpoint and not isinstance(endpoint[key], (Mapping, list))})
     status = payload.get("status")
+    diagnostic_text = " ".join(str(value) for value in (payload.get("reason"), payload.get("error"), payload.get("message")) if value)
+    diagnostic_text += " " + " ".join(str(item.get("reason")) for item in payload.get("endpoints", []) if isinstance(item, Mapping) and item.get("reason"))
+    missing_credentials = status == "READS_UNAVAILABLE" and "bybit_api_key and bybit_api_secret must be set" in diagnostic_text.lower()
+    if missing_credentials:
+        return {"state": "NOT_CONFIGURED", "reason": next((item.get("reason") for item in payload.get("endpoints", []) if isinstance(item, Mapping) and item.get("reason")), payload.get("reason") or payload.get("message") or "Bybit credentials are not configured"), "raw": safe}
     if status in {"READS_OK", "HEALTHY", "PASS"}:
         state = "HEALTHY"
         reason = "read-only connectivity checks succeeded"

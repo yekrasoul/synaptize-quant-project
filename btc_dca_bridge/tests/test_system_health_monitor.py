@@ -197,6 +197,29 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertEqual(classify_connectivity_payload(None)["state"], "UNKNOWN")
         self.assertIsNone(classify_connectivity_payload(None)["raw"])
 
+    def test_missing_bybit_credentials_are_not_configured_not_alerting(self):
+        payload = {"status": "READS_UNAVAILABLE", "endpoints": [{"endpoint": "credential_info", "status": "UNAVAILABLE", "reason": "BYBIT_API_KEY and BYBIT_API_SECRET must be set", "read_only": True}]}
+        detail = classify_connectivity_payload(payload)
+        self.assertEqual(detail["state"], "NOT_CONFIGURED")
+        result = evaluate(mode="full", checks={**healthy_checks(), "bybit_spot_connectivity": detail["state"]}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        self.assertNotEqual(result["overall"], "CRITICAL")
+
+    def test_credential_auth_and_ordinary_connectivity_failures_remain_alerts(self):
+        supplied_auth_failure = {"status": "READS_UNAVAILABLE", "endpoints": [{"endpoint": "credential_info", "status": "UNAVAILABLE", "reason": "HTTP 401 invalid API key"}]}
+        ordinary_failure = {"status": "READS_FAILED", "endpoints": [{"endpoint": "server_time", "status": "FAIL", "reason": "HTTP 500 upstream failure"}]}
+        self.assertEqual(classify_connectivity_payload(supplied_auth_failure)["state"], "ALERT")
+        self.assertEqual(classify_connectivity_payload(ordinary_failure)["state"], "ALERT")
+
+    def test_malformed_connectivity_result_is_unknown(self):
+        self.assertEqual(classify_connectivity_payload([])["state"], "UNKNOWN")
+
+    def test_missing_credential_reason_remains_in_summary(self):
+        detail = classify_connectivity_payload({"status": "READS_UNAVAILABLE", "endpoints": [{"endpoint": "credential_info", "status": "UNAVAILABLE", "reason": "BYBIT_API_KEY and BYBIT_API_SECRET must be set"}]})
+        result = evaluate(mode="full", checks={**healthy_checks(), "bybit_spot_connectivity": detail["state"], "diagnostics": {"bybit_spot_connectivity": detail}}, safety=SAFETY, observed_at="2026-10-10T17:17:00Z")
+        summary = render_summary(result)
+        self.assertIn("Bybit Spot Connectivity: NOT_CONFIGURED", summary)
+        self.assertIn("BYBIT_API_KEY and BYBIT_API_SECRET must be set", summary)
+
     def test_market_data_diagnostics_distinguish_freshness_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
