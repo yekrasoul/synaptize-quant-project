@@ -19,8 +19,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .artifacts import ArtifactStore, ArtifactType
 from . import availability
-from .blocked_production import QUOTE_LIMIT_BLOCKED_MESSAGE
-from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, validate_quote_unit_limit_evidence
+from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy
 from .config import ExecutionConfig, load_strategy_config
 from .errors import ArtifactAlreadyExistsError
 from .execution import OrderIntent, SubmissionState, validate_execution_safety
@@ -376,11 +375,13 @@ class LiveOrderEngine:
         except availability.AvailabilityValidationError as exc:
             raise LiveOrderSafetyError("fresh authoritative exact Spot quote-buy availability is unavailable or untrusted") from exc
         if available < intent.quote_amount_usdt: raise LiveOrderSafetyError("fresh authoritative exact Spot quote-buy availability is unavailable or insufficient")
-        try:
-            maximum = validate_quote_unit_limit_evidence(client.quote_unit_limit_evidence(), now=(now_utc or datetime.now(UTC)), policy=quote_limit_policy)
-        except Exception as exc:
-            raise LiveOrderSafetyError(QUOTE_LIMIT_BLOCKED_MESSAGE) from exc
-        if maximum < intent.quote_amount_usdt: raise LiveOrderSafetyError("authoritative quote-unit market-buy maximum is below exact amount")
+        if (intent.exchange, intent.market_type, intent.symbol, intent.side) != ("Bybit", "spot", "BTCUSDT", "Buy"):
+            raise LiveOrderSafetyError("live request must be the approved Bybit Spot BTCUSDT Market Buy")
+        if intent.quote_amount_usdt <= 0:
+            raise LiveOrderSafetyError("quote-denominated order amount must be positive")
+        # marketUnit=quoteCoin makes qty the exact approved USDT amount. No
+        # base quantity, ticker price, wallet balance, or deprecated maxOrderAmt
+        # is used to invent a quote ceiling.
         rules = client.instrument_rules()
         rules.validate_quote(intent.quote_amount_usdt)
         if client.submission_state(intent.client_order_id) != "conclusively_absent": raise LiveOrderSafetyError("fresh order reconciliation is not conclusively absent")

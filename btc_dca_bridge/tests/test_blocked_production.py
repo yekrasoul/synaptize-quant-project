@@ -41,17 +41,12 @@ class BlockedProductionTests(unittest.TestCase):
     def test_policy(self):
         return QuoteUnitLimitPolicy(frozenset({self.TEST_SOURCE}))
 
-    def test_current_blocker_is_external_market_contract(self):
+    def test_missing_quote_maximum_is_not_a_production_blocker(self):
         blockers = active_production_blockers(now=self.NOW)
-        self.assertEqual(len(blockers), 1)
-        blocker = blockers[0]
-        self.assertEqual(blocker.blocker_id, QUOTE_LIMIT_BLOCKER_ID)
-        self.assertEqual(blocker.category, "MARKET_CONTRACT")
-        self.assertTrue(blocker.external_dependency)
-        self.assertEqual(blocker.authorization_impact, "BLOCKS_REAL_MONEY")
-        self.assertIn("No safe workaround is approved", blocker.evidence)
+        self.assertEqual(blockers, ())
+        self.assertNotIn(QUOTE_LIMIT_BLOCKER_ID, {item.blocker_id for item in blockers})
 
-    def test_blocker_requires_policy_and_validated_evidence(self):
+    def test_optional_quote_maximum_evidence_never_creates_blocker(self):
         valid = self.evidence()
         scenarios = (
             (QuoteUnitLimitPolicy(frozenset()), valid),
@@ -63,12 +58,12 @@ class BlockedProductionTests(unittest.TestCase):
         )
         for policy, evidence in scenarios:
             with self.subTest(policy=policy, evidence=evidence):
-                self.assertEqual(len(active_production_blockers(now=self.NOW, quote_limit_policy=policy, quote_limit_evidence=evidence)), 1)
+                self.assertEqual(active_production_blockers(now=self.NOW, quote_limit_policy=policy, quote_limit_evidence=evidence), ())
         self.assertEqual(active_production_blockers(now=self.NOW, quote_limit_policy=self.test_policy, quote_limit_evidence=valid), ())
 
     def test_production_policy_remains_blocked_even_with_valid_test_evidence(self):
         self.assertEqual(contract_status()["approved_quote_unit_limit_source_count"], 0)
-        self.assertTrue(active_production_blockers(now=self.NOW, quote_limit_evidence=self.evidence()))
+        self.assertFalse(active_production_blockers(now=self.NOW, quote_limit_evidence=self.evidence()))
 
     def test_capability_snapshot_uses_same_validated_evidence(self):
         confirmed = current_contract_capabilities(now=self.NOW, quote_limit_policy=self.test_policy, quote_limit_evidence=self.evidence())
@@ -76,6 +71,7 @@ class BlockedProductionTests(unittest.TestCase):
         self.assertEqual(confirmed.quote_unit_maximum_source, "/test/quote-limit:maxQuote")
         production = current_contract_capabilities(now=self.NOW)
         self.assertFalse(production.quote_unit_maximum_supported)
+        self.assertFalse(production.quote_unit_maximum_required)
         self.assertIsNone(production.quote_unit_maximum_source)
         status = contract_status(now=self.NOW, quote_limit_policy=self.test_policy, quote_limit_evidence=self.evidence())
         self.assertEqual(status["production_quote_limit_conclusion"], "QUOTE_UNIT_MAX_CONFIRMED")
@@ -89,7 +85,7 @@ class BlockedProductionTests(unittest.TestCase):
         self.assertEqual(contract_status()["approved_quote_unit_limit_source_count"], 0)
         self.assertFalse(contract_status()["capabilities"]["quote_unit_maximum_supported"])
         # Capability drift is informational; it never changes production policy/evidence.
-        self.assertTrue(active_production_blockers(now=self.NOW))
+        self.assertFalse(active_production_blockers(now=self.NOW))
 
     def test_drift_detects_removal_and_contract_change(self):
         before = current_contract_capabilities()
@@ -109,8 +105,7 @@ class BlockedProductionTests(unittest.TestCase):
         ledger.write_text("")
         with patch("btc_dca_bridge.operations.load_execution_config", return_value=ExecutionConfig("1.0.0", False, True, True, 500, "Bybit", "spot", "BTCUSDT", "not_implemented")):
             result = OperationsService(data_root=root / "data", ledger_path=ledger).health()
-        self.assertEqual(result["status"], "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY")
-        self.assertEqual(result["blockers"][0]["category"], "MARKET_CONTRACT")
+        self.assertEqual(result["status"], "HEALTHY")
 
     def _health(self, *, ledger_text="", blocker_evaluator=None):
         root = Path(tempfile.mkdtemp())
@@ -132,8 +127,7 @@ class BlockedProductionTests(unittest.TestCase):
         with patch("btc_dca_bridge.operations.load_execution_config", return_value=ExecutionConfig("1.0.0", False, True, True, 500, "Bybit", "spot", "BTCUSDT", "not_implemented")), patch.object(OperationsService, "snapshot", return_value=fake_snapshot):
             result = OperationsService(data_root=root / "data", ledger_path=ledger, blocker_evaluator=lambda **_: blocker).health()
         self.assertEqual(result["status"], "HEALTHY_WITH_UNRESOLVED_RECONCILIATION")
-        self.assertEqual(result["external_dependency_state"], "PRODUCTION_BLOCKED_EXTERNAL_CONTRACT")
-        self.assertEqual(len(result["external_blockers"]), 1)
+        self.assertNotIn("external_dependency_state", result)
 
     def test_health_corruption_precedes_external_blocker(self):
         result = self._health(ledger_text="not-json\n")

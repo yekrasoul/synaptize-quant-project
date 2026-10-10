@@ -75,3 +75,17 @@ skipped:
 
 Evidence, readiness, credentials, a canary manifest, or a software merge is
 not authorization. This runbook stops before approval or execution.
+# Quote-sized order constraint
+
+The live payload is an exact Bybit Spot BTCUSDT Market Buy with
+`marketUnit=quoteCoin`; its `qty` is the approved USDT amount. Do not derive a
+quote ceiling from `maxMarketOrderQty`, multiply by market price, use wallet
+balances as a fake maximum, or revive deprecated `maxOrderAmt`. Current
+non-borrowed Spot availability from
+`/v5/order/spot-borrow-check:spotMaxTradeAmount` remains mandatory, as do the
+monthly cap, minimum amount, identity, approval, freshness, liability,
+duplicate-submission, reconciliation, and exactly-once ledger controls.
+
+If Bybit rejects the request for an exchange-side limit, record
+`exchange_rejected`/`rejected_by_exchange`, do not retry or top up, assume no
+fill, and do not append the ledger. This is not an acceptance guarantee.

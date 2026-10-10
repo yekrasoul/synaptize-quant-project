@@ -1,84 +1,100 @@
 # Phase 5.9 — Blocked Production Mode
 
-The current production state is intentionally fail-closed:
+This phase documents a fail-closed, observe-only production posture. The
+absence of an independently exposed quote-denominated maximum is not itself
+the reason for the posture and is not an active production blocker for the
+approved quote-sized Spot Market Buy.
 
-- `QUOTE_UNIT_MAX_NOT_EXPOSED`
-- production readiness: `NOT_READY`
-- preauthorization: `BLOCKED`
-- real-money authorization: `NOT_AUTHORIZED`
+## Authoritative contract state
 
-This is a healthy software state with an external Bybit contract dependency. It
-is reported as `PRODUCTION_BLOCKED_EXTERNAL_CONTRACT` and as
-`HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY` by operational health. It is not a
-software defect and it does not authorize or enable execution.
+For the exact Bybit operation:
 
-The reviewed contract exposes `spotMaxTradeAmount` through the read-only Spot
-borrow-check path for account availability, but does not expose an authoritative
-quote-denominated maximum for the exact BTCUSDT Spot Market Buy using
-`marketUnit=quoteCoin`. Base-quantity maximums cannot be multiplied by a ticker
-price: execution price and slippage semantics would be invented. The Pre Check
-Order POST is not used, and no order-create probe is used.
+- `category=spot`
+- `symbol=BTCUSDT`
+- `side=Buy`
+- `orderType=Market`
+- `marketUnit=quoteCoin`
+
+the payload `qty` is the exact approved USDT amount. The reviewed capability
+state is:
+
+```text
+quote_unit_maximum_supported = false
+quote_unit_maximum_required = false
+production_quote_limit_conclusion = QUOTE_UNIT_MAX_NOT_REQUIRED
+real_money_authorization = NOT_AUTHORIZED
+```
+
+`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` is not an active production blocker under
+this approved quote-sized operation. `production-blockers` must not report it
+solely because independent quote maximum evidence is absent. The capability
+state remains truthful: no fake maximum is fabricated and no
+`QUOTE_UNIT_MAX_CONFIRMED` conclusion is emitted.
+
+`maxOrderAmt` remains deprecated and unused. `maxMarketOrderQty` remains
+authoritative Bybit quantity/base-side metadata only; it is never multiplied
+by market price and never converted into a USDT ceiling. No ticker-derived
+limit, wallet-derived limit, deprecated field, or state-changing pre-check
+POST is used.
 
 ## Contract research verification — 2026-10-10
 
-Official Bybit documentation was re-reviewed on 2026-10-10. The Spot borrow
-quota contract still documents `spotMaxTradeAmount` as the actual non-borrowed
-quote-coin amount available for Spot trading, so the existing account
-availability source remains semantically valid.
+The reviewed Bybit Spot order contract supports Market Buy by quote value
+through `marketUnit=quoteCoin`. The Spot instrument contract exposes
+`maxMarketOrderQty` as a maximum order quantity and identifies `maxOrderAmt`
+as deprecated. Therefore the absence of a separately exposed quote maximum is
+an exchange-validity consideration, not an overspend path.
 
-The Spot order contract still supports Market Buy by quote value through
-`marketUnit=quoteCoin`. However, the Spot instruments contract exposes
-`maxMarketOrderQty` as a maximum order quantity, while the former
-`maxOrderAmt` field remains deprecated. Bybit's current Spot trading rules
-likewise describe the single-order maximum as a quantity limit, not an
-authoritative quote-denominated ceiling for this exact API operation.
+The account-scoped, non-borrowed Spot availability check remains mandatory:
+`/v5/order/spot-borrow-check:spotMaxTradeAmount`. The intended quote amount
+must remain within that authoritative current availability, as well as the
+monthly cap and instrument minimum.
 
-No reviewed official source therefore satisfies the production
-`QuoteUnitLimitEvidence` contract. The approved source set remains empty and
-`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` remains active. No conversion, heuristic,
-POST pre-check, or order probe was introduced.
+If an exact quote-sized order exceeds an exchange-side quantity or risk limit,
+the expected safe result is an explicit exchange rejection. It is never
+retried or topped up, no fill is assumed, no BTC purchase is claimed, and no
+ledger row is appended. This policy does not guarantee that Bybit accepts the
+order.
 
-The operator commands `production-blockers` and `contract-status` are read-only.
-They report the active `MARKET_CONTRACT` blocker, current capability snapshot,
-and the immutable authorization state. The blocker clears only when both an
-explicitly approved source policy and fresh `QuoteUnitLimitEvidence` pass the
-shared quote-limit validator. Policy presence alone and evidence alone are
-insufficient. The current Bybit provider reports `NOT_EXPOSED`, and the
-production approved-source set remains empty.
+## Remaining safety boundaries
+
+The following controls remain required before any possible submission:
+
+- exact Decision `final_purchase_usd`, OrderIntent amount, and LiveApproval
+  identity/amount;
+- current calendar-month spend and the hard `$500` cap;
+- authoritative non-borrowed `spotMaxTradeAmount` availability;
+- no liabilities or borrowing;
+- exact Bybit Spot BTCUSDT identity and exact quote-denominated payload;
+- duplicate and ambiguous-submission protection;
+- fresh approval, account, instrument, and availability evidence;
+- post-ACK reconciliation; and
+- exactly-once ledger append from authoritative fills only.
+
+Checked-in production safety remains disabled:
+
+```text
+live_execution_enabled = false
+kill_switch = true
+order_submission = not_implemented
+real_money_authorization = NOT_AUTHORIZED
+```
+
+Consequently, this document describes a blocked/observe-only operational mode,
+not authorization or activation of real-money execution. Other independent
+safety, freshness, liability, availability, configuration, or reconciliation
+failures remain blocking when present.
 
 ## Future contract-change boundary
 
 A future Bybit documentation or API change does not automatically become
-trusted. The required sequence is:
+trusted. Any future capability change still requires official-source research,
+manual semantic review, explicit validator/policy changes, offline tests,
+reviewed merge, fresh evidence, and separate real-money authorization.
 
-1. discover an official source;
-2. manually research its semantics;
-3. review the endpoint and field for the exact operation;
-4. update the shared validator;
-5. update the production policy explicitly;
-6. pass offline tests;
-7. complete PR review;
-8. recollect production evidence;
-9. reevaluate readiness;
-10. obtain separate real-money authorization.
-
-Capability comparison is informational only. A `CAPABILITY_ADDED` result never
-changes `APPROVED_QUOTE_UNIT_LIMIT_SOURCES` automatically.
-
-## Operator interpretation
-
-Health checks integrity first, then execution configuration, unresolved
-submission/reconciliation state, and finally external contract blockers. If
-reconciliation is unresolved, health reports
-`HEALTHY_WITH_UNRESOLVED_RECONCILIATION` and may include the external blocker
-as supplemental context. `HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY` means internal
-operational state is otherwise healthy while an external contract prerequisite
-is missing. `CORRUPT` means software evidence cannot be trusted. These states
-permit observation and recovery only; none permits an order.
-
-`live_execution_enabled=false`, `kill_switch=true`, and
-`order_submission=not_implemented` remain checked-in production defaults.
+Capability comparison is informational only. A capability change never grants
+authorization or changes the checked-in execution defaults.
 
 NO REAL ORDER EXECUTED
 LIVE TRADING NOT ACTIVATED
-REAL-MONEY CANARY STILL REQUIRES SEPARATE EXPLICIT USER AUTHORIZATION
+REAL-MONEY AUTHORIZATION REMAINS NOT_AUTHORIZED

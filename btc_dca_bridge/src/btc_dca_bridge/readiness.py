@@ -281,21 +281,15 @@ class ProductionReadinessService:
             else:
                 quote_limit_error = ""
             v1_results: dict[str, str] = {}
-            try:
-                quote_maximum = validate_quote_unit_limit_evidence(quote_limit_evidence, now=self.now(), policy=self.quote_limit_policy)
-            except QuoteUnitLimitValidationError as exc:
-                for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
+            for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
+                try:
+                    rules.validate_quote(amount)
+                    v1_results[str(amount)] = "PASS"
+                except Exception as exc:
                     v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
-            else:
-                for amount in (Decimal("10"), Decimal("25"), Decimal("50"), Decimal("75"), Decimal("100")):
-                    try:
-                        rules.validate_quote(amount)
-                        if amount > quote_maximum: raise ValueError("quote amount exceeds authoritative quoteCoin market-buy maximum")
-                        v1_results[str(amount)] = "PASS"
-                    except Exception as exc:
-                        v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
             valid_ranges = all(value == "PASS" for value in v1_results.values())
-            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin contract proves V1 $10-$100" if valid_ranges else (quote_limit_error or "quoteCoin market-buy upper bound cannot be proven from current authoritative fields"), "Implement an official quote-unit upper-bound source; PROPOSED V2 CHANGE REQUIRED if V1 limits must change")
+            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin minimum/precision contract proves V1 $10-$100; quote maximum is not required for this quote-sized operation" if valid_ranges else "authoritative Spot instrument minimum/precision cannot be proven", "Repair the authoritative Spot instrument metadata")
+            add("BYBIT_QUOTE_UNIT_MAXIMUM", "instrument", "NOT_APPLICABLE", False, "marketUnit=quoteCoin makes the submitted qty the exact USDT amount", "an independent quote-denominated maximum is not required for this operation; an exchange-side violation is an explicit rejection", "")
             add("DETERMINISTIC_ORDER_ID", "operations", "PASS", True, "client order identity and orderLinkId are supported", "deterministic identity support is present")
         except PrivateBybitError as exc:
             add("BYBIT_READ_ACCESS", "network", "UNAVAILABLE", True, "private read failed", str(exc), "Provide working authenticated read-only access")

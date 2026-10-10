@@ -133,7 +133,7 @@ class CliOperationsTests(unittest.TestCase):
         self.assertEqual((code, audit["status"]), (0, "complete"), audit)
         self.assertIn(self.recovery_run, audit["related_run_ids"])
         code, health, _ = self.invoke(["ops-health", "--data-root", str(self.data), "--ledger", str(self.ledger), "--json"])
-        self.assertEqual((code, health["status"]), (0, "HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY"))
+        self.assertEqual((code, health["status"]), (0, "HEALTHY"))
         original_row = rows[0]
         for change in ({"order_id": "wrong-order"}, {"order_link_id": "dca-" + "b" * 32}, {"canary_id": "canary-" + "b" * 32}, {"approval_id": "approval-" + "b" * 32}, {"execution_id_bybit": "exec-cli-a"}, {"executed_usd": 25.0}, {"btc_quantity": 0.0003}, {"reference_price_usdt": 100000}, {"fee": 0.03}, {"fee_asset": "BTC"}):
             with self.subTest(change=change):

@@ -95,7 +95,7 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(manifest.pre_submission_state, "conclusively_absent")
         self.assertEqual(manifest.live_execution_enabled, False)
         self.assertEqual(manifest.kill_switch, True)
-        self.assertEqual(len(self.client.calls), 7)
+        self.assertEqual(len(self.client.calls), 6)
         self.assertTrue(result.artifact_receipt.path.exists())
         self.assertEqual(self.ledger.read_bytes(), b"")
         self.assertFalse((self.root / "data" / "order_submission_attempts").exists())
@@ -138,12 +138,12 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(result.manifest.approved_amount_usdt, Decimal("25"))
         self.assertEqual(result.order_payload["qty"], "25")
 
-    def test_missing_quote_unit_limit_blocks_preparation(self):
+    def test_missing_quote_unit_limit_does_not_block_preparation(self):
         client = FakeReadClient()
         client.quote_unit_limit_evidence = lambda: unavailable_quote_unit_limit(observed_at_utc="2026-10-07T12:00:00Z")
         result = self.prepare(client=client, data=self.root / "data-no-quote-limit")
-        self.assertEqual(result.manifest.canary_status, "BLOCKED")
-        self.assertIn("External Bybit contract blocker", " ".join(result.manifest.reasons))
+        self.assertEqual(result.manifest.canary_status, "READY_FOR_MANUAL_APPROVAL")
+        self.assertNotIn("quote-unit maximum", " ".join(result.manifest.reasons))
 
     def test_malformed_availability_and_account_context_fail_closed(self):
         malformed = FakeReadClient(balances=(

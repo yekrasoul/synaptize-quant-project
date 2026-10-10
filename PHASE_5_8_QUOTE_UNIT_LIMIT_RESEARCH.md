@@ -31,3 +31,22 @@ Official sources:
 - https://bybit-exchange.github.io/docs/v5/account/instrument
 - https://bybit-exchange.github.io/docs/v5/order/pre-check-order
 - https://bybit-exchange.github.io/docs/v5/market/order-price-limit
+# Reviewed policy transition: quote-sized Spot Market Buy
+
+For `category=spot`, `symbol=BTCUSDT`, `side=Buy`, `orderType=Market`, and
+`marketUnit=quoteCoin`, Bybit interprets `qty` as the exact submitted USDT
+quote amount. The deprecated Spot `maxOrderAmt` is no longer checked. The
+current `lotSizeFilter.maxMarketOrderQty` is quantity/base-side metadata and
+must not be multiplied by a ticker price or treated as a quote-USDT ceiling.
+
+Accordingly, an independently exposed quote maximum is not required for this
+exact operation. An order that violates an exchange-side quantity or risk
+limit may be explicitly rejected; that rejection is fail-safe, is never
+retried, assumes no fill, and appends no ledger execution. This does not claim
+that Bybit guarantees acceptance.
+
+The required controls remain the exact Decision, OrderIntent, LiveApproval,
+monthly cap, instrument minimum, authoritative non-borrowed
+`/v5/order/spot-borrow-check:spotMaxTradeAmount`, no liabilities, exact
+Bybit identity/payload, duplicate protection, fresh evidence, reconciliation,
+and exactly-once append from authoritative fills only.

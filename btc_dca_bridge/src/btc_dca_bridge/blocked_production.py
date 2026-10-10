@@ -19,9 +19,9 @@ from .quote_limits import (
 QUOTE_LIMIT_BLOCKER_ID = "BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED"
 _USE_PRODUCTION_EVIDENCE = object()
 QUOTE_LIMIT_BLOCKED_MESSAGE = (
-    "External Bybit contract blocker: authoritative quote-unit maximum for "
-    "BTCUSDT Spot Market Buy with marketUnit=quoteCoin is not exposed. "
-    "No safe workaround is approved. Production execution remains disabled."
+    "No independent quote-unit maximum is exposed for this exact quote-sized "
+    "Spot Market Buy; the submitted quote amount remains bounded by the "
+    "approved payload and exchange rejection remains fail-safe."
 )
 
 
@@ -65,13 +65,15 @@ class ExchangeContractCapabilities:
     account_mode_supported: bool
     verified_at_utc: str
     documentation_version: str
+    quote_unit_maximum_required: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ExchangeContractCapabilities":
-        fields = {field: value[field] for field in cls.__dataclass_fields__}
+        fields = {field: value[field] for field in cls.__dataclass_fields__ if field in value}
+        fields.setdefault("quote_unit_maximum_required", False)
         return cls(**fields)
 
 
@@ -125,6 +127,7 @@ def current_contract_capabilities(
         spot_quote_availability_supported=True,
         quote_unit_maximum_source=quote_source,
         quote_unit_maximum_supported=quote_supported,
+        quote_unit_maximum_required=quote_limit_policy.quote_unit_maximum_required,
         market_unit_quote_coin_supported=True,
         instrument_minimum_supported=True,
         account_mode_supported=True,
@@ -141,26 +144,24 @@ def active_production_blockers(
 ) -> tuple[ProductionBlocker, ...]:
     current = now or datetime.now(UTC)
     evidence = _production_quote_limit_evidence() if quote_limit_evidence is _USE_PRODUCTION_EVIDENCE else quote_limit_evidence
-    supported, _ = _validated_quote_limit(
-        evidence=evidence, policy=quote_limit_policy, now=current
-    )
-    if supported:
-        return ()
-    timestamp = _utc(current)
-    return (ProductionBlocker(
-        blocker_id=QUOTE_LIMIT_BLOCKER_ID,
-        category="MARKET_CONTRACT",
-        severity="BLOCKING",
-        source="Bybit V5 Spot contract",
-        status="ACTIVE",
-        first_observed_at_utc=timestamp,
-        last_observed_at_utc=timestamp,
-        retryable=False,
-        external_dependency=True,
-        remediation="Obtain and manually review an official authoritative quote-unit maximum; update the shared validator and production policy through a reviewed PR, then recollect evidence.",
-        evidence=QUOTE_LIMIT_BLOCKED_MESSAGE,
-        authorization_impact="BLOCKS_REAL_MONEY",
-    ),)
+    supported, _ = _validated_quote_limit(evidence=evidence, policy=quote_limit_policy, now=current)
+    if quote_limit_policy.quote_unit_maximum_required and not supported:
+        timestamp = _utc(current)
+        return (ProductionBlocker(
+            blocker_id=QUOTE_LIMIT_BLOCKER_ID,
+            category="MARKET_CONTRACT",
+            severity="BLOCKING",
+            source="Bybit V5 Spot contract",
+            status="ACTIVE",
+            first_observed_at_utc=timestamp,
+            last_observed_at_utc=timestamp,
+            retryable=False,
+            external_dependency=True,
+            remediation="Obtain and manually review an official authoritative quote-unit maximum.",
+            evidence=QUOTE_LIMIT_BLOCKED_MESSAGE,
+            authorization_impact="BLOCKS_REAL_MONEY",
+        ),)
+    return ()
 
 
 def compare_contract_capabilities(previous: ExchangeContractCapabilities | Mapping[str, Any], current: ExchangeContractCapabilities | Mapping[str, Any]) -> ContractDrift:
@@ -192,7 +193,7 @@ def contract_status(
     capabilities = current_contract_capabilities(
         now=now, quote_limit_policy=quote_limit_policy, quote_limit_evidence=evidence
     )
-    conclusion = "QUOTE_UNIT_MAX_CONFIRMED" if capabilities.quote_unit_maximum_supported else "QUOTE_UNIT_MAX_NOT_EXPOSED"
+    conclusion = "QUOTE_UNIT_MAX_CONFIRMED" if capabilities.quote_unit_maximum_supported else "QUOTE_UNIT_MAX_NOT_REQUIRED"
     return {
         "capabilities": capabilities.to_dict(),
         "production_quote_limit_conclusion": conclusion,

@@ -16,10 +16,13 @@ class QuoteUnitLimitPolicy:
     approved_sources: FrozenSet[tuple[str, str]]
     max_age: timedelta = timedelta(minutes=10)
     future_tolerance: timedelta = timedelta(seconds=5)
+    quote_unit_maximum_required: bool = False
 
 
 APPROVED_QUOTE_UNIT_LIMIT_SOURCES = frozenset()
-PRODUCTION_QUOTE_UNIT_LIMIT_POLICY = QuoteUnitLimitPolicy(APPROVED_QUOTE_UNIT_LIMIT_SOURCES)
+PRODUCTION_QUOTE_UNIT_LIMIT_POLICY = QuoteUnitLimitPolicy(
+    APPROVED_QUOTE_UNIT_LIMIT_SOURCES, quote_unit_maximum_required=False
+)
 
 
 @dataclass(frozen=True)

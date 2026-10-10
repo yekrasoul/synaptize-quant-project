@@ -210,7 +210,7 @@ class ReadinessTests(unittest.TestCase):
                 result = self.evaluate(client_factory=lambda client=client: client, availability_policy=SpotQuoteAvailabilityPolicy(frozenset({("/v5/order/spot-borrow-check", "spotMaxTradeAmount")}), frozenset({"UNIFIED"})))
                 self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_SPOT_AVAILABLE_BALANCE")["status"], expected)
 
-    def test_instrument_proof_covers_all_v1_amounts_and_requires_quote_upper_bound(self):
+    def test_instrument_proof_covers_all_v1_amounts_without_quote_upper_bound(self):
         result = self.evaluate()
         instrument = next(item for item in result["checks"] if item["check_id"] == "BYBIT_INSTRUMENT")
         self.assertEqual(instrument["status"], "PASS")
@@ -220,6 +220,7 @@ class ReadinessTests(unittest.TestCase):
         no_upper.rules = InstrumentRules(Decimal("10"), Decimal("0.00001"), Decimal("0.00001"), Decimal("0.01"), max_market_order_qty=Decimal("100000"))
         blocked = self.evaluate(client_factory=lambda: no_upper)
         self.assertEqual(next(item for item in blocked["checks"] if item["check_id"] == "BYBIT_INSTRUMENT")["status"], "PASS")
+        self.assertEqual(next(item for item in result["checks"] if item["check_id"] == "BYBIT_QUOTE_UNIT_MAXIMUM")["status"], "NOT_APPLICABLE")
 
     def test_instrument_minimum_above_v1_floor_fails_closed(self):
         client = FakeReadinessClient()

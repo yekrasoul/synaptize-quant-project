@@ -23,6 +23,7 @@ class QuoteUnitLimitTests(unittest.TestCase):
 
     def test_production_policy_has_no_approved_source(self):
         self.assertEqual(PRODUCTION_QUOTE_UNIT_LIMIT_POLICY.approved_sources, frozenset())
+        self.assertFalse(PRODUCTION_QUOTE_UNIT_LIMIT_POLICY.quote_unit_maximum_required)
         with self.assertRaises(QuoteUnitLimitValidationError):
             validate_quote_unit_limit_evidence(self.evidence(), now=self.now)
 
@@ -70,6 +71,13 @@ class QuoteUnitLimitTests(unittest.TestCase):
                 ceiling = validate_quote_unit_limit_evidence(self.evidence(maximum_quote_usdt=maximum), now=self.now, policy=self.policy)
                 for amount in ("10", "25", "50", "75", "100"):
                     self.assertEqual(Decimal(amount) <= ceiling, amount in passing)
+
+    def test_missing_quote_maximum_is_not_required_for_quote_sized_operation(self):
+        self.assertFalse(PRODUCTION_QUOTE_UNIT_LIMIT_POLICY.quote_unit_maximum_required)
+        self.assertIsNone(QuoteUnitLimitEvidence.from_mapping({
+            **self.evidence().to_dict(), "maximum_quote_usdt": None,
+            "authoritative": False, "conclusion": "NOT_EXPOSED",
+        }).maximum_quote_usdt)
 
 
 if __name__ == "__main__":
