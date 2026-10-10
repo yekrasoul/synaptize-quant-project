@@ -256,6 +256,9 @@ class ProductionReadinessService:
             add("BYBIT_ACCOUNT", "account", "PASS" if account_ok else "FAIL", True, str(account), account_reason, "Use Unified status 5 or 6 / REGULAR_MARGIN / OFF; do not use updatedTime age as request freshness; rely on the authenticated current GET, server-time clock check, and evidence observation timestamp")
             balances = {row.coin: row for row in client.wallet_balances()}
             mark_observed("wallet")
+            usdt = balances.get("USDT")
+            wallet_ok = usdt is not None and usdt.wallet_balance >= Decimal("10")
+            add("BYBIT_USDT_WALLET_BALANCE", "wallet", "PASS" if wallet_ok else "FAIL", True, f"wallet_balance_usdt={usdt.wallet_balance if usdt is not None else 'MISSING'}; minimum_canary_usdt=10", "USDT wallet balance is present and sufficient for the minimum controlled canary" if wallet_ok else "USDT wallet balance is missing or below the minimum controlled canary amount", "Fund the Spot USDT wallet with at least the approved minimum; do not resize the order dynamically")
             liabilities = any(row.has_liability for row in balances.values() if row.coin in {"BTC", "USDT"})
             add("BYBIT_LIABILITIES", "wallet", "FAIL" if liabilities else "PASS", True, "BTC/USDT liability fields inspected", "BTC/USDT liabilities or accrued interest present" if liabilities else "no BTC/USDT liabilities or accrued interest")
             available = client.spot_quote_availability() if hasattr(client, "spot_quote_availability") else None
@@ -288,7 +291,19 @@ class ProductionReadinessService:
                 except Exception as exc:
                     v1_results[str(amount)] = f"UNAVAILABLE: {exc}"
             valid_ranges = all(value == "PASS" for value in v1_results.values())
-            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, str(v1_results), "BTCUSDT Spot quoteCoin minimum/precision contract proves V1 $10-$100; quote maximum is not required for this quote-sized operation" if valid_ranges else "authoritative Spot instrument minimum/precision cannot be proven", "Repair the authoritative Spot instrument metadata")
+            instrument_evidence = {
+                "quote_minimum": str(rules.quote_minimum),
+                "base_quantity_minimum": str(rules.base_quantity_minimum),
+                "quantity_step": str(rules.quantity_step),
+                "price_tick_size": str(rules.price_tick_size),
+                "quote_precision": str(rules.quote_precision) if rules.quote_precision is not None else None,
+                "max_market_order_qty": str(rules.max_market_order_qty) if rules.max_market_order_qty is not None else None,
+                "max_limit_order_qty": str(rules.max_limit_order_qty) if rules.max_limit_order_qty is not None else None,
+                "market_order_qty_unit": rules.market_order_qty_unit,
+                "market_buy_quote_maximum": str(rules.market_buy_quote_maximum) if rules.market_buy_quote_maximum is not None else None,
+                "v1_amount_checks": v1_results,
+            }
+            add("BYBIT_INSTRUMENT", "instrument", "PASS" if valid_ranges else "UNAVAILABLE", True, f"constraints={json.dumps(instrument_evidence, sort_keys=True)}; v1_results={v1_results}", "BTCUSDT Spot quoteCoin minimum/precision contract proves V1 $10-$100; quote maximum is not required for this quote-sized operation" if valid_ranges else "authoritative Spot instrument minimum/precision cannot be proven", "Repair the authoritative Spot instrument metadata")
             add("BYBIT_QUOTE_UNIT_MAXIMUM", "instrument", "NOT_APPLICABLE", False, "marketUnit=quoteCoin makes the submitted qty the exact USDT amount", "an independent quote-denominated maximum is not required for this operation; an exchange-side violation is an explicit rejection", "")
             add("DETERMINISTIC_ORDER_ID", "operations", "PASS", True, "client order identity and orderLinkId are supported", "deterministic identity support is present")
         except PrivateBybitError as exc:

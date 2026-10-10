@@ -43,6 +43,7 @@ from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
 from .readiness import ProductionReadinessService, production_connectivity
+from .canary_readiness import bybit_canary_readiness
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
@@ -202,6 +203,9 @@ def _parser() -> argparse.ArgumentParser:
     enable_status.add_argument("--enablement-id")
     enable_status.add_argument("--data-root", type=Path, default=DATA_PATH)
     subparsers.add_parser("final-readiness-audit", help="read-only final production readiness audit")
+    canary_readiness = subparsers.add_parser("bybit-canary-readiness", help="read-only Bybit Spot BTCUSDT canary readiness audit")
+    canary_readiness.add_argument("--data-root", type=Path, default=DATA_PATH)
+    canary_readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     guardian = subparsers.add_parser("branch-guardian-classify", help="classify a branch diff without merging")
     guardian.add_argument("--branch", required=True); guardian.add_argument("--head-sha", required=True); guardian.add_argument("--base-sha", required=True)
     guardian.add_argument("--changed-files", type=Path, required=True); guardian.add_argument("--diff", type=Path, required=True); guardian.add_argument("--output", type=Path, required=True)
@@ -679,6 +683,11 @@ def _final_readiness_audit() -> tuple[dict[str, object], int]:
     return result, {"CORRUPT": EXIT_CORRUPT, "RECONCILIATION_REQUIRED": EXIT_RECONCILIATION}.get(result["readiness"], EXIT_BLOCKED)
 
 
+def _bybit_canary_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    result = bybit_canary_readiness(data_root=args.data_root, ledger_path=args.ledger)
+    return result, 0 if result["readiness"] == "CANARY_READY_READ_ONLY" else EXIT_BLOCKED
+
+
 def _branch_guardian_classify(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     result = classify_branch(branch=args.branch, head_sha=args.head_sha, base_sha=args.base_sha,
         changed_files=args.changed_files.read_text(encoding="utf-8").splitlines(), diff_text=args.diff.read_text(encoding="utf-8"), bootstrap=args.bootstrap)
@@ -928,6 +937,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _production_enable_status(args)
         elif args.command == "final-readiness-audit":
             result, exit_code = _final_readiness_audit()
+        elif args.command == "bybit-canary-readiness":
+            result, exit_code = _bybit_canary_readiness(args)
         elif args.command == "branch-guardian-classify":
             result, exit_code = _branch_guardian_classify(args)
         elif args.command == "canary-prepare":
