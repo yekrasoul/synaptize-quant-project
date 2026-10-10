@@ -283,9 +283,39 @@ class CanaryPreparer:
             prepared_at, expires_at, config.live_execution_enabled, config.kill_switch,
             "READY_FOR_MANUAL_APPROVAL" if not reasons else "BLOCKED", tuple(dict.fromkeys(reasons)))
         try:
-            receipt = self.artifact_store.persist(ArtifactType.CANARY_MANIFEST, manifest, run_id=run_id)
+            self.artifact_store.persist(
+                ArtifactType.ORDER_INTENT,
+                intent,
+                run_id=run_id,
+            )
+        except ArtifactAlreadyExistsError:
+            try:
+                persisted_intent, _ = self.artifact_store.find_artifact(
+                    ArtifactType.ORDER_INTENT,
+                    identity_field="order_intent_id",
+                    identity_value=intent.order_intent_id,
+                )
+            except Exception as exc:
+                raise CanaryPreparationError(
+                    "existing order intent could not be verified"
+                ) from exc
+
+            if persisted_intent != intent.to_dict():
+                raise CanaryPreparationError(
+                    "existing order intent does not exactly match canonical intent"
+                )
+
+        try:
+            receipt = self.artifact_store.persist(
+                ArtifactType.CANARY_MANIFEST,
+                manifest,
+                run_id=run_id,
+            )
         except ArtifactAlreadyExistsError as exc:
-            raise CanaryPreparationError("canary manifest identity already exists; create a new preparation run") from exc
+            raise CanaryPreparationError(
+                "canary manifest identity already exists; create a new preparation run"
+            ) from exc
+
         return CanaryPreparationResult(manifest, receipt, payload)
 
     @staticmethod
