@@ -28,9 +28,12 @@ from .live_readiness import LiveExecutionApproval
 from .market_data.http import HttpResponse
 from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification, credential_scope_allows_spot_execution
 from .schemas import validate_artifact, validate_live_approval
+from .ttl_policy import CANARY_MANIFEST_TTL
 
 ORDER_CREATE_PATH = "/v5/order/create"
 RECV_WINDOW = "5000"
+RECONCILIATION_REQUIRED_RETCODES = frozenset({10000, 10006, 10014, 10016, 110072})
+RECONCILIATION_REQUIRED_HTTP_STATUSES = frozenset({408, 409, 425, 429})
 
 
 class LiveOrderSafetyError(ValueError): pass
@@ -268,6 +271,13 @@ class LiveOrderEngine:
     def _fingerprint(request: SpotMarketBuyRequest) -> str:
         return hashlib.sha256(_canonical_json(request.to_payload()).encode()).hexdigest()
 
+    @staticmethod
+    def _checkpoint_run_id(run_id: str, label: str) -> str:
+        """Return a bounded deterministic identity for checkpoint artifacts."""
+        timestamp = run_id[4:20]
+        digest = hashlib.sha256(f"{run_id}:{label}".encode()).hexdigest()[:24]
+        return f"run_{timestamp}_{digest}_{label}"
+
     def _outcome(self, intent: OrderIntent, run_id: str, state: str, *, code: int | None = None, msg: str | None = None, order_id: str | None = None, returned_link: str | None = None, reconciliation: str = "not_applicable", category: str | None = None) -> SubmissionOutcome:
         if category is None: category = {"blocked": "request_not_sent", "ambiguous": "reconciliation_required", "rejected_by_exchange": "exchange_rejected", "acknowledged": "acknowledgement_received"}.get(state, "reconciliation_required")
         return SubmissionOutcome(run_id, intent.decision_id, intent.order_intent_id, intent.client_order_id, state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), code, msg, order_id, returned_link, reconciliation, True, category)
@@ -340,7 +350,7 @@ class LiveOrderEngine:
             prepared = _utc(str(manifest["prepared_at_utc"]))
             expires = _utc(str(manifest["expires_at_utc"]))
             if prepared > now_utc or not prepared <= now_utc < expires: raise LiveOrderSafetyError("canary manifest is future-dated or expired")
-            if expires - prepared > timedelta(minutes=15): raise LiveOrderSafetyError("canary manifest TTL exceeds 15 minutes")
+            if expires - prepared > CANARY_MANIFEST_TTL: raise LiveOrderSafetyError("canary manifest TTL exceeds canonical policy")
         except KeyError as exc: raise LiveOrderSafetyError("canary manifest timestamp is missing") from exc
         if config.live_execution_enabled is not True or config.kill_switch is not False: raise LiveOrderSafetyError("live execution requires explicit non-production test configuration; checked-in production defaults remain blocked")
         request = SpotMarketBuyRequest(intent.quote_amount_usdt, intent.client_order_id)
@@ -434,7 +444,7 @@ class LiveOrderEngine:
             raise LiveOrderSafetyError("reconciliation lacks authoritative order ID")
         artifact = SubmissionReconciliation(run_id, intent.decision_id, intent.order_intent_id, canary_id, approval_id, intent.client_order_id, evidence.order_id, evidence.state, self._now().astimezone(UTC).isoformat().replace("+00:00", "Z"), evidence.fills)
         digest = hashlib.sha256(_canonical_json(artifact.to_dict()).encode()).hexdigest()
-        artifact_run_id = f"{run_id}_recon_{digest[:16]}"
+        artifact_run_id = self._checkpoint_run_id(run_id, f"recon_{digest[:12]}")
         try:
             self.artifact_store.persist(ArtifactType.SUBMISSION_RECONCILIATION, artifact, run_id=artifact_run_id)
         except ArtifactAlreadyExistsError:
@@ -539,7 +549,7 @@ class LiveOrderEngine:
             return self._outcome(intent, run_id, "ambiguous", msg=f"reconciliation required: {exc}", returned_link=intent.client_order_id, reconciliation="ambiguous", category="reconciliation_required"), None
 
     def _parse_response(self, intent: OrderIntent, run_id: str, response: HttpResponse, post_ack_reconciler: PostAckReconciler, *, canary_id: str, approval_id: str) -> tuple[SubmissionOutcome, ReconciliationEvidence | None]:
-        if response.status >= 500:
+        if response.status >= 500 or response.status in RECONCILIATION_REQUIRED_HTTP_STATUSES:
             return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
         if response.status >= 400: return self._outcome(intent, run_id, "rejected_by_exchange", msg="HTTP response rejected submission", category="exchange_rejected"), None
         try: body = json.loads(response.body.decode())
@@ -548,10 +558,26 @@ class LiveOrderEngine:
         code, msg, result = body.get("retCode"), body.get("retMsg"), body.get("result")
         if code != 0:
             if not isinstance(code, int): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
+            # Duplicate identity and transient processing errors are not proof
+            # that the exchange rejected the order before accepting it.  The
+            # authoritative read-back by orderLinkId must dominate.
+            if code in RECONCILIATION_REQUIRED_RETCODES:
+                return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
             return self._outcome(intent, run_id, "rejected_by_exchange", code=code, msg=str(msg) if msg is not None else None, category="exchange_rejected"), None
         if not isinstance(result, dict): return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id)
         ack_order_id = result.get("orderId") if isinstance(result.get("orderId"), str) else None
         ack_order_link_id = result.get("orderLinkId") if isinstance(result.get("orderLinkId"), str) else None
         if ack_order_id is None or ack_order_link_id is None:
             return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)
+        acknowledgement = self._outcome(
+            intent, run_id, "acknowledged", code=code,
+            msg=str(msg) if msg is not None else None,
+            order_id=ack_order_id, returned_link=ack_order_link_id,
+            reconciliation="ambiguous", category="acknowledgement_received",
+        )
+        self.artifact_store.persist(
+            ArtifactType.ORDER_SUBMISSION_OUTCOME,
+            acknowledgement,
+            run_id=self._checkpoint_run_id(run_id, "ack"),
+        )
         return self._reconcile_after_possible_submission(intent, run_id, post_ack_reconciler, canary_id=canary_id, approval_id=approval_id, ack_order_id=ack_order_id, ack_order_link_id=ack_order_link_id)

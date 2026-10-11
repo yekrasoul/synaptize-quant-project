@@ -172,7 +172,10 @@ def create_execution_activation(
                 expires = datetime.fromisoformat(str(prior["expires_at_utc"]).replace("Z", "+00:00"))
             except (KeyError, ValueError) as exc:
                 raise LiveReadinessError("prior activation expiry is malformed") from exc
-            if prior.get("status") in {"ACTIVE", "CONSUMED", "REVOKED"} or now_utc.astimezone(UTC) < expires:
+            # An unconsumed ACTIVE artifact stops being usable at expiry and
+            # may be superseded append-only.  Consumed/revoked identities, or
+            # any still-live activation, remain permanently non-refreshable.
+            if prior.get("consumed") is True or prior.get("status") in {"CONSUMED", "REVOKED"} or now_utc.astimezone(UTC) < expires:
                 raise LiveReadinessError("an existing usable or consumed ExecutionActivation exists for this identity")
     activation = ExecutionActivation.from_authorization(
         authorization, authorization_sha256=authorization_sha256, approval=approval,

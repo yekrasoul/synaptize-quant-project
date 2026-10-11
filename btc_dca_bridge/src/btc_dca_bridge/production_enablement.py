@@ -350,8 +350,8 @@ class ControlledProductionExecutor:
         exact(ArtifactType.ORDER_INTENT, "order_intent_id", str(intent.order_intent_id), intent.to_dict(), order_intent_sha256 or artifact_sha256(intent.to_dict()))
         if evidence_sha256 is not None and artifact_sha256(evidence) != evidence_sha256:
             raise LiveReadinessError("production evidence SHA-256 binding is invalid")
-        if evidence.get("status") not in {"EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "EVIDENCE_COMPLETE_NOT_READY"}:
-            raise LiveReadinessError("production evidence is incomplete or stale")
+        if evidence.get("status") != "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION":
+            raise LiveReadinessError("production evidence is not ready for controlled execution")
         if evidence.get("real_money_authorization", {}).get("status") != "NOT_AUTHORIZED":
             raise LiveReadinessError("production evidence authorization boundary is invalid")
         if authorization.get("status") != "AUTHORIZED" or authorization.get("consumed") is not False:

@@ -113,6 +113,15 @@ class LiveActivationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expired"):
             issue_execution_capability(activation=activation_payload, activation_sha256=activation_sha, gate_a=ready, gate_b=ready, request_fingerprint=SHA, runtime_config=safe_config(), now_utc=NOW + timedelta(minutes=6))
 
+    def test_expired_unconsumed_activation_is_supersedable_append_only(self):
+        first, _ = self.activate()
+        replacement, _ = self.activate(
+            run_id="run_20261010T173800Z_actrefresh",
+            now_utc=NOW + timedelta(minutes=6),
+        )
+        self.assertNotEqual(first.activation_id, replacement.activation_id)
+        self.assertEqual(len(list(self.root.rglob("execution_activations/**/*.json"))), 2)
+
     def test_status_derives_consumption_from_submission_evidence_and_default_is_blocked(self):
         self.assertEqual(read_activation_status(store=ArtifactStore(self.root / "empty"))["activation"], "NOT_ACTIVATED")
         activation, _ = self.activate()

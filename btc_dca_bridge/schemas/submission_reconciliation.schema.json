@@ -9,7 +9,7 @@
     "decision_id": {"type": "string", "minLength": 1},
     "order_intent_id": {"type": "string", "minLength": 1},
     "canary_id": {"type": "string", "pattern": "^canary-[a-f0-9]{32}$"},
-    "approval_id": {"type": "string", "pattern": "^approval-[a-f0-9]{32}$"},
+    "approval_id": {"type": "string", "pattern": "^(?:approval|approval5b)-[a-f0-9]{32}$"},
     "client_order_id": {"type": "string", "pattern": "^dca-[a-f0-9]{32}$"},
     "order_id": {"type": ["string", "null"]},
     "reconciliation_state": {"enum": ["active", "partial", "confirmed", "SUBMISSION_UNKNOWN", "ACCEPTED", "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELLED", "REJECTED", "UNRESOLVED"]},

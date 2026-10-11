@@ -151,13 +151,23 @@ def append_execution_once(path: Path, payload: dict) -> bool:
                         raise LedgerValidationError("execution identity already exists with different evidence")
                     _mark_claim_recorded(claim_path, execution_id, digest, path.parent)
                     return False
-            fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            # Replace the complete JSONL image atomically.  A direct append can
+            # leave a truncated final JSON object if the process or filesystem
+            # fails mid-write; same-directory replace leaves either the old
+            # valid ledger or the complete new ledger.
+            prior_bytes = path.read_bytes() if path.exists() else b""
+            fd, raw = tempfile.mkstemp(prefix=f".{path.name}.{execution_id}.", dir=path.parent)
+            temporary = Path(raw)
             try:
-                os.write(fd, canonical.encode("utf-8"))
-                os.fsync(fd)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(prior_bytes)
+                    handle.write(canonical.encode("utf-8"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+                _fsync_directory(path.parent)
             finally:
-                os.close(fd)
-            _fsync_directory(path.parent)
+                temporary.unlink(missing_ok=True)
             _mark_claim_recorded(claim_path, execution_id, digest, path.parent)
             return True
         finally:

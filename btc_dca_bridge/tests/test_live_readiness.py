@@ -83,6 +83,7 @@ class LiveReadinessTests(unittest.TestCase):
             btc_liability=False, usdt_liability=False, borrow_state=False,
             spot_usdt_sufficient=True, spot_availability_fresh=True,
             instrument_metadata_fresh=True, clock_evidence_fresh=True,
+            clock_skew_within_limit=True, clock_measurement_quality_accepted=True,
             reconciliation_evidence_fresh=True, duplicate_execution=False,
             duplicate_attempt=False, reconciliation_required=False,
         )
@@ -146,6 +147,42 @@ class LiveReadinessTests(unittest.TestCase):
         self.assertEqual(first.status, GateStatus.READY_FOR_SUBMISSION)
         self.assertEqual(second.status, GateStatus.BLOCKED)
         self.assertIn("account identity changed", " ".join(second.reasons))
+
+    def test_mutable_balance_and_clock_snapshots_do_not_bind_as_identity(self):
+        approval = self.approval(state="PREPARED")
+        first = self.current(approval)
+        second = self.current(
+            approval,
+            spot_usdt_availability_fingerprint="c" * 64,
+            clock_skew_evidence_fingerprint="d" * 64,
+        )
+        gate_a, gate_b = LiveExecutionGate(approval, now=lambda: NOW).evaluate_a_then_b(first, second)
+        self.assertEqual(gate_a.status, GateStatus.READY_FOR_SUBMISSION)
+        self.assertEqual(gate_b.status, GateStatus.READY_FOR_SUBMISSION)
+
+    def test_instrument_semantic_change_and_clock_threshold_fail_closed(self):
+        approval = self.approval(state="PREPARED")
+        changed_instrument = LiveExecutionGate(approval, now=lambda: NOW).evaluate(
+            self.current(approval, instrument_metadata_fingerprint="c" * 64)
+        )
+        self.assertEqual(changed_instrument.status, GateStatus.BLOCKED)
+        self.assertIn("instrument_metadata_fingerprint changed", changed_instrument.reasons)
+        bad_clock = LiveExecutionGate(approval, now=lambda: NOW).evaluate(
+            self.current(approval, clock_skew_within_limit=False)
+        )
+        self.assertEqual(bad_clock.status, GateStatus.BLOCKED)
+        self.assertIn("clock skew exceeds", " ".join(bad_clock.reasons))
+
+    def test_changed_ledger_totals_are_threshold_checked_not_approval_identity(self):
+        approval = self.approval(state="PREPARED")
+        still_safe = LiveExecutionGate(approval, now=lambda: NOW).evaluate(
+            self.current(approval, monthly_spent_usdt="5", remaining_monthly_budget_usdt="495")
+        )
+        self.assertEqual(still_safe.status, GateStatus.READY_FOR_SUBMISSION)
+        insufficient = LiveExecutionGate(approval, now=lambda: NOW).evaluate(
+            self.current(approval, monthly_spent_usdt="495", remaining_monthly_budget_usdt="5")
+        )
+        self.assertEqual(insufficient.status, GateStatus.BLOCKED)
 
     def test_attempt_is_append_only_before_future_network_and_disabled_transport(self):
         root = Path(tempfile.mkdtemp())

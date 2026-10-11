@@ -156,8 +156,17 @@ class InstrumentRules:
     def validate_quote(self, amount: Decimal) -> None:
         for value in (self.quote_minimum, self.base_quantity_minimum, self.quantity_step, self.price_tick_size):
             if not value.is_finite() or value <= 0: raise ExecutionSafetyError("instrument metadata is malformed")
+        for value in (self.quote_precision, self.max_market_order_qty, self.max_limit_order_qty, self.market_buy_quote_maximum):
+            if value is not None and (not value.is_finite() or value <= 0):
+                raise ExecutionSafetyError("instrument metadata is malformed")
+        if self.market_order_qty_unit not in {None, "baseCoin", "quoteCoin"}:
+            raise ExecutionSafetyError("instrument market-order unit is unsupported")
         if amount < self.quote_minimum:
             raise ExecutionSafetyError("order amount violates exchange minimum")
+        if self.quote_precision is not None and amount % self.quote_precision != 0:
+            raise ExecutionSafetyError("order amount violates quote precision")
+        if self.market_buy_quote_maximum is not None and amount > self.market_buy_quote_maximum:
+            raise ExecutionSafetyError("order amount violates quote-denominated market maximum")
 
 
 def _metadata_decimal(value: Any, label: str) -> Decimal:
@@ -267,7 +276,11 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
     if intent.side != "Buy": reasons.append("side must be Buy")
     if intent.quote_amount_usdt <= 0: reasons.append("final purchase must be positive")
     if not intent.no_order_executed: reasons.append("intent has an invalid execution state")
-    if intent.live_execution_enabled != execution_config.live_execution_enabled: reasons.append("live guard does not match configuration")
+    # Persisted OrderIntent artifacts are prepared under the checked-in,
+    # fail-safe configuration and must remain immutable.  The short-lived
+    # activation/capability chain enables only this invocation; it must not
+    # rewrite (or be required to equal) the intent's production guard.
+    if intent.live_execution_enabled is not False: reasons.append("immutable OrderIntent live guard must remain disabled")
     try:
         if Decimal(str(decision["final_purchase_usd"])) != intent.quote_amount_usdt: reasons.append("amount does not match approved Decision")
     except Exception: reasons.append("Decision amount is invalid")
