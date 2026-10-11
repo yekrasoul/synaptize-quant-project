@@ -24,6 +24,7 @@ SCHEMA_FILES = {
     "sentiment_snapshot": "sentiment_snapshot.schema.json",
     "shadow_run": "shadow_run.schema.json",
     "order_intent": "order_intent.schema.json",
+    "order_intent_5_1_0": "order_intent_v5_1_0.schema.json",
     "safety_validation": "safety_validation.schema.json",
     "order_submission_attempt": "order_submission_attempt.schema.json",
     "order_submission_outcome": "order_submission_outcome.schema.json",
@@ -86,6 +87,8 @@ def load_schema(name: str, schemas_path: Path = SCHEMAS_PATH) -> dict[str, Any]:
 def validate_artifact(
     name: str, artifact: dict[str, Any], schemas_path: Path = SCHEMAS_PATH
 ) -> None:
+    if name == "order_intent" and str(artifact.get("schema_version")) == "5.1.0":
+        name = "order_intent_5_1_0"
     schema_name = name
     if name == "portfolio_state" and artifact.get("schema_version") == "1.0.0":
         schema_name = "portfolio_state_1_0"

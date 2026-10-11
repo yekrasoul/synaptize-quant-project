@@ -151,18 +151,26 @@ class PrivateBybitTests(unittest.TestCase):
             self.client({SERVER_TIME: response({"timeSecond": "bad"})}).server_time_ms()
 
     def test_order_states_and_execution_fills(self):
-        order = {"orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}
-        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
-        client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
+        order = {"orderLinkId": "dca-abc", "symbol": "BTCUSDT", "orderId": "oid", "orderStatus": "PartiallyFilled", "cumExecQty": "0.1", "cumExecValue": "10"}
+        fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "symbol": "BTCUSDT"}
+        client = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": [order]}),
+            ORDER_HISTORY: response({"category": "spot", "list": []}),
+            EXECUTION_LIST: response({"category": "spot", "list": [fill]}),
+        })
         self.assertEqual(client.lookup_order("dca-abc").state, OrderState.PARTIALLY_FILLED)
         self.assertEqual(client.executions("dca-abc")[0].exec_qty, Decimal("0.1"))
         self.assertEqual(client.submission_state("dca-abc"), "confirmed")
 
     def test_execution_fee_currency_is_authoritative_and_required(self):
-        base = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "category": "spot", "symbol": "BTCUSDT"}
-        client = self.client({EXECUTION_LIST: response({"list": [dict(base, feeCurrency="BTC")]})})
+        base = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0.01", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-abc", "symbol": "BTCUSDT"}
+        client = self.client({
+            EXECUTION_LIST: response({"category": "spot", "list": [dict(base, feeCurrency="BTC")]})
+        })
         self.assertEqual(client.executions("dca-abc")[0].fee_asset, "BTC")
-        missing = self.client({EXECUTION_LIST: response({"list": [base]})})
+        missing = self.client({
+            EXECUTION_LIST: response({"category": "spot", "list": [base]})
+        })
         with self.assertRaises(MalformedBybitResponseError): missing.executions("dca-abc")
 
     def test_post_ack_reconciler_preserves_partial_fill_evidence(self):
@@ -174,37 +182,61 @@ class PrivateBybitTests(unittest.TestCase):
         self.assertEqual(evidence.order_link_id, "dca-abc"); self.assertEqual(evidence.fills[0].fee_asset, "USDT")
 
     def test_absent_is_only_after_both_successful_order_reads_and_execution_read(self):
-        client = self.client({ORDER_REALTIME: response({"list": []}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": []})})
+        client = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": []}),
+            ORDER_HISTORY: response({"category": "spot", "list": []}),
+            EXECUTION_LIST: response({"category": "spot", "list": []}),
+        })
         self.assertEqual(client.submission_state("dca-none"), "conclusively_absent")
         timeout_client = self.client({ORDER_REALTIME: response({}, status=503)})
         self.assertEqual(timeout_client.submission_state("dca-uncertain"), "ambiguous")
 
     def test_conflicting_order_results_are_ambiguous(self):
-        active = {"orderLinkId": "dca-x", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
-        filled = {"orderLinkId": "dca-x", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
-        client = self.client({ORDER_REALTIME: response({"list": [active]}), ORDER_HISTORY: response({"list": [filled]}), EXECUTION_LIST: response({"list": []})})
+        active = {"orderLinkId": "dca-x", "symbol": "BTCUSDT", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
+        filled = {"orderLinkId": "dca-x", "symbol": "BTCUSDT", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
+        client = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": [active]}),
+            ORDER_HISTORY: response({"category": "spot", "list": [filled]}),
+            EXECUTION_LIST: response({"category": "spot", "list": []}),
+        })
         self.assertEqual(client.lookup_order("dca-x").state, OrderState.AMBIGUOUS)
         self.assertEqual(client.submission_state("dca-x"), "ambiguous")
 
     def test_mismatched_order_identity_fails_closed_for_realtime_and_history(self):
-        bad = {"orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
-        realtime = self.client({ORDER_REALTIME: response({"list": [bad]}), ORDER_HISTORY: response({"list": []})})
+        bad = {"orderLinkId": "dca-other", "symbol": "BTCUSDT", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
+        realtime = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": [bad]}),
+            ORDER_HISTORY: response({"category": "spot", "list": []}),
+        })
         with self.assertRaises(MalformedBybitResponseError): realtime.lookup_order("dca-requested")
-        history = self.client({ORDER_REALTIME: response({"list": []}), ORDER_HISTORY: response({"list": [bad]})})
+        history = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": []}),
+            ORDER_HISTORY: response({"category": "spot", "list": [bad]}),
+        })
         with self.assertRaises(MalformedBybitResponseError): history.lookup_order("dca-requested")
 
     def test_order_symbol_category_and_fill_identity_are_bound(self):
-        bad_order = {"orderLinkId": "dca-id", "category": "linear", "symbol": "BTCUSDT", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
-        with self.assertRaises(MalformedBybitResponseError): self.client({ORDER_REALTIME: response({"list": [bad_order]}), ORDER_HISTORY: response({"list": []})}).lookup_order("dca-id")
-        bad_fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-other", "category": "spot", "symbol": "BTCUSDT"}
-        client = self.client({EXECUTION_LIST: response({"list": [bad_fill]})})
+        bad_order = {"orderLinkId": "dca-id", "symbol": "BTCUSDT", "orderStatus": "New", "cumExecQty": "0", "cumExecValue": "0"}
+        with self.assertRaises(MalformedBybitResponseError):
+            self.client({
+                ORDER_REALTIME: response({"category": "linear", "list": [bad_order]}),
+                ORDER_HISTORY: response({"category": "spot", "list": []}),
+            }).lookup_order("dca-id")
+        bad_fill = {"execQty": "0.1", "execPrice": "100", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "oid", "orderLinkId": "dca-other", "symbol": "BTCUSDT"}
+        client = self.client({
+            EXECUTION_LIST: response({"category": "spot", "list": [bad_fill]})
+        })
         with self.assertRaises(MalformedBybitResponseError): client.executions("dca-id")
         self.assertEqual(client.submission_state("dca-id"), "ambiguous")
 
     def test_conflicting_order_and_fill_ids_are_ambiguous(self):
-        order = {"orderLinkId": "dca-id", "orderId": "order-a", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
-        fill = {"execQty": "1", "execPrice": "10", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "order-b", "orderLinkId": "dca-id"}
-        client = self.client({ORDER_REALTIME: response({"list": [order]}), ORDER_HISTORY: response({"list": []}), EXECUTION_LIST: response({"list": [fill]})})
+        order = {"orderLinkId": "dca-id", "symbol": "BTCUSDT", "orderId": "order-a", "orderStatus": "Filled", "cumExecQty": "1", "cumExecValue": "10"}
+        fill = {"execQty": "1", "execPrice": "10", "execValue": "10", "execFee": "0", "feeCurrency": "USDT", "execTime": "1", "execId": "eid", "orderId": "order-b", "orderLinkId": "dca-id", "symbol": "BTCUSDT"}
+        client = self.client({
+            ORDER_REALTIME: response({"category": "spot", "list": [order]}),
+            ORDER_HISTORY: response({"category": "spot", "list": []}),
+            EXECUTION_LIST: response({"category": "spot", "list": [fill]}),
+        })
         self.assertEqual(client.submission_state("dca-id"), "ambiguous")
 
     def test_allowlist_rejects_arbitrary_and_mutating_paths(self):
@@ -217,6 +249,58 @@ class PrivateBybitTests(unittest.TestCase):
         with self.assertRaises(MalformedBybitResponseError): self.client({ACCOUNT_INFO: HttpResponse(200, {}, b"not-json")}).account_info()
         with self.assertRaises(MalformedBybitResponseError): self.client({ACCOUNT_INFO: response({})}).account_info()
         with self.assertRaises(MalformedBybitResponseError): self.client({WALLET_BALANCE: response({"list": [{"coin": [{"coin": "BTC", "walletBalance": "bad"}]}]})}).wallet_balances()
+
+
+    def test_execution_time_is_normalized_from_bybit_epoch_milliseconds(self):
+        fill = {
+            "execQty": "0.00012",
+            "execPrice": "83026.2",
+            "execValue": "9.963144",
+            "execFee": "0.00000012",
+            "feeCurrency": "BTC",
+            "execTime": "1791684599521",
+            "execId": "2290000001229683829",
+            "orderId": "2323213237522537728",
+            "orderLinkId": "dca-abc",
+            "symbol": "BTCUSDT",
+        }
+        client = self.client({
+            EXECUTION_LIST: response({
+                "category": "spot",
+                "list": [fill],
+            })
+        })
+
+        parsed = client.executions("dca-abc")[0]
+
+        self.assertEqual(
+            parsed.exec_time,
+            "2026-10-11T02:09:59.521000Z",
+        )
+
+    def test_execution_time_rejects_non_numeric_bybit_timestamp(self):
+        fill = {
+            "execQty": "0.1",
+            "execPrice": "100",
+            "execValue": "10",
+            "execFee": "0",
+            "feeCurrency": "USDT",
+            "execTime": "not-a-timestamp",
+            "execId": "eid",
+            "orderId": "oid",
+            "orderLinkId": "dca-abc",
+            "symbol": "BTCUSDT",
+        }
+        client = self.client({
+            EXECUTION_LIST: response({
+                "category": "spot",
+                "list": [fill],
+            })
+        })
+
+        with self.assertRaises(MalformedBybitResponseError):
+            client.executions("dca-abc")
+
 
 
 if __name__ == "__main__": unittest.main()

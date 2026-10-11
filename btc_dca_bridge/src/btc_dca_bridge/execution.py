@@ -127,7 +127,7 @@ def make_order_intent(decision: Mapping[str, Any], *, run_id: str, created_at_ut
                       live_execution_requested: bool = False, calendar_month: str | None = None) -> OrderIntent:
     amount = Decimal(str(decision["final_purchase_usd"]))
     decision_id = str(decision["decision_id"])
-    return OrderIntent("5.1.0", str(decision["strategy_id"]), str(decision["strategy_version"]),
+    return OrderIntent("5.1.1", str(decision["strategy_id"]), str(decision["strategy_version"]),
         run_id, decision_id, f"intent_{decision_id}_{run_id}", created_at_utc, "Bybit", "spot", "BTCUSDT", "Buy",
         amount, "recommendation_only", client_order_id(str(decision["strategy_id"]), decision_id, run_id),
         Decimal(str(decision.get("monthly_spent_before_usd", 0))), Decimal(str(decision.get("remaining_budget_before_usd", 0))),

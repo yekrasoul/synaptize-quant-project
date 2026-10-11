@@ -147,6 +147,27 @@ def _decimal(value: Any, label: str, *, nonnegative: bool = False) -> Decimal:
     return parsed
 
 
+def _bybit_exec_time_utc(value: object) -> str:
+    """Normalize Bybit V5 execTime milliseconds to canonical ISO-8601 UTC."""
+    try:
+        raw = str(value)
+        milliseconds = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise MalformedBybitResponseError("execution timestamp is malformed") from exc
+
+    if milliseconds < 0:
+        raise MalformedBybitResponseError("execution timestamp is malformed")
+
+    try:
+        parsed = datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise MalformedBybitResponseError("execution timestamp is malformed") from exc
+
+    return parsed.isoformat().replace("+00:00", "Z")
+
+
+
+
 @dataclass(frozen=True)
 class WalletBalance:
     coin: str
@@ -412,19 +433,39 @@ class BybitPrivateReadClient:
     def _order(row: Mapping[str, Any], requested_client_order_id: str) -> ReadOnlyOrder:
         if row.get("orderLinkId") != requested_client_order_id:
             raise MalformedBybitResponseError("order evidence orderLinkId does not match requested client_order_id")
-        for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
-            if field not in row:
-                return ReadOnlyOrder(str(row.get("orderLinkId", "")), row.get("orderId"), OrderState.AMBIGUOUS, "missing_identity", Decimal("0"), Decimal("0"))
-            if row.get(field) != expected:
-                raise MalformedBybitResponseError(f"order evidence {field} does not match approved Spot identity")
+        if "symbol" not in row:
+            return ReadOnlyOrder(
+                str(row.get("orderLinkId", "")),
+                row.get("orderId"),
+                OrderState.AMBIGUOUS,
+                "missing_identity",
+                Decimal("0"),
+                Decimal("0"),
+            )
+        if row.get("symbol") != "BTCUSDT":
+            raise MalformedBybitResponseError(
+                "order evidence symbol does not match approved Spot identity"
+            )
         status = str(row.get("orderStatus"))
         state = {"New": OrderState.ACTIVE, "Untriggered": OrderState.ACTIVE, "PartiallyFilled": OrderState.PARTIALLY_FILLED, "Filled": OrderState.FILLED, "Cancelled": OrderState.CANCELLED, "Rejected": OrderState.REJECTED}.get(status, OrderState.AMBIGUOUS)
         return ReadOnlyOrder(str(row.get("orderLinkId", "")), row.get("orderId"), state, status, _decimal(row.get("cumExecQty", "0"), "cumExecQty", nonnegative=True), _decimal(row.get("cumExecValue", "0"), "cumExecValue", nonnegative=True))
 
     def _orders(self, endpoint: str, client_order_id: str) -> tuple[ReadOnlyOrder, ...]:
-        r = self._read(endpoint, {"category": "spot", "symbol": "BTCUSDT", "orderLinkId": client_order_id})
-        rows = r.get("list")
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows): raise MalformedBybitResponseError("order result is malformed")
+        result = self._read(
+            endpoint,
+            {
+                "category": "spot",
+                "symbol": "BTCUSDT",
+                "orderLinkId": client_order_id,
+            },
+        )
+        if result.get("category") != "spot":
+            raise MalformedBybitResponseError(
+                "order result category does not match approved Spot identity"
+            )
+        rows = result.get("list")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise MalformedBybitResponseError("order result is malformed")
         return tuple(self._order(row, client_order_id) for row in rows)
 
     def lookup_order(self, client_order_id: str) -> ReadOnlyOrder:
@@ -442,15 +483,52 @@ class BybitPrivateReadClient:
         return self._orders(ORDER_HISTORY, client_order_id)
 
     def executions(self, client_order_id: str) -> tuple[ExecutionFill, ...]:
-        rows = self._read(EXECUTION_LIST, {"category": "spot", "symbol": "BTCUSDT", "orderLinkId": client_order_id}).get("list")
-        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows): raise MalformedBybitResponseError("execution result is malformed")
+        result = self._read(
+            EXECUTION_LIST,
+            {
+                "category": "spot",
+                "symbol": "BTCUSDT",
+                "orderLinkId": client_order_id,
+            },
+        )
+        category = result.get("category")
+        if category != "spot":
+            raise MalformedBybitResponseError(
+                "execution result category does not match approved Spot identity"
+            )
+        rows = result.get("list")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise MalformedBybitResponseError("execution result is malformed")
         try:
             for row in rows:
-                if row.get("orderLinkId") != client_order_id: raise MalformedBybitResponseError("execution evidence orderLinkId does not match requested client_order_id")
-                for field, expected in (("category", "spot"), ("symbol", "BTCUSDT")):
-                    if row.get(field) != expected: raise MalformedBybitResponseError(f"execution evidence {field} does not match approved Spot identity")
-            return tuple(ExecutionFill(_decimal(row.get("execQty"), "execQty"), _decimal(row.get("execPrice"), "execPrice"), _decimal(row.get("execValue"), "execValue", nonnegative=True), _decimal(row.get("execFee", "0"), "execFee", nonnegative=True), str(row["feeCurrency"]), str(row["execTime"]), str(row["execId"]), str(row["orderId"]), str(row["orderLinkId"]), str(row["category"]), str(row["symbol"])) for row in rows)
-        except (KeyError, AttributeError, TypeError) as exc: raise MalformedBybitResponseError("execution fill is malformed") from exc
+                if row.get("orderLinkId") != client_order_id:
+                    raise MalformedBybitResponseError(
+                        "execution evidence orderLinkId does not match requested client_order_id"
+                    )
+                if row.get("symbol") != "BTCUSDT":
+                    raise MalformedBybitResponseError(
+                        "execution evidence symbol does not match approved Spot identity"
+                    )
+            return tuple(
+                ExecutionFill(
+                    _decimal(row.get("execQty"), "execQty"),
+                    _decimal(row.get("execPrice"), "execPrice"),
+                    _decimal(row.get("execValue"), "execValue", nonnegative=True),
+                    _decimal(row.get("execFee", "0"), "execFee", nonnegative=True),
+                    str(row["feeCurrency"]),
+                    _bybit_exec_time_utc(row["execTime"]),
+                    str(row["execId"]),
+                    str(row["orderId"]),
+                    str(row["orderLinkId"]),
+                    category,
+                    str(row["symbol"]),
+                )
+                for row in rows
+            )
+        except (KeyError, AttributeError, TypeError) as exc:
+            raise MalformedBybitResponseError(
+                "execution fill is malformed"
+            ) from exc
 
     def submission_state(self, client_order_id: str) -> str:
         try:
