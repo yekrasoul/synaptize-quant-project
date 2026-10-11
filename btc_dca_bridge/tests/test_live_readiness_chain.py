@@ -183,6 +183,23 @@ class LiveReadinessChainTests(unittest.TestCase):
                 report, _ = cli._live_readiness(type("Args", (), {"data_root": data_root, "ledger": data_root / "ledger"})())
             self.assertEqual(report["next_allowed_command"], "btc-dca collect-production-evidence --data-root data --ledger ledger/executions.jsonl")
 
+    def test_readiness_distinguishes_checked_in_defaults_from_ephemeral_runtime(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with patch.object(cli, "_current_commit", return_value=COMMIT), patch.object(cli, "_readiness_latest", return_value=None):
+                report, _ = cli._live_readiness(type("Args", (), {"data_root": Path(raw), "ledger": Path(raw) / "ledger"})())
+            self.assertEqual(report["safety"]["checked_in"], {
+                "live_execution_enabled": False,
+                "kill_switch": True,
+                "order_submission": "not_implemented",
+                "monthly_cap_usd": "500",
+            })
+            self.assertEqual(report["safety"]["one_shot_runtime"], {
+                "live_execution_enabled": True,
+                "kill_switch": False,
+                "order_submission": "implemented",
+                "mode": "EPHEMERAL_ONLY_AFTER_ALL_GATES",
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

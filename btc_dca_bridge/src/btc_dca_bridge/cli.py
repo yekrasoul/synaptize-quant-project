@@ -889,7 +889,25 @@ def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     stale = any(item.get("status") == "STALE_REPOSITORY" for item in chain.values()) or evidence_result["status"] == "STALE_REPOSITORY"
     if stale and "ceremony artifacts are stale for current repository commit" not in blockers:
         blockers.insert(0, "ceremony artifacts are stale for current repository commit")
-    safety = {"live_execution_enabled": config.live_execution_enabled, "kill_switch": config.kill_switch, "order_submission": config.order_submission, "monthly_cap_usd": str(config.monthly_cap_usd)}
+    # The checked-in policy is intentionally fail-closed.  A READY result
+    # means the ceremony can derive this separate, process-local policy during
+    # canary-execute; it does not mutate or enable the checked-in config.
+    checked_in_safety = {
+        "live_execution_enabled": config.live_execution_enabled,
+        "kill_switch": config.kill_switch,
+        "order_submission": config.order_submission,
+        "monthly_cap_usd": str(config.monthly_cap_usd),
+    }
+    one_shot_runtime = {
+        "live_execution_enabled": True,
+        "kill_switch": False,
+        "order_submission": "implemented",
+        "mode": "EPHEMERAL_ONLY_AFTER_ALL_GATES",
+    }
+    safety = {
+        "checked_in": checked_in_safety,
+        "one_shot_runtime": one_shot_runtime,
+    }
     if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
         blockers.append("checked-in execution policy is not fail-safe")
 
