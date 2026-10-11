@@ -47,6 +47,33 @@ def canonical_fingerprint(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def account_identity_fingerprint(
+    *,
+    exchange: str,
+    identity: str,
+    unified_margin_status: Any,
+    margin_mode: Any,
+    spot_hedging_status: Any,
+) -> str:
+    """Fingerprint only stable exchange/account/key identity attributes.
+
+    Account timestamps, balances, permissions, instruments, and runtime
+    reconciliation state are deliberately outside this identity boundary.
+    The pipe encoding is retained as the canonical representation for the
+    already-approved production identity chain.
+    """
+    material = "|".join(
+        (
+            str(exchange),
+            str(unified_margin_status),
+            str(margin_mode),
+            str(spot_hedging_status),
+            str(identity),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() != timedelta(0):
         raise LiveReadinessError("time must be UTC-aware")

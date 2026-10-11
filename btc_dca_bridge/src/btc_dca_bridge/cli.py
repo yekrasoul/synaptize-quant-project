@@ -40,6 +40,7 @@ from .production_enablement import ControlledProductionExecutor, gate_d, prepare
 from .live_readiness import (
     ORDER_CONTRACT,
     LiveExecutionApproval,
+    account_identity_fingerprint,
     canonical_fingerprint,
     execution_safety_config_fingerprint,
     production_contract_fingerprint,
@@ -1317,12 +1318,13 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
     actual_mode = expected_mode if expected_mode in {"spot", "UTA"} else str(account.margin_mode)
     if credential.identity is None:
         raise ValueError("fresh account identity is unavailable")
-    account_identity = canonical_fingerprint({
-        "exchange": "Bybit", "identity": credential.identity,
-        "unified_margin_status": str(account.unified_margin_status),
-        "margin_mode": str(account.margin_mode),
-        "spot_hedging_status": str(account.spot_hedging_status),
-    })
+    account_identity = account_identity_fingerprint(
+        exchange="Bybit",
+        identity=credential.identity,
+        unified_margin_status=account.unified_margin_status,
+        margin_mode=account.margin_mode,
+        spot_hedging_status=account.spot_hedging_status,
+    )
     if account_identity != str(approval.get("account_identity_fingerprint")):
         raise ValueError("fresh account identity differs from the approved identity")
     monthly_spent = sum((execution.executed_usd for execution in confirmed_executions(read_executions(ledger_path)) if execution.executed_at_utc[:7] == str(approval["calendar_month"])), Decimal("0"))
