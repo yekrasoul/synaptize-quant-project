@@ -152,6 +152,18 @@ class BybitSpotTransportTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             SpotMarketBuyRequest(Decimal("25"), "id", symbol="ETHUSDT")
 
+    def test_non_spot_or_leveraged_order_contracts_are_blocked(self):
+        invalid = (
+            {"category": "linear"},
+            {"market_unit": "baseCoin"},
+            {"is_leverage": 1},
+            {"order_filter": "tpslOrder"},
+            {"order_type": "Limit"},
+        )
+        for overrides in invalid:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                SpotMarketBuyRequest(Decimal("25"), "dca-" + "a" * 32, **overrides)
+
     def test_every_blocked_gate_makes_zero_post_calls(self):
         request = SpotMarketBuyRequest(Decimal("25"), "dca-" + "a" * 32)
         blocked = (

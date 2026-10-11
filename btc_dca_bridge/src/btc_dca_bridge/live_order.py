@@ -26,7 +26,7 @@ from .execution import OrderIntent, SubmissionState, validate_execution_safety
 from .ledger import append_execution_once
 from .live_readiness import LiveExecutionApproval
 from .market_data.http import HttpResponse
-from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification
+from .private_bybit import ApiCredentialInfo, BybitSubmissionEvidence, CredentialClassification, credential_scope_allows_spot_execution
 from .schemas import validate_artifact, validate_live_approval
 
 ORDER_CREATE_PATH = "/v5/order/create"
@@ -399,7 +399,7 @@ class LiveOrderEngine:
     def _fresh_private_checks(client: FreshBybitReadClient, intent: OrderIntent, *, availability_policy: availability.SpotQuoteAvailabilityPolicy = availability.PRODUCTION_AVAILABILITY_POLICY, quote_limit_policy: QuoteUnitLimitPolicy = PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, now_utc: datetime | None = None) -> tuple[ApiCredentialInfo, Any, SubmissionState]:
         info = client.credential_info()
         if info.classification is not CredentialClassification.TRADE_CAPABLE: raise LiveOrderSafetyError("fresh credential classification is not TRADE_CAPABLE")
-        if set(info.permissions) - {"Spot", "Wallet"} or not any(action in {"SpotTrade", "OrderEntry", "SpotOrder"} for action in info.permissions.get("Spot", ())): raise LiveOrderSafetyError("fresh credential permissions are not Spot-only approved trade scope")
+        if not credential_scope_allows_spot_execution(info): raise LiveOrderSafetyError("fresh credential permissions are not approved for the constrained Spot execution contract")
         account = client.account_info()
         if not all((account.unified_margin_status, account.margin_mode, account.spot_hedging_status, account.updated_time)): raise LiveOrderSafetyError("fresh account context is incomplete")
         balances = {row.coin: row for row in client.wallet_balances()}

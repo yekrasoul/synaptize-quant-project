@@ -67,8 +67,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_READY")
         self.assertIn("BYBIT_SPOT_AVAILABLE_BALANCE", {item["check_id"] for item in result["blockers"]})
 
-    def test_derivatives_permission_blocks_production_scope(self):
+    def test_unified_derivatives_metadata_does_not_block_spot_scope(self):
         result = self.evaluate(client_factory=lambda: FakeReadinessClient(permissions={"Spot": ("SpotTrade",), "Derivatives": ("DerivativesTrade",)}))
+        scope = next(item for item in result["checks"] if item["check_id"] == "BYBIT_CREDENTIAL_SCOPE")
+        self.assertEqual(scope["status"], "PASS")
+
+    def test_missing_spot_trade_blocks_production_scope(self):
+        result = self.evaluate(client_factory=lambda: FakeReadinessClient(permissions={"Spot": ("SpotRead",), "Derivatives": ("DerivativesTrade",)}))
+        scope = next(item for item in result["checks"] if item["check_id"] == "BYBIT_CREDENTIAL_SCOPE")
+        self.assertEqual(scope["status"], "FAIL")
+
+    def test_withdrawal_permission_blocks_production_scope(self):
+        result = self.evaluate(client_factory=lambda: FakeReadinessClient(permissions={"Spot": ("SpotTrade",), "Wallet": ("WalletRead", "Withdrawal"), "Derivatives": ("DerivativesTrade",)}))
         scope = next(item for item in result["checks"] if item["check_id"] == "BYBIT_CREDENTIAL_SCOPE")
         self.assertEqual(scope["status"], "FAIL")
 

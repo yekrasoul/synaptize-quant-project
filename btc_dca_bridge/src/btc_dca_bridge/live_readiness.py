@@ -260,7 +260,11 @@ def prepare_submission_attempt(*, store: ArtifactStore, run_id: str, approval: L
     amount = _decimal(quote_amount_usdt, "quote amount")
     request = {**ORDER_CONTRACT, "qty": str(amount), "orderLinkId": approval.payload["client_order_id"]}
     request_fp = canonical_fingerprint(request)
-    seed = {"approval_id": approval.approval_id, "approval_sha256": approval_sha256, "client_order_id": approval.payload["client_order_id"], "request_fingerprint": request_fp, "created_at_utc": _timestamp(datetime.now(UTC))}
+    # Keep the attempt in the same canonical UTC date as its persisted
+    # approval.  Using wall-clock ``now`` here can place the immutable
+    # attempt under a different date than callers use to reread the chain.
+    created_at_utc = str(approval.payload["created_at_utc"])
+    seed = {"approval_id": approval.approval_id, "approval_sha256": approval_sha256, "client_order_id": approval.payload["client_order_id"], "request_fingerprint": request_fp, "created_at_utc": created_at_utc}
     payload = {"schema_version": APPROVAL_SCHEMA_VERSION, "attempt_id": "attempt5b-" + canonical_fingerprint(seed)[:32], "created_at_utc": seed["created_at_utc"], "approval_id": approval.approval_id, "approval_sha256": _sha(approval_sha256, "approval SHA"), "canary_manifest_id": approval.payload["canary_manifest_id"], "canary_manifest_sha256": approval.payload["canary_manifest_sha256"], "decision_id": decision_id, "decision_sha256": _sha(decision_sha256, "decision SHA"), "order_intent_id": order_intent_id, "order_intent_sha256": _sha(order_intent_sha256, "intent SHA"), "client_order_id": approval.payload["client_order_id"], "quote_amount_usdt": str(amount), "safe_request_fingerprint": request_fp, "repository_commit_sha": repository_commit_sha, "account_identity_fingerprint": _sha(account_identity_fingerprint, "account fingerprint"), "calendar_month": calendar_month, "safety_gate_fingerprint": gate_result.fingerprint, "reconciliation_fingerprint": _sha(reconciliation_fingerprint, "reconciliation fingerprint"), "status": "PREPARED_FOR_SUBMISSION", "no_order_executed": True}
     return store.persist(ArtifactType.LIVE_EXECUTION_ATTEMPT, payload, run_id=run_id)
 

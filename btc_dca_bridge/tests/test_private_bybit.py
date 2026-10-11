@@ -10,7 +10,7 @@ from btc_dca_bridge.private_bybit import (
     ACCOUNT_INFO, EXECUTION_LIST, INSTRUMENTS_INFO, ORDER_HISTORY, ORDER_REALTIME, SERVER_TIME,
     WALLET_BALANCE, SPOT_BORROW_CHECK, ApiCredentialInfo, AuthenticationError, BybitPostAckReconciler, BybitPrivateReadClient,
     CredentialClassification, ExecutionFill, MalformedBybitResponseError, OrderState, PermissionError, ReadOnlyOrder,
-    canonical_query, signature,
+    canonical_query, credential_scope_allows_spot_execution, signature,
 )
 
 
@@ -67,6 +67,13 @@ class PrivateBybitTests(unittest.TestCase):
         permissions = {"Spot": ["SpotTrade"], "Derivatives": ["DerivativesTrade"], "ContractTrade": [], "Options": [], "Wallet": []}
         info = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": permissions})}).credential_info()
         self.assertEqual(info.classification, CredentialClassification.TRADE_CAPABLE)
+        self.assertTrue(credential_scope_allows_spot_execution(info))
+
+    def test_spot_capability_policy_blocks_missing_spot_trade_and_withdrawal(self):
+        missing_spot = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"Spot": ["SpotRead"], "Derivatives": ["DerivativesTrade"]}})}).credential_info()
+        self.assertFalse(credential_scope_allows_spot_execution(missing_spot))
+        withdrawal = self.client({"/v5/user/query-api": response({"readOnly": 0, "permission": {"Spot": ["SpotTrade"], "Wallet": ["WalletRead", "Withdrawal"]}})}).credential_info()
+        self.assertFalse(credential_scope_allows_spot_execution(withdrawal))
 
     def test_spot_trade_only_is_trade_capable(self):
         permissions = {"Spot": ["SpotTrade"], "Derivatives": [], "ContractTrade": [], "Options": [], "Wallet": []}

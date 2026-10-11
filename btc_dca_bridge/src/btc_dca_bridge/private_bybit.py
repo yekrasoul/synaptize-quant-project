@@ -81,6 +81,44 @@ class ApiCredentialInfo:
     key_type: str | None = None
 
 
+def credential_scope_allows_spot_execution(info: ApiCredentialInfo) -> bool:
+    """Return whether a credential can reach the exact V1 Spot boundary.
+
+    Bybit exposes ``DerivativesTrade`` under the Unified-account permission
+    group.  That metadata is not, by itself, a permission to send a
+    derivatives order.  The execution boundary separately enforces the
+    canonical Spot BTCUSDT request shape; this predicate only verifies the
+    credential's Spot capability and unsafe scopes.
+    """
+    if info.classification is not CredentialClassification.TRADE_CAPABLE or info.read_only:
+        return False
+    known_read = {"read", "spotread", "walletread", "accountread", "query"}
+    spot_actions = {_permission_token(action) for action in info.permissions.get("Spot", ())}
+    if "spottrade" not in spot_actions:
+        return False
+    dangerous = {"accounttransfer", "submembertransfer", "withdrawal", "withdraw", "borrow", "repay"}
+    for raw_group, raw_actions in info.permissions.items():
+        group = _permission_token(raw_group)
+        actions = {_permission_token(action) for action in raw_actions}
+        if not actions:
+            continue
+        if group == "spot":
+            if not actions.issubset(known_read | {"spottrade"}):
+                return False
+        elif group == "wallet":
+            if actions & dangerous or any(token in action for action in actions for token in ("transfer", "withdraw", "borrow", "repay")):
+                return False
+            if not actions.issubset(known_read):
+                return False
+        elif group == "derivatives":
+            # Unified-account metadata; not an independent execution path.
+            if actions != {"derivativestrade"}:
+                return False
+        else:
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class AccountInfo:
     unified_margin_status: str | None

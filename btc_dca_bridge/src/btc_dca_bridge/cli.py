@@ -30,7 +30,7 @@ from .production import (
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
-from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
+from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError, credential_scope_allows_spot_execution
 from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY, validate_spot_quote_availability
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport, SubmissionResult
@@ -1288,14 +1288,7 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
         raise ValueError("fresh BTC/USDT wallet evidence is incomplete")
     if usdt.has_liability or btc.has_liability:
         raise ValueError("fresh wallet liability detected")
-    permissions = {str(key): tuple(str(value) for value in values) for key, values in credential.permissions.items()}
-    spot_actions = set(permissions.get("Spot", ()))
-    credential_scope_accepted = (
-        credential.classification.value == "TRADE_CAPABLE"
-        and not (set(permissions) - {"Spot", "Wallet"})
-        and bool(spot_actions & {"SpotTrade", "OrderEntry", "SpotOrder"})
-        and not any(action.lower() in {"withdrawal", "withdraw"} for action in permissions.get("Wallet", ()))
-    )
+    credential_scope_accepted = credential_scope_allows_spot_execution(credential)
     if not credential_scope_accepted:
         raise ValueError("fresh credential scope is not accepted")
     if abs(clock_delta_ms) > 5000:
