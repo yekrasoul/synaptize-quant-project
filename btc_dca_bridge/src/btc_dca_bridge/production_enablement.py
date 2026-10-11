@@ -254,6 +254,7 @@ class ControlledProductionExecutor:
                 evidence: Mapping[str, Any], repository_commit_sha: str,
                 calendar_month: str, ledger_path: Any, read_client: Any,
                 reconciler: Any, run_id: str, transport_factory: Any,
+                artifact_evidence: Mapping[str, Any] | None = None,
                 decision_sha256: str | None = None,
                 order_intent_sha256: str | None = None,
                 evidence_sha256: str | None = None,
@@ -274,6 +275,7 @@ class ControlledProductionExecutor:
         if result.status is not GateStatus.READY_FOR_SUBMISSION:
             return {"status": "blocked", "gate": "D", "reasons": result.reasons, "message": "NO ORDER EXECUTED"}
         try:
+            persisted_evidence = evidence if artifact_evidence is None else artifact_evidence
             self._verify_persisted_chain(
                 enablement=enablement, enablement_sha256=enablement_sha256,
                 authorization=authorization, authorization_sha256=authorization_sha256,
@@ -282,7 +284,7 @@ class ControlledProductionExecutor:
                 manifest=manifest, manifest_sha256=manifest_sha256,
                 intent=intent, decision=decision,
                 decision_sha256=decision_sha256, order_intent_sha256=order_intent_sha256,
-                evidence=evidence, evidence_sha256=evidence_sha256,
+                evidence=persisted_evidence, evidence_sha256=evidence_sha256,
                 repository_commit_sha=repository_commit_sha,
                 calendar_month=calendar_month,
             )
