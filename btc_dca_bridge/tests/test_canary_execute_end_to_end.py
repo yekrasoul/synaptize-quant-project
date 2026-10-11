@@ -113,6 +113,9 @@ class CanaryExecuteEndToEndTests(unittest.TestCase):
             }
 
         checks = [
+            check("CANONICAL_LEDGER"),
+            check("STRATEGY_IDENTITY"),
+            check("ARTIFACT_INTEGRITY"),
             check("BYBIT_ACCOUNT"),
             check("BYBIT_CREDENTIAL_SCOPE"),
             check("BYBIT_LIABILITIES"),
