@@ -37,6 +37,7 @@ from btc_dca_bridge.private_bybit import (
     SpotQuoteAvailability,
     WalletBalance,
 )
+from btc_dca_bridge.production_evidence import ProductionEvidenceService
 from btc_dca_bridge.production_enablement import (
     ENABLEMENT_CONFIRMATION,
     prepare_production_enablement,
@@ -98,43 +99,79 @@ class HardBlockedTransport:
 
 class CanaryExecuteEndToEndTests(unittest.TestCase):
     def _fresh_evidence(self, store, *, now, commit, account_fingerprint):
-        paths = sorted((REPOSITORY / "data" / "production_evidence").glob("*/*/*/*.json"))
-        self.assertTrue(paths, "repository must contain a production-evidence schema fixture")
-        template = json.loads(paths[-1].read_text(encoding="utf-8"))
         stamp = now.isoformat().replace("+00:00", "Z")
-        expires = (now + timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
-        seed = hashlib.sha256(f"{stamp}:{commit}:e2e".encode()).hexdigest()[:32]
-        evidence = dict(template)
-        evidence.update(
-            evidence_id=f"evidence-{seed}", created_at_utc=stamp, expires_at_utc=expires,
-            repository_commit=commit, account_identity_fingerprint=account_fingerprint,
-            account_identity_status="PROVEN",
-            readiness_status="READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION",
-            status="EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION",
-            wallet_observed_at_utc=stamp, availability_observed_at_utc=stamp,
-            liability_observed_at_utc=stamp, clock_observed_at_utc=stamp,
-            account_observed_at_utc=stamp, instrument_observed_at_utc=stamp,
-        )
-        evidence["check_results"] = [
-            {**item, "status": "PASS"} if item.get("required") else dict(item)
-            for item in evidence["check_results"]
+
+        def check(check_id):
+            return {
+                "check_id": check_id,
+                "category": "e2e",
+                "status": "PASS",
+                "required": True,
+                "evidence": "synthetic test evidence",
+                "reason": "e2e fixture",
+                "remediation": "none",
+            }
+
+        checks = [
+            check("BYBIT_ACCOUNT"),
+            check("BYBIT_CREDENTIAL_SCOPE"),
+            check("BYBIT_LIABILITIES"),
+            check("BYBIT_SPOT_AVAILABLE_BALANCE"),
+            check("BYBIT_INSTRUMENT"),
+            check("CLOCK_SKEW"),
+            check("MONTHLY_BUDGET"),
+            check("UNRESOLVED_OPERATIONS"),
+            check("SECRET_HYGIENE"),
+            check("FILESYSTEM_DURABILITY"),
+            check("OPERATOR_LOCK"),
         ]
-        for key in (
-            "clock_result", "credential_scope_result", "account_mode_result", "liability_result",
-            "instrument_result", "spot_availability_result", "monthly_budget_result",
-            "unresolved_operations_result", "secret_hygiene_result", "filesystem_result",
-            "operator_lock_result",
-        ):
-            evidence[key] = {**evidence[key], "status": "PASS"}
-        evidence["connectivity_result"] = {
-            **evidence["connectivity_result"],
-            "status": "READS_OK",
-            "endpoints": [
-                {**endpoint, "status": "PASS", "observed_at_utc": stamp, "response_contract_valid": True}
-                for endpoint in evidence["connectivity_result"]["endpoints"]
-            ],
+
+        readiness = {
+            "status": "READY_FOR_SEPARATE_REAL_MONEY_AUTHORIZATION",
+            "checks": checks,
+            "observation_timestamps": {
+                "wallet": stamp,
+                "spot_quote_availability": stamp,
+                "clock": stamp,
+                "account": stamp,
+                "instrument": stamp,
+            },
         }
-        receipt = store.persist_production_evidence(evidence)
+
+        connectivity = {
+            "status": "READS_OK",
+            "read_only": True,
+            "endpoints": [
+                {
+                    "endpoint": "account_info",
+                    "status": "PASS",
+                    "read_only": True,
+                    "observed_at_utc": stamp,
+                    "response_contract_valid": True,
+                }
+            ],
+            "message": "NO ORDER SUBMITTED",
+        }
+
+        service = ProductionEvidenceService(
+            data_root=store.root,
+            ledger_path=store.root.parent / "executions.jsonl",
+            now=lambda: now,
+            client_factory=ReadOnlyExecutionContext,
+            readiness_factory=lambda **kwargs: type(
+                "Readiness",
+                (),
+                {"evaluate": lambda self: readiness},
+            )(),
+            connectivity_probe=lambda: connectivity,
+            repo_probe=lambda: {"commit": commit, "dirty": False},
+        )
+
+        evidence, receipt = service.collect()
+        self.assertEqual(
+            evidence["account_identity_fingerprint"],
+            account_fingerprint,
+        )
         return evidence, receipt
 
     def test_real_cli_parser_to_hard_blocked_transport_exactly_once(self):
