@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import json
+from dataclasses import replace
 from contextlib import redirect_stdout
 from io import StringIO
 from decimal import Decimal
@@ -11,7 +12,9 @@ from btc_dca_bridge.execution import (
     client_order_id, parse_bybit_spot_instrument_info, reconcile_fills,
     validate_execution_safety, validate_spot_instrument,
 )
+from btc_dca_bridge.live_readiness import canonical_fingerprint, instrument_execution_projection
 from btc_dca_bridge.cli import main
+from btc_dca_bridge.config import load_execution_config
 
 
 class ExecutionFoundationTests(unittest.TestCase):
@@ -43,6 +46,23 @@ class ExecutionFoundationTests(unittest.TestCase):
         self.assertEqual(result.status, "rejected")
         self.assertIn("kill switch is active", result.reasons)
         self.assertIn("live execution is disabled", result.reasons)
+
+    def test_immutable_disabled_intent_accepts_separate_ephemeral_runtime_enablement(self):
+        config = replace(load_execution_config(), live_execution_enabled=True, kill_switch=False,
+                         order_submission="implemented")
+        result = validate_execution_safety(
+            self.intent, self.decision, ledger_path=self.ledger, calendar_month="2026-10",
+            execution_config=config, instrument_provider=self.provider,
+            submission_state=NoSubmissionEvidence(), live_approval_granted=True,
+        )
+        self.assertEqual(result.status, "approved", result.reasons)
+        tampered = replace(self.intent, live_execution_enabled=True)
+        rejected = validate_execution_safety(
+            tampered, self.decision, ledger_path=self.ledger, calendar_month="2026-10",
+            execution_config=config, instrument_provider=self.provider,
+            submission_state=NoSubmissionEvidence(), live_approval_granted=True,
+        )
+        self.assertIn("immutable OrderIntent live guard must remain disabled", rejected.reasons)
 
     def test_double_cap_reads_ledger(self):
         self.ledger.write_text('{"schema_version":"1.0.0","execution_id":"execution_x","executed_at_utc":"2026-10-01T00:00:00Z","asset":"BTC","quote_currency":"USDT","executed_usd":500,"reference_price_usdt":1,"btc_quantity":null,"status":"reconciled","reconciliation":{"source":"Chat 03 — Portfolio & Budget Tracker","note":"confirmed"}}\n')
@@ -107,6 +127,32 @@ class ExecutionFoundationTests(unittest.TestCase):
 
     def test_instrument_rules_reject_without_rounding(self):
         with self.assertRaises(ValueError): self.provider.get_rules("Bybit", "spot", "BTCUSDT").validate_quote(Decimal("9.99"))
+        with self.assertRaises(ValueError): self.provider.get_rules("Bybit", "spot", "BTCUSDT").validate_quote(Decimal("10.001"))
+
+    def test_instrument_projection_is_semantic_and_decimal_canonical(self):
+        rules = self.provider.get_rules("Bybit", "spot", "BTCUSDT")
+        projection = instrument_execution_projection(rules)
+        equivalent = dict(
+            projection, quote_minimum="10.000", quantity_step="0.000010",
+            response_timestamp="ignored", description="ignored", unrelated_symbol="ETHUSDT",
+        )
+        self.assertEqual(canonical_fingerprint(projection), canonical_fingerprint(instrument_execution_projection(equivalent)))
+        for field, changed_value in (
+            ("quote_minimum", "11"), ("quantity_step", "0.00002"),
+            ("quote_precision", "0.1"), ("max_market_order_qty", "99"),
+            ("price_tick_size", "0.1"),
+        ):
+            with self.subTest(field=field):
+                changed = dict(projection, **{field: changed_value})
+                self.assertNotEqual(
+                    canonical_fingerprint(projection),
+                    canonical_fingerprint(instrument_execution_projection(changed)),
+                )
+
+    def test_canonical_fingerprint_ignores_json_field_order_only(self):
+        left = {"a": 1, "nested": {"x": 2, "y": 3}}
+        right = {"nested": {"y": 3, "x": 2}, "a": 1}
+        self.assertEqual(canonical_fingerprint(left), canonical_fingerprint(right))
 
     def test_exact_decimal_equality_and_invalid_amounts(self):
         for value in ("10", "10.00"):

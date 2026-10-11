@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from btc_dca_bridge.artifacts import ArtifactStore
 from btc_dca_bridge.production_evidence import AUTHORIZATION, ProductionEvidenceService, preauthorization_status, sanitize_evidence, _account_fingerprint
+from btc_dca_bridge.live_readiness import account_identity_fingerprint
 from btc_dca_bridge.cli import main
 
 
@@ -104,6 +105,31 @@ class ProductionEvidenceTests(unittest.TestCase):
         self.assertEqual(self.service.verify(bundle["evidence_id"], current_account_fingerprint="b" * 64)["status"], "INVALID")
         unavailable = ProductionEvidenceService(data_root=self.root / "data", ledger_path=self.root / "ledger.jsonl", now=lambda: self.now, repo_probe=self.repo)
         self.assertEqual(unavailable.verify(bundle["evidence_id"], current_account_fingerprint=None)["status"], "INVALID")
+
+    def test_account_identity_ignores_runtime_account_state(self):
+        baseline = dict(
+            exchange="Bybit",
+            identity="safe-non-secret-id",
+            unified_margin_status=6,
+            margin_mode="REGULAR_MARGIN",
+            spot_hedging_status="OFF",
+        )
+        runtime_changed = dict(baseline, updated_time="later", wallet_balance="999", permissions=["changed"])
+        self.assertEqual(
+            account_identity_fingerprint(**baseline),
+            account_identity_fingerprint(**{key: runtime_changed[key] for key in baseline}),
+        )
+
+    def test_account_identity_changes_for_a_different_key_identity(self):
+        baseline = dict(
+            exchange="Bybit",
+            identity="safe-non-secret-id",
+            unified_margin_status=6,
+            margin_mode="REGULAR_MARGIN",
+            spot_hedging_status="OFF",
+        )
+        changed = dict(baseline, identity="different-key-id")
+        self.assertNotEqual(account_identity_fingerprint(**baseline), account_identity_fingerprint(**changed))
 
     def test_legacy_57_bundle_is_integrity_valid_but_not_modern_ready(self):
         bundle, _ = self.service.collect()

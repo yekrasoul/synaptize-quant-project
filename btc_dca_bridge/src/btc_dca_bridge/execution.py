@@ -54,6 +54,7 @@ class OrderIntent:
     live_execution_requested: bool
     live_execution_enabled: bool
     no_order_executed: bool = True
+    calendar_month: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {k: (str(v) if isinstance(v, Decimal) else v) for k, v in self.__dict__.items()}
@@ -123,14 +124,14 @@ def client_order_id(strategy_id: str, decision_id: str, run_id: str) -> str:
 
 
 def make_order_intent(decision: Mapping[str, Any], *, run_id: str, created_at_utc: str,
-                      live_execution_requested: bool = False) -> OrderIntent:
+                      live_execution_requested: bool = False, calendar_month: str | None = None) -> OrderIntent:
     amount = Decimal(str(decision["final_purchase_usd"]))
     decision_id = str(decision["decision_id"])
-    return OrderIntent("5.1.0", str(decision["strategy_id"]), str(decision["strategy_version"]),
+    return OrderIntent("5.1.1", str(decision["strategy_id"]), str(decision["strategy_version"]),
         run_id, decision_id, f"intent_{decision_id}_{run_id}", created_at_utc, "Bybit", "spot", "BTCUSDT", "Buy",
         amount, "recommendation_only", client_order_id(str(decision["strategy_id"]), decision_id, run_id),
         Decimal(str(decision.get("monthly_spent_before_usd", 0))), Decimal(str(decision.get("remaining_budget_before_usd", 0))),
-        "pending", live_execution_requested, False, True)
+        "pending", live_execution_requested, False, True, calendar_month or created_at_utc[:7])
 
 
 def validate_spot_instrument(exchange: str, market_type: str, symbol: str) -> None:
@@ -155,8 +156,17 @@ class InstrumentRules:
     def validate_quote(self, amount: Decimal) -> None:
         for value in (self.quote_minimum, self.base_quantity_minimum, self.quantity_step, self.price_tick_size):
             if not value.is_finite() or value <= 0: raise ExecutionSafetyError("instrument metadata is malformed")
+        for value in (self.quote_precision, self.max_market_order_qty, self.max_limit_order_qty, self.market_buy_quote_maximum):
+            if value is not None and (not value.is_finite() or value <= 0):
+                raise ExecutionSafetyError("instrument metadata is malformed")
+        if self.market_order_qty_unit not in {None, "baseCoin", "quoteCoin"}:
+            raise ExecutionSafetyError("instrument market-order unit is unsupported")
         if amount < self.quote_minimum:
             raise ExecutionSafetyError("order amount violates exchange minimum")
+        if self.quote_precision is not None and amount % self.quote_precision != 0:
+            raise ExecutionSafetyError("order amount violates quote precision")
+        if self.market_buy_quote_maximum is not None and amount > self.market_buy_quote_maximum:
+            raise ExecutionSafetyError("order amount violates quote-denominated market maximum")
 
 
 def _metadata_decimal(value: Any, label: str) -> Decimal:
@@ -266,7 +276,11 @@ def validate_execution_safety(intent: OrderIntent, decision: Mapping[str, Any], 
     if intent.side != "Buy": reasons.append("side must be Buy")
     if intent.quote_amount_usdt <= 0: reasons.append("final purchase must be positive")
     if not intent.no_order_executed: reasons.append("intent has an invalid execution state")
-    if intent.live_execution_enabled != execution_config.live_execution_enabled: reasons.append("live guard does not match configuration")
+    # Persisted OrderIntent artifacts are prepared under the checked-in,
+    # fail-safe configuration and must remain immutable.  The short-lived
+    # activation/capability chain enables only this invocation; it must not
+    # rewrite (or be required to equal) the intent's production guard.
+    if intent.live_execution_enabled is not False: reasons.append("immutable OrderIntent live guard must remain disabled")
     try:
         if Decimal(str(decision["final_purchase_usd"])) != intent.quote_amount_usdt: reasons.append("amount does not match approved Decision")
     except Exception: reasons.append("Decision amount is invalid")

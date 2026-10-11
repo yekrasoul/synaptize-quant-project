@@ -26,7 +26,7 @@ from . import availability
 from .ledger import read_executions
 from .operations import OperationLock, OperationLockError, OperationsService
 from .paths import DATA_PATH, LEDGER_PATH
-from .private_bybit import AccountInfo, BybitPrivateReadClient, CredentialClassification, MalformedBybitResponseError, PrivateBybitError
+from .private_bybit import AccountInfo, BybitPrivateReadClient, CredentialClassification, MalformedBybitResponseError, PrivateBybitError, credential_scope_allows_spot_execution
 from .quote_limits import QuoteUnitLimitEvidence, QuoteUnitLimitPolicy, QuoteUnitLimitValidationError, PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, unavailable_quote_unit_limit, validate_quote_unit_limit_evidence
 
 
@@ -241,14 +241,9 @@ class ProductionReadinessService:
         try:
             client = self.client_factory()
             credential = client.credential_info()
-            actions = {str(action) for values in credential.permissions.values() for action in values}
-            dangerous = {"Withdrawal", "Withdraw", "AccountTransfer", "SubMemberTransfer", "Borrow", "Repay"}
-            # _classify_permissions validates the complete shape, including
-            # Bybit's Unified-account DerivativesTrade parent permission. It
-            # must not be rejected here merely because its group is named
-            # "Derivatives"; ContractTrade, Options, dangerous Wallet scopes,
-            # and unknown non-empty groups remain blocked by that classifier.
-            cred_ok = credential.classification is CredentialClassification.TRADE_CAPABLE and "SpotTrade" in actions and not actions.intersection(dangerous)
+            # DerivativesTrade is Unified-account metadata. The exact Spot
+            # execution contract remains enforced independently at submission.
+            cred_ok = credential_scope_allows_spot_execution(credential)
             add("BYBIT_CREDENTIAL_SCOPE", "credentials", "PASS" if cred_ok else "FAIL", True, "classification and explicit permission groups inspected", "credential scope is Spot trade-capable and excludes unsafe permissions" if cred_ok else "credential scope cannot prove approved Spot-only permissions", "Use a dedicated least-privilege Spot credential")
             account = client.account_info()
             mark_observed("account")

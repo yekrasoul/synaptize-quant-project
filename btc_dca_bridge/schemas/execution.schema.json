@@ -181,7 +181,7 @@
         },
         "approval_id": {
           "type": "string",
-          "pattern": "^approval-[a-f0-9]{32}$"
+          "pattern": "^(?:approval|approval5b)-[a-f0-9]{32}$"
         },
         "order_id": {
           "type": "string",

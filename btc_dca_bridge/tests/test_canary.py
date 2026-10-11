@@ -165,13 +165,13 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertEqual(result.manifest.canary_status, "BLOCKED")
         self.assertIn("account verification is incomplete", " ".join(result.manifest.reasons))
 
-    def test_manifest_is_immutable_and_has_fifteen_minute_expiry(self):
+    def test_manifest_is_immutable_and_has_thirty_minute_expiry(self):
         result = self.prepare()
-        self.assertEqual(result.manifest.expires_at_utc, "2026-10-07T12:15:00Z")
-        self.assertFalse(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=14)))
-        self.assertTrue(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=15)))
+        self.assertEqual(result.manifest.expires_at_utc, "2026-10-07T12:30:00Z")
+        self.assertFalse(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=29)))
+        self.assertTrue(result.manifest.is_expired(now_utc=self.now + timedelta(minutes=30)))
         with self.assertRaisesRegex(CanaryPreparationError, "EXPIRED"):
-            result.manifest.validate_for_execution(now_utc=self.now + timedelta(minutes=15))
+            result.manifest.validate_for_execution(now_utc=self.now + timedelta(minutes=30))
         with self.assertRaisesRegex(CanaryPreparationError, "NOT ENABLED"):
             result.manifest.validate_for_execution(now_utc=self.now)
         with self.assertRaises(Exception): self.prepare(data=self.root / "data")
@@ -248,6 +248,100 @@ class CanaryPreparationTests(unittest.TestCase):
         self.assertIn("CANARY BLOCKED", output.getvalue())
         self.assertTrue(output.getvalue().rstrip().endswith("NO ORDER SUBMITTED"))
         self.assertFalse(any(name.startswith("post") for name in self.client.calls))
+
+
+
+    def test_prepare_persists_order_intent_when_missing(self):
+        from btc_dca_bridge.artifacts import ArtifactType
+
+        data = self.root / "data-intent-missing"
+        result = self.prepare(data=data)
+
+        persisted, digest = ArtifactStore(data).find_artifact(
+            ArtifactType.ORDER_INTENT,
+            identity_field="order_intent_id",
+            identity_value=result.manifest.order_intent_id,
+        )
+
+        self.assertEqual(
+            persisted["order_intent_id"],
+            result.manifest.order_intent_id,
+        )
+        self.assertEqual(
+            persisted["decision_id"],
+            result.manifest.decision_id,
+        )
+        self.assertEqual(
+            persisted["client_order_id"],
+            result.manifest.client_order_id,
+        )
+        self.assertEqual(
+            persisted["run_id"],
+            self.run_id,
+        )
+        self.assertEqual(persisted["calendar_month"], "2026-10")
+        self.assertEqual(persisted["calendar_month"], result.manifest.calendar_month)
+        self.assertEqual(len(digest), 64)
+
+    def test_prepare_accepts_exact_existing_order_intent(self):
+        from btc_dca_bridge.artifacts import ArtifactType
+        from btc_dca_bridge.execution import make_order_intent
+
+        data = self.root / "data-intent-existing-exact"
+        store = ArtifactStore(data)
+
+        intent = make_order_intent(
+            self.decision,
+            run_id=self.run_id,
+            created_at_utc=self.decision["created_at_utc"],
+        )
+        store.persist(
+            ArtifactType.ORDER_INTENT,
+            intent,
+            run_id=self.run_id,
+        )
+
+        result = self.prepare(data=data)
+
+        self.assertEqual(
+            result.manifest.order_intent_id,
+            intent.order_intent_id,
+        )
+
+        persisted, _ = store.find_artifact(
+            ArtifactType.ORDER_INTENT,
+            identity_field="order_intent_id",
+            identity_value=intent.order_intent_id,
+        )
+        self.assertEqual(persisted, intent.to_dict())
+
+    def test_prepare_rejects_mismatched_existing_order_intent(self):
+        from btc_dca_bridge.artifacts import ArtifactType
+        from btc_dca_bridge.execution import make_order_intent
+
+        data = self.root / "data-intent-existing-mismatch"
+        store = ArtifactStore(data)
+
+        intent = make_order_intent(
+            self.decision,
+            run_id=self.run_id,
+            created_at_utc=self.decision["created_at_utc"],
+        )
+
+        mismatched = intent.to_dict()
+        mismatched["client_order_id"] = "dca-" + "f" * 32
+
+        store.persist(
+            ArtifactType.ORDER_INTENT,
+            mismatched,
+            run_id=self.run_id,
+        )
+
+        with self.assertRaisesRegex(
+            CanaryPreparationError,
+            "existing order intent does not exactly match canonical intent",
+        ):
+            self.prepare(data=data)
 
 
 if __name__ == "__main__": unittest.main()

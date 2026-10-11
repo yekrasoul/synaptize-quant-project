@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .config import load_notification_config, load_operational_config, load_strategy_config, load_execution_config
 from .artifacts import ArtifactStore, ArtifactType
@@ -29,7 +30,7 @@ from .production import (
 from .schemas import validate_all_schemas, validate_artifact
 from .shadow import build_live_shadow_pipeline, format_shadow_output
 from .execution import JsonInstrumentMetadataProvider, NoSubmissionEvidence, SubmissionEvidenceStore, OrderIntent, make_order_intent, validate_execution_safety
-from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError
+from .private_bybit import BybitPostAckReconciler, BybitPrivateReadClient, PrivateBybitError, credential_scope_allows_spot_execution
 from .canary import CanaryPreparer
 from .availability import PRODUCTION_AVAILABILITY_POLICY, validate_spot_quote_availability
 from .live_order import LiveApproval, LiveOrderEngine, SignedBybitSubmissionTransport, SubmissionResult
@@ -37,10 +38,15 @@ from .real_money_authorization import authorize_persisted_approval, read_authori
 from .live_activation import create_execution_activation, read_activation_status
 from .production_enablement import ControlledProductionExecutor, gate_d, prepare_production_enablement, read_enablement_status
 from .live_readiness import (
+    MAX_CLOCK_ROUND_TRIP_MS,
+    MAX_CLOCK_SKEW_SECONDS,
     ORDER_CONTRACT,
     LiveExecutionApproval,
+    account_identity_fingerprint,
     canonical_fingerprint,
     execution_safety_config_fingerprint,
+    instrument_execution_projection,
+    manifest_instrument_execution_projection,
     production_contract_fingerprint,
 )
 from .runtime_execution import derive_ephemeral_execution_policy
@@ -51,9 +57,17 @@ from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
 from .notifications import TelegramNotifier, TelegramTransport, format_failure_message, format_success_message
-from .readiness import ProductionReadinessService, production_connectivity
+from .readiness import ProductionReadinessService, measure_server_time, production_connectivity
 from .canary_readiness import bybit_canary_readiness
 from .production_evidence import ProductionEvidenceService, preauthorization_status, _account_fingerprint
+from .readiness_checks import project_gate_d_evidence
+from .ttl_policy import (
+    CANARY_MANIFEST_TTL,
+    EXECUTION_ACTIVATION_TTL,
+    LIVE_EXECUTION_APPROVAL_TTL,
+    PRODUCTION_ENABLEMENT_TTL,
+    REAL_MONEY_AUTHORIZATION_TTL,
+)
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
 
@@ -168,7 +182,10 @@ def _parser() -> argparse.ArgumentParser:
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
-    subparsers.add_parser("live-readiness", help="read-only Phase 5.4B live boundary status")
+    live_readiness = subparsers.add_parser("live-readiness", help="read-only controlled execution chain status")
+    live_readiness.add_argument("--data-root", type=Path, default=DATA_PATH)
+    live_readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH)
+    live_readiness.add_argument("--json", action="store_true")
     authorize = subparsers.add_parser("live-authorize", help="explicitly authorize one exact prepared order; never enables execution")
     authorize.add_argument("--approval-id", required=True)
     authorize.add_argument("--approval-sha", required=True)
@@ -239,7 +256,7 @@ def _parser() -> argparse.ArgumentParser:
     audit.add_argument("--data-root", type=Path, default=DATA_PATH)
     audit.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     audit.add_argument("--json", action="store_true")
-    approve = subparsers.add_parser("canary-approve", help="persist a precise five-minute manual approval")
+    approve = subparsers.add_parser("canary-approve", help="persist a precise ten-minute manual approval")
     approve.add_argument("--run-id", required=True); approve.add_argument("--canary-id", required=True)
     approve.add_argument("--manifest-sha", required=True); approve.add_argument("--amount", required=True)
     approve.add_argument("--client-order-id", required=True); approve.add_argument("--payload-fingerprint", required=True)
@@ -608,21 +625,330 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
 
 
-def _live_readiness() -> tuple[dict[str, object], int]:
-    """Report the checked-in boundary without collecting private data or mutating anything."""
+_READINESS_ARTIFACTS = (
+    ("decision", ArtifactType.DECISION, "decisions", "decision_id", "created_at_utc", None),
+    ("order_intent", ArtifactType.ORDER_INTENT, "order_intents", "order_intent_id", "created_at_utc", None),
+    ("canary_manifest", ArtifactType.CANARY_MANIFEST, "canary_manifests", "canary_id", "prepared_at_utc", CANARY_MANIFEST_TTL),
+    ("live_execution_approval", ArtifactType.LIVE_EXECUTION_APPROVAL, "live_execution_approvals", "approval_id", "created_at_utc", LIVE_EXECUTION_APPROVAL_TTL),
+    ("real_money_authorization", ArtifactType.REAL_MONEY_AUTHORIZATION, "real_money_authorizations", "authorization_id", "created_at_utc", REAL_MONEY_AUTHORIZATION_TTL),
+    ("execution_activation", ArtifactType.EXECUTION_ACTIVATION, "execution_activations", "activation_id", "created_at_utc", EXECUTION_ACTIVATION_TTL),
+    ("production_enablement", ArtifactType.PRODUCTION_ENABLEMENT, "production_enablements", "enablement_id", "created_at_utc", PRODUCTION_ENABLEMENT_TTL),
+)
+
+
+def _current_commit() -> str:
+    return subprocess.run(("git", "rev-parse", "HEAD"), capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _readiness_latest(store: ArtifactStore, kind: ArtifactType, directory: str) -> tuple[dict[str, object], str] | None:
+    if kind is ArtifactType.PRODUCTION_EVIDENCE:
+        return _select_production_evidence(store, current_commit=_current_commit(), now=datetime.now(UTC))
+    paths = sorted((store.root / directory).glob("*/*/*/*.json"))
+    if not paths:
+        return None
+    path = paths[-1]
+    date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+    payload = store.read_production_evidence(path.stem) if kind is ArtifactType.PRODUCTION_EVIDENCE else store.read(kind, run_id=path.stem, artifact_date_utc=date)
+    return payload, artifact_sha256(payload)
+
+
+def _readiness_candidates(store: ArtifactStore, kind: ArtifactType, directory: str) -> list[tuple[dict[str, object], str]]:
+    """Read every candidate; chain resolution, not path order, chooses one."""
+    candidates: list[tuple[dict[str, object], str]] = []
+    for path in (store.root / directory).glob("*/*/*/*.json"):
+        try:
+            date = datetime(int(path.parts[-4]), int(path.parts[-3]), int(path.parts[-2]), tzinfo=UTC)
+            payload = store.read(kind, run_id=path.stem, artifact_date_utc=date)
+            candidates.append((payload, artifact_sha256(payload)))
+        except Exception:
+            continue
+    return candidates
+
+
+def _select_production_evidence(store: ArtifactStore, *, current_commit: str, now: datetime) -> tuple[dict[str, object], str] | None:
+    """Select evidence by validated metadata, never by filename ordering."""
+    root = store.root / "production_evidence"
+    candidates: list[tuple[dict[str, object], str, datetime, bool, bool]] = []
+    for path in root.glob("*/*/*/*.json"):
+        try:
+            payload = store.read_production_evidence(path.stem)
+            created = datetime.fromisoformat(str(payload["created_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+            expires = datetime.fromisoformat(str(payload["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+            if created.tzinfo is None or expires.tzinfo is None:
+                continue
+            digest = artifact_sha256(payload)
+            current = payload.get("repository_commit") == current_commit
+            unexpired = expires > now
+            ready = payload.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION"
+            candidates.append((payload, digest, created, current, unexpired and ready))
+        except Exception:
+            # Corrupt, schema-invalid, or malformed evidence is never a
+            # selection candidate and must not shadow a valid bundle.
+            continue
+    if not candidates:
+        return None
+
+    def newest(rows: list[tuple[dict[str, object], str, datetime, bool, bool]]) -> tuple[dict[str, object], str] | None:
+        if not rows:
+            return None
+        payload, digest, _, _, _ = max(rows, key=lambda row: (row[2], str(row[0].get("evidence_id", ""))))
+        return payload, digest
+
+    current_rows = [row for row in candidates if row[3]]
+    selected = newest([row for row in current_rows if row[4]])
+    if selected is not None:
+        return selected
+    selected = newest([row for row in current_rows if row[2] and row[0].get("expires_at_utc") and datetime.fromisoformat(str(row[0]["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC) > now])
+    if selected is not None:
+        return selected
+    # Keep an expired current-HEAD candidate visible so the report can say
+    # EXPIRED. If there is no current-HEAD evidence, expose the newest foreign
+    # candidate only so the report can say STALE_REPOSITORY; it is never valid.
+    return newest(current_rows) or newest(candidates)
+
+
+def _assess_readiness_artifact(label: str, payload: Mapping[str, object], digest: str, *, current_commit: str, now: datetime, identity_key: str, created_key: str, ttl: timedelta | None) -> dict[str, object]:
+    result: dict[str, object] = {"status": "VALID", "id": payload.get(identity_key), "sha256": digest}
+    if payload.get("repository_commit_sha") and payload.get("repository_commit_sha") != current_commit:
+        result.update(status="STALE_REPOSITORY", reason="artifact was created for a different repository commit", expected_repository_commit=current_commit, artifact_repository_commit=payload.get("repository_commit_sha"))
+        return result
+    if ttl is None:
+        return result
+    try:
+        created = datetime.fromisoformat(str(payload[created_key]).replace("Z", "+00:00")).astimezone(UTC)
+        expires = datetime.fromisoformat(str(payload["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
+    except (KeyError, TypeError, ValueError) as exc:
+        result.update(status="INVALID", reason=f"invalid artifact timestamps: {exc}")
+        return result
+    if expires <= now:
+        result.update(status="EXPIRED", reason="artifact expiry has passed", expires_at_utc=payload.get("expires_at_utc"))
+    elif ttl is not None and expires - created > ttl:
+        result.update(status="INVALID", reason="artifact TTL exceeds canonical policy")
+    elif label in {"real_money_authorization", "execution_activation"} and payload.get("consumed") is True:
+        result["status"] = "CONSUMED"
+    elif label == "production_enablement" and payload.get("status") == "REVOKED":
+        result["status"] = "REVOKED"
+    elif str(payload.get("state", "")) in {"EXPIRED", "REVOKED", "CONSUMED"}:
+        result["status"] = str(payload["state"])
+    return result
+
+
+def _readiness_payload_month(payload: Mapping[str, object]) -> str | None:
+    month = payload.get("calendar_month")
+    if month:
+        return str(month)
+    created = payload.get("created_at_utc") or payload.get("prepared_at_utc")
+    if not created:
+        return None
+    try:
+        return datetime.fromisoformat(str(created).replace("Z", "+00:00")).strftime("%Y-%m")
+    except ValueError:
+        return None
+
+
+def _readiness_matches(payload: Mapping[str, object], expected: Mapping[str, object]) -> bool:
+    return all(payload.get(key) == value for key, value in expected.items())
+
+
+def _resolve_readiness_chain(store: ArtifactStore, *, current_commit: str, now: datetime) -> tuple[dict[str, object], list[str]]:
+    """Resolve one identity-linked ceremony, never one latest artifact per directory."""
+    candidates: dict[str, list[tuple[dict[str, object], str, dict[str, object]]]] = {}
+    for label, kind, directory, identity_key, created_key, ttl in _READINESS_ARTIFACTS:
+        rows = []
+        for payload, digest in _readiness_candidates(store, kind, directory):
+            assessment = _assess_readiness_artifact(label, payload, digest, current_commit=current_commit, now=now, identity_key=identity_key, created_key=created_key, ttl=ttl)
+            rows.append((payload, digest, assessment))
+        candidates[label] = rows
+
+    def valid(label: str) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in candidates[label] if row[2]["status"] == "VALID"]
+
+    def newest(rows: list[tuple[dict[str, object], str, dict[str, object]]], created_key: str) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return sorted(rows, key=lambda row: (str(row[0].get(created_key, "")), str(row[2].get("id", ""))), reverse=True)
+
+    def matching(label: str, expected: Mapping[str, object]) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in valid(label) if _readiness_matches(row[0], expected)]
+
+    def matching_any(label: str, expected: Mapping[str, object]) -> list[tuple[dict[str, object], str, dict[str, object]]]:
+        return [row for row in candidates[label] if _readiness_matches(row[0], expected)]
+
+    def build(approval_row: tuple[dict[str, object], str, dict[str, object]]) -> tuple[dict[str, object], int]:
+        approval, approval_sha, approval_state = approval_row
+        decision_rows = matching("decision", {"decision_id": approval.get("decision_id")})
+        decision_rows = [row for row in decision_rows if row[1] == approval.get("decision_sha256")]
+        intent_rows = matching("order_intent", {"order_intent_id": approval.get("order_intent_id")})
+        intent_rows = [row for row in intent_rows if row[1] == approval.get("order_intent_sha256")]
+        manifest_rows = matching("canary_manifest", {"canary_id": approval.get("canary_manifest_id")})
+        manifest_rows = [row for row in manifest_rows if row[1] == approval.get("canary_manifest_sha256")]
+        if not decision_rows or not intent_rows or not manifest_rows:
+            return {}, 0
+        decision, decision_sha, _ = newest(decision_rows, "created_at_utc")[0]
+        intent, intent_sha, _ = newest(intent_rows, "created_at_utc")[0]
+        manifest, manifest_sha, _ = newest(manifest_rows, "prepared_at_utc")[0]
+        month = approval.get("calendar_month")
+        if not _readiness_matches(intent, {"decision_id": decision.get("decision_id"), "client_order_id": approval.get("client_order_id")}):
+            return {}, 0
+        if not _readiness_matches(manifest, {"order_intent_id": intent.get("order_intent_id"), "client_order_id": approval.get("client_order_id")}):
+            return {}, 0
+        if str(intent.get("quote_amount_usd")) != str(approval.get("quote_amount_usdt")) or _readiness_payload_month(intent) != str(month):
+            return {}, 0
+
+        authorization_expected = {
+            "approval_id": approval.get("approval_id"), "approval_sha256": approval_sha,
+            "canary_manifest_id": approval.get("canary_manifest_id"), "canary_manifest_sha256": manifest_sha,
+            "decision_id": decision.get("decision_id"), "decision_sha256": decision_sha,
+            "order_intent_id": intent.get("order_intent_id"), "order_intent_sha256": intent_sha,
+            "client_order_id": approval.get("client_order_id"), "exact_quote_amount_usdt": approval.get("quote_amount_usdt"),
+            "calendar_month": month, "one_shot_identity": approval.get("one_shot_identity"),
+        }
+        authorization_rows = matching("real_money_authorization", authorization_expected)
+        if not authorization_rows:
+            authorization_rows = matching_any("real_money_authorization", authorization_expected)
+        authorization_row = newest(authorization_rows, "created_at_utc")[0] if authorization_rows else None
+        activation_row = None
+        if authorization_row:
+            authorization, authorization_sha, _ = authorization_row
+            activation_expected = {
+                "authorization_id": authorization.get("authorization_id"), "authorization_sha256": authorization_sha,
+                "approval_id": approval.get("approval_id"), "approval_sha256": approval_sha,
+                "canary_manifest_id": approval.get("canary_manifest_id"), "canary_manifest_sha256": manifest_sha,
+                "decision_id": decision.get("decision_id"), "decision_sha256": decision_sha,
+                "order_intent_id": intent.get("order_intent_id"), "order_intent_sha256": intent_sha,
+                "client_order_id": approval.get("client_order_id"), "exact_quote_amount_usdt": approval.get("quote_amount_usdt"),
+                "calendar_month": month, "one_shot_identity": approval.get("one_shot_identity"),
+            }
+            activation_rows = matching("execution_activation", activation_expected)
+            if not activation_rows:
+                activation_rows = matching_any("execution_activation", activation_expected)
+            activation_row = newest(activation_rows, "created_at_utc")[0] if activation_rows else None
+
+        enablement_expected = {
+            "repository_commit_sha": current_commit,
+            "production_contract_fingerprint": approval.get("production_contract_fingerprint"),
+            "execution_policy_fingerprint": approval.get("execution_safety_config_fingerprint"),
+            "expected_account_identity_fingerprint": approval.get("account_identity_fingerprint"),
+        }
+        enablement_rows = [row for row in valid("production_enablement") if _readiness_matches(row[0], enablement_expected)]
+        if not enablement_rows:
+            enablement_rows = [row for row in candidates["production_enablement"] if _readiness_matches(row[0], {key: value for key, value in enablement_expected.items() if key != "repository_commit_sha"})]
+        enablement_row = newest(enablement_rows, "created_at_utc")[0] if enablement_rows else None
+        selected = {
+            "decision": (decision, decision_sha, _assess_readiness_artifact("decision", decision, decision_sha, current_commit=current_commit, now=now, identity_key="decision_id", created_key="created_at_utc", ttl=None)),
+            "order_intent": (intent, intent_sha, _assess_readiness_artifact("order_intent", intent, intent_sha, current_commit=current_commit, now=now, identity_key="order_intent_id", created_key="created_at_utc", ttl=None)),
+            "canary_manifest": (manifest, manifest_sha, _assess_readiness_artifact("canary_manifest", manifest, manifest_sha, current_commit=current_commit, now=now, identity_key="canary_id", created_key="prepared_at_utc", ttl=CANARY_MANIFEST_TTL)),
+            "live_execution_approval": approval_row,
+        }
+        if authorization_row: selected["real_money_authorization"] = authorization_row
+        if activation_row: selected["execution_activation"] = activation_row
+        if enablement_row: selected["production_enablement"] = enablement_row
+        chain = {label: row[2] for label, row in selected.items()}
+        complete = len(selected) == len(_READINESS_ARTIFACTS)
+        return {"chain": chain, "complete": complete, "created_at_utc": approval.get("created_at_utc", ""), "stable_id": approval.get("approval_id", "")}, int(complete)
+
+    approval_rows = newest(valid("live_execution_approval"), "created_at_utc")
+    built = [build(row) for row in approval_rows]
+    built = [item for item in built if item[0]]
+    blockers: list[str] = []
+    if built:
+        selected_chain = max(built, key=lambda item: (item[1], item[0]["created_at_utc"], item[0]["stable_id"]))[0]["chain"]
+    else:
+        selected_chain = {}
+        for label in candidates:
+            rows = candidates[label]
+            if rows:
+                selected_chain[label] = newest(rows, "created_at_utc")[0][2]
+        if any(item.get("status") == "VALID" for item in selected_chain.values()):
+            blockers.append("ceremony artifacts do not share one exact chain: BINDING_MISMATCH")
+            for item in selected_chain.values():
+                if item.get("status") == "VALID":
+                    item.update(status="BINDING_MISMATCH", reason="no identity-linked ceremony chain exists")
+    for label, _, directory, _, _, _ in _READINESS_ARTIFACTS:
+        if label not in selected_chain:
+            selected_chain[label] = {"status": "MISSING", "source": directory}
+        if selected_chain[label]["status"] != "VALID":
+            blockers.append(f"{label}: {selected_chain[label]['status']}")
+    return selected_chain, blockers
+
+
+def _live_readiness(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    """Validate one coherent persisted ceremony without collecting or mutating state."""
     config = load_execution_config()
+    store = ArtifactStore(args.data_root)
+    current_commit = _current_commit()
+    now = datetime.now(UTC)
+    chain, blockers = _resolve_readiness_chain(store, current_commit=current_commit, now=now)
+
+    evidence_result: dict[str, object] = {"status": "MISSING"}
+    evidence_found = _readiness_latest(store, ArtifactType.PRODUCTION_EVIDENCE, "production_evidence")
+    if evidence_found:
+        evidence, evidence_sha = evidence_found
+        evidence_status = "VALID" if evidence.get("repository_commit") == current_commit and evidence.get("status") == "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION" else ("STALE_REPOSITORY" if evidence.get("repository_commit") != current_commit else "NOT_READY")
+        try:
+            if datetime.fromisoformat(str(evidence["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC) <= now:
+                evidence_status = "EXPIRED"
+        except (KeyError, TypeError, ValueError):
+            evidence_status = "INVALID"
+        evidence_result = {"status": evidence_status, "id": evidence.get("evidence_id"), "sha256": evidence_sha, "repository_commit": evidence.get("repository_commit")}
+    if evidence_result["status"] != "VALID":
+        blockers.append(f"production evidence: {evidence_result['status']}")
+    stale = any(item.get("status") == "STALE_REPOSITORY" for item in chain.values()) or evidence_result["status"] == "STALE_REPOSITORY"
+    if stale and "ceremony artifacts are stale for current repository commit" not in blockers:
+        blockers.insert(0, "ceremony artifacts are stale for current repository commit")
+    # The checked-in policy is intentionally fail-closed.  A READY result
+    # means the ceremony can derive this separate, process-local policy during
+    # canary-execute; it does not mutate or enable the checked-in config.
+    checked_in_safety = {
+        "live_execution_enabled": config.live_execution_enabled,
+        "kill_switch": config.kill_switch,
+        "order_submission": config.order_submission,
+        "monthly_cap_usd": str(config.monthly_cap_usd),
+    }
+    one_shot_runtime = {
+        "live_execution_enabled": True,
+        "kill_switch": False,
+        "order_submission": "implemented",
+        "mode": "EPHEMERAL_ONLY_AFTER_ALL_GATES",
+    }
+    safety = {
+        "checked_in": checked_in_safety,
+        "one_shot_runtime": one_shot_runtime,
+    }
+    if config.live_execution_enabled or not config.kill_switch or config.order_submission != "not_implemented":
+        blockers.append("checked-in execution policy is not fail-safe")
+
+    blockers = list(dict.fromkeys(blockers))
+
+    if blockers:
+        if stale or evidence_result["status"] in {"MISSING", "EXPIRED", "NOT_READY", "INVALID"}:
+            next_command = "btc-dca collect-production-evidence --data-root data --ledger ledger/executions.jsonl"
+        elif chain.get("production_enablement", {}).get("status") != "VALID":
+            next_command = "btc-dca production-enable-prepare"
+        else:
+            next_command = None
+
+        return ({
+            "status": "BLOCKED",
+            "final_state": "BLOCKED",
+            "repository_commit": current_commit,
+            "chain": chain,
+            "production_evidence": evidence_result,
+            "safety": safety,
+            "blockers": blockers,
+            "next_allowed_command": next_command,
+            "message": "NO ORDER EXECUTED",
+        }, EXIT_BLOCKED)
+
     return ({
-        "status": "BLOCKED",
-        "authorization": "NOT_AUTHORIZED",
-        "reason": "Phase 5.4B is preparation-only; checked-in execution defaults remain disabled",
-        "safety": {
-            "live_execution_enabled": config.live_execution_enabled,
-            "kill_switch": config.kill_switch,
-            "explicit_live_approval_required": config.explicit_live_approval_required,
-            "order_submission": config.order_submission,
-        },
+        "status": "READY_FOR_ONE_SHOT_EXECUTION",
+        "final_state": "READY_FOR_ONE_SHOT_EXECUTION",
+        "repository_commit": current_commit,
+        "chain": chain,
+        "production_evidence": evidence_result,
+        "safety": safety,
+        "blockers": [],
+        "next_allowed_command": "btc-dca canary-execute",
         "message": "NO ORDER EXECUTED",
-    }, EXIT_BLOCKED)
+    }, 0)
 
 
 def _live_authorize(args: argparse.Namespace) -> tuple[dict[str, object], int]:
@@ -796,7 +1122,7 @@ def _approval_from_dict(payload: dict[str, object]) -> LiveApproval | LiveExecut
 
 
 def _intent_from_dict(payload: dict[str, object]) -> OrderIntent:
-    return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)))
+    return OrderIntent(str(payload["schema_version"]), str(payload["strategy_id"]), str(payload["strategy_version"]), str(payload["run_id"]), str(payload["decision_id"]), str(payload["order_intent_id"]), str(payload["created_at_utc"]), str(payload["exchange"]), str(payload["market_type"]), str(payload["symbol"]), str(payload["side"]), Decimal(str(payload["quote_amount_usd"])), str(payload["expected_mode"]), str(payload["client_order_id"]), Decimal(str(payload["monthly_spent_before_usd"])), Decimal(str(payload["remaining_budget_before_usd"])), str(payload["safety_validation_status"]), bool(payload["live_execution_requested"]), bool(payload["live_execution_enabled"]), bool(payload.get("no_order_executed", True)), payload.get("calendar_month"))
 
 
 def _latest_verified_production_evidence(store: ArtifactStore) -> tuple[dict[str, object], str]:
@@ -838,9 +1164,9 @@ def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
         manifest_expires = datetime.fromisoformat(str(manifest["expires_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
     except (KeyError, ValueError) as exc:
         raise ValueError("CanaryManifest expiry is malformed") from exc
-    if now >= manifest_expires or manifest_expires - now < timedelta(minutes=5):
-        raise ValueError("CanaryManifest does not have a full five-minute approval window remaining")
-    required_manifest = ("monthly_spent_usd", "remaining_budget_usd", "account_mode", "credential_classification", "authoritative_available_usdt", "instrument_min_order_amt", "instrument_qty_step", "instrument_tick_size", "pre_submission_state", "liability_detected")
+    if now >= manifest_expires or manifest_expires - now < timedelta(minutes=10):
+        raise ValueError("CanaryManifest does not have a full ten-minute approval window remaining")
+    required_manifest = ("monthly_spent_usd", "remaining_budget_usd", "account_mode", "credential_classification", "authoritative_available_usdt", "instrument_min_order_amt", "instrument_base_quantity_minimum", "instrument_qty_step", "instrument_tick_size", "pre_submission_state", "liability_detected")
     if any(manifest.get(key) is None for key in required_manifest):
         raise ValueError("CanaryManifest lacks required persisted readiness evidence")
     if manifest["liability_detected"] is not False or manifest["pre_submission_state"] != "conclusively_absent":
@@ -860,12 +1186,12 @@ def _canary_approve(args: argparse.Namespace) -> dict[str, object]:
         account_mode=str(manifest["account_mode"]), credential_scope_classification="SPOT_TRADE_NO_WITHDRAW",
         liability_state="NONE",
         spot_usdt_availability_fingerprint=canonical_fingerprint({"authoritative_available_usdt": manifest["authoritative_available_usdt"], "availability_method": manifest["availability_method"]}),
-        instrument_metadata_fingerprint=canonical_fingerprint({key: manifest[key] for key in ("instrument_min_order_amt", "instrument_qty_step", "instrument_tick_size")} ),
+        instrument_metadata_fingerprint=canonical_fingerprint(manifest_instrument_execution_projection(manifest)),
         clock_skew_evidence_fingerprint=canonical_fingerprint(evidence_check["CLOCK_SKEW"]),
         reconciliation_evidence_fingerprint=canonical_fingerprint({"client_order_id": manifest["client_order_id"], "state": manifest["pre_submission_state"]}),
         production_contract_fingerprint=production_contract_fingerprint(),
         execution_safety_config_fingerprint=execution_safety_config_fingerprint(load_execution_config()),
-        manifest_expires_at_utc=str(manifest["expires_at_utc"]), state="PREPARED", ttl=timedelta(minutes=5),
+        manifest_expires_at_utc=str(manifest["expires_at_utc"]), state="PREPARED", ttl=timedelta(minutes=10),
     )
     receipt = approval.persist(store, run_id=args.run_id)
     # Keep the older preparation artifact for legacy operations/recovery
@@ -911,33 +1237,36 @@ def _latest_artifact(store: ArtifactStore, kind: ArtifactType) -> tuple[dict[str
 
 def _load_controlled_execution_artifacts(args: argparse.Namespace) -> dict[str, object]:
     """Load the complete Phase 5.4B-E chain from verified immutable bytes."""
+    required_arguments = (
+        "run_id", "canary_id", "manifest_sha", "approval_id", "approval_sha",
+        "authorization_id", "authorization_sha", "activation_id", "activation_sha",
+        "enablement_id", "enablement_sha", "evidence_id", "evidence_sha",
+    )
+    missing = [name for name in required_arguments if not getattr(args, name, None)]
+    if missing:
+        raise ValueError("exact controlled-execution arguments are required: " + ", ".join(missing))
     store = ArtifactStore(args.data_root)
     approval, approval_sha = store.find_artifact(ArtifactType.LIVE_EXECUTION_APPROVAL, identity_field="approval_id", identity_value=args.approval_id)
     manifest, manifest_sha = store.find_artifact(ArtifactType.CANARY_MANIFEST, identity_field="canary_id", identity_value=args.canary_id)
     decision, decision_sha = store.find_artifact(ArtifactType.DECISION, identity_field="decision_id", identity_value=str(approval["decision_id"]))
     intent, intent_sha = store.find_artifact(ArtifactType.ORDER_INTENT, identity_field="order_intent_id", identity_value=str(approval["order_intent_id"]))
-    authorization_id = getattr(args, "authorization_id", None)
     authorization, authorization_sha = store.find_artifact(
         ArtifactType.REAL_MONEY_AUTHORIZATION,
-        identity_field="authorization_id" if authorization_id else "one_shot_identity",
-        identity_value=authorization_id or str(approval["one_shot_identity"]),
+        identity_field="authorization_id",
+        identity_value=args.authorization_id,
     )
-    activation_id = getattr(args, "activation_id", None)
     activation, activation_sha = store.find_artifact(
         ArtifactType.EXECUTION_ACTIVATION,
-        identity_field="activation_id" if activation_id else "one_shot_identity",
-        identity_value=activation_id or str(approval["one_shot_identity"]),
+        identity_field="activation_id",
+        identity_value=args.activation_id,
     )
-    enablement_id = getattr(args, "enablement_id", None)
-    enablement, enablement_sha = (
-        store.find_artifact(ArtifactType.PRODUCTION_ENABLEMENT, identity_field="enablement_id", identity_value=enablement_id)
-        if enablement_id else _latest_artifact(store, ArtifactType.PRODUCTION_ENABLEMENT)
+    enablement, enablement_sha = store.find_artifact(
+        ArtifactType.PRODUCTION_ENABLEMENT,
+        identity_field="enablement_id",
+        identity_value=args.enablement_id,
     )
-    evidence_id = getattr(args, "evidence_id", None)
-    evidence, evidence_sha = (
-        (store.read_production_evidence(evidence_id), artifact_sha256(store.read_production_evidence(evidence_id)))
-        if evidence_id else _latest_artifact(store, ArtifactType.PRODUCTION_EVIDENCE)
-    )
+    evidence = store.read_production_evidence(args.evidence_id)
+    evidence_sha = artifact_sha256(evidence)
     supplied = {
         "manifest_sha": getattr(args, "manifest_sha", None),
         "approval_sha": getattr(args, "approval_sha", None),
@@ -949,10 +1278,20 @@ def _load_controlled_execution_artifacts(args: argparse.Namespace) -> dict[str, 
     actual = {"manifest_sha": manifest_sha, "approval_sha": approval_sha, "authorization_sha": authorization_sha, "activation_sha": activation_sha, "enablement_sha": enablement_sha, "evidence_sha": evidence_sha}
     if any(value is not None and value != actual[key] for key, value in supplied.items()):
         raise ValueError("supplied immutable artifact SHA does not match persisted bytes")
-    if manifest.get("canary_id") != args.canary_id or approval.get("approval_id") != args.approval_id:
-        raise ValueError("canary or approval identity does not match persisted artifacts")
+    exact_ids = (
+        ("canary", manifest.get("canary_id"), args.canary_id),
+        ("approval", approval.get("approval_id"), args.approval_id),
+        ("authorization", authorization.get("authorization_id"), args.authorization_id),
+        ("activation", activation.get("activation_id"), args.activation_id),
+        ("enablement", enablement.get("enablement_id"), args.enablement_id),
+        ("evidence", evidence.get("evidence_id"), args.evidence_id),
+    )
+    if any(actual_id != supplied_id for _, actual_id, supplied_id in exact_ids):
+        raise ValueError("controlled-execution artifact ID does not match persisted artifacts")
     if manifest.get("decision_id") != approval.get("decision_id") or manifest.get("order_intent_id") != approval.get("order_intent_id"):
         raise ValueError("manifest and approval identity binding is invalid")
+    if manifest.get("run_id") != args.run_id or intent.get("run_id") != args.run_id:
+        raise ValueError("run ID does not match the immutable CanaryManifest and OrderIntent")
     return {
         "store": store, "manifest": manifest, "manifest_sha": manifest_sha,
         "approval": approval, "approval_sha": approval_sha,
@@ -965,8 +1304,39 @@ def _load_controlled_execution_artifacts(args: argparse.Namespace) -> dict[str, 
     }
 
 
+def _assert_readiness_selected_chain(chain: Mapping[str, object], *, now_utc: datetime) -> None:
+    """Require execution to use the exact coherent chain selected by readiness."""
+    store = chain["store"]
+    if not isinstance(store, ArtifactStore):
+        raise ValueError("controlled execution store is invalid")
+    selected, blockers = _resolve_readiness_chain(store, current_commit=_current_commit(), now=now_utc)
+    if blockers:
+        raise ValueError("readiness-selected ceremony is blocked: " + "; ".join(blockers))
+    mappings = (
+        ("decision", "decision", "decision_id", "decision_sha"),
+        ("order_intent", "intent", "order_intent_id", "intent_sha"),
+        ("canary_manifest", "manifest", "canary_id", "manifest_sha"),
+        ("live_execution_approval", "approval", "approval_id", "approval_sha"),
+        ("real_money_authorization", "authorization", "authorization_id", "authorization_sha"),
+        ("execution_activation", "activation", "activation_id", "activation_sha"),
+        ("production_enablement", "enablement", "enablement_id", "enablement_sha"),
+    )
+    for label, payload_key, identity_key, digest_key in mappings:
+        payload = chain[payload_key]
+        if hasattr(payload, "to_dict"):
+            payload = payload.to_dict()
+        selected_item = selected.get(label, {})
+        if not isinstance(payload, Mapping) or selected_item.get("id") != payload.get(identity_key) or selected_item.get("sha256") != chain[digest_key]:
+            raise ValueError(f"canary-execute {label} does not match live-readiness selection")
+    evidence = _select_production_evidence(store, current_commit=_current_commit(), now=now_utc)
+    if evidence is None or evidence[0].get("evidence_id") != chain["evidence"].get("evidence_id") or evidence[1] != chain["evidence_sha"]:
+        raise ValueError("canary-execute production evidence does not match live-readiness selection")
+
+
 def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, object], authorization: dict[str, object], approval_sha256: str, authorization_sha256: str, config, ledger_path: Path, now_utc: datetime) -> dict[str, object]:
     """Collect one independent Gate A/B snapshot from live read-only sources."""
+    if now_utc.astimezone(UTC).strftime("%Y-%m") != str(approval.get("calendar_month")):
+        raise ValueError("fresh execution month does not match the approved UTC calendar month")
     credential = client.credential_info()
     account = client.account_info()
     balances = {row.coin: row for row in client.wallet_balances()}
@@ -974,9 +1344,9 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
     available_usdt = validate_spot_quote_availability(availability, now=now_utc, policy=PRODUCTION_AVAILABILITY_POLICY)
     instrument = client.instrument_rules()
     instrument.validate_quote(intent.quote_amount_usdt)
-    server_ms = client.server_time_ms()
-    local_ms = int(now_utc.timestamp() * 1000)
-    clock_delta_ms = server_ms - local_ms
+    clock = measure_server_time(client.server_time_ms)
+    clock_delta_seconds = Decimal(str(clock.delta_seconds))
+    clock_round_trip_ms = Decimal(str(clock.round_trip_ms))
     submission_state = client.submission_state(intent.client_order_id)
     if submission_state != "conclusively_absent":
         raise ValueError("fresh reconciliation is not conclusively absent")
@@ -985,30 +1355,26 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
         raise ValueError("fresh BTC/USDT wallet evidence is incomplete")
     if usdt.has_liability or btc.has_liability:
         raise ValueError("fresh wallet liability detected")
-    permissions = {str(key): tuple(str(value) for value in values) for key, values in credential.permissions.items()}
-    spot_actions = set(permissions.get("Spot", ()))
-    credential_scope_accepted = (
-        credential.classification.value == "TRADE_CAPABLE"
-        and not (set(permissions) - {"Spot", "Wallet"})
-        and bool(spot_actions & {"SpotTrade", "OrderEntry", "SpotOrder"})
-        and not any(action.lower() in {"withdrawal", "withdraw"} for action in permissions.get("Wallet", ()))
-    )
+    credential_scope_accepted = credential_scope_allows_spot_execution(credential)
     if not credential_scope_accepted:
         raise ValueError("fresh credential scope is not accepted")
-    if abs(clock_delta_ms) > 5000:
-        raise ValueError("fresh Bybit clock evidence exceeds the five-second drift bound")
-    if account.unified_margin_status not in {5, 6, "5", "6"} or account.margin_mode not in {"REGULAR_MARGIN", "ISOLATED_MARGIN", "PORTFOLIO_MARGIN"} or account.spot_hedging_status != "OFF":
+    if abs(clock_delta_seconds) > MAX_CLOCK_SKEW_SECONDS:
+        raise ValueError("fresh Bybit clock evidence exceeds the two-second drift bound")
+    if clock_round_trip_ms > MAX_CLOCK_ROUND_TRIP_MS:
+        raise ValueError("fresh Bybit clock measurement round trip is too slow")
+    if account.unified_margin_status not in {5, 6, "5", "6"} or account.margin_mode != "REGULAR_MARGIN" or account.spot_hedging_status != "OFF":
         raise ValueError("fresh account mode is not compatible with Spot BTCUSDT")
     expected_mode = str(approval.get("account_mode"))
     actual_mode = expected_mode if expected_mode in {"spot", "UTA"} else str(account.margin_mode)
     if credential.identity is None:
         raise ValueError("fresh account identity is unavailable")
-    account_identity = canonical_fingerprint({
-        "exchange": "Bybit", "identity": credential.identity,
-        "unified_margin_status": str(account.unified_margin_status),
-        "margin_mode": str(account.margin_mode),
-        "spot_hedging_status": str(account.spot_hedging_status),
-    })
+    account_identity = account_identity_fingerprint(
+        exchange="Bybit",
+        identity=credential.identity,
+        unified_margin_status=account.unified_margin_status,
+        margin_mode=account.margin_mode,
+        spot_hedging_status=account.spot_hedging_status,
+    )
     if account_identity != str(approval.get("account_identity_fingerprint")):
         raise ValueError("fresh account identity differs from the approved identity")
     monthly_spent = sum((execution.executed_usd for execution in confirmed_executions(read_executions(ledger_path)) if execution.executed_at_utc[:7] == str(approval["calendar_month"])), Decimal("0"))
@@ -1029,6 +1395,16 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
         "liability_state": "NONE",
         # Availability contains Decimal values; fingerprint an explicit,
         # JSON-stable read-only projection rather than the dataclass repr.
+        "spot_usdt_availability_projection": {
+            "amount_usdt": str(availability.amount_usdt),
+            "source_endpoint": availability.source_endpoint,
+            "source_field": availability.source_field,
+            "account_type": availability.account_type,
+            "authoritative": availability.authoritative,
+            "observed_at_utc": availability.observed_at_utc,
+        },
+        # Retained for diagnostics only; exact equality with the approved
+        # balance snapshot is deliberately not a gate condition.
         "spot_usdt_availability_fingerprint": canonical_fingerprint({
             "amount_usdt": str(availability.amount_usdt),
             "source_endpoint": availability.source_endpoint,
@@ -1037,8 +1413,22 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
             "authoritative": availability.authoritative,
             "observed_at_utc": availability.observed_at_utc,
         }),
-        "instrument_metadata_fingerprint": canonical_fingerprint({key: str(value) for key, value in instrument.__dict__.items()}),
-        "clock_skew_evidence_fingerprint": canonical_fingerprint({"server_ms": server_ms, "local_ms": local_ms, "delta_ms": clock_delta_ms}),
+        "instrument_metadata_projection": instrument_execution_projection(instrument),
+        "instrument_metadata_fingerprint": canonical_fingerprint(instrument_execution_projection(instrument)),
+        "clock_skew_evidence_projection": {
+            "observed_at_utc": now_utc.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "delta_seconds": str(clock_delta_seconds),
+            "round_trip_ms": str(clock_round_trip_ms),
+            "threshold_seconds": str(MAX_CLOCK_SKEW_SECONDS),
+            "max_round_trip_ms": str(MAX_CLOCK_ROUND_TRIP_MS),
+        },
+        # Retained for diagnostics only; timestamped measurements are fresh
+        # evidence, not immutable identity.
+        "clock_skew_evidence_fingerprint": canonical_fingerprint({
+            "observed_at_utc": now_utc.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "delta_seconds": str(clock_delta_seconds),
+            "round_trip_ms": str(clock_round_trip_ms),
+        }),
         "reconciliation_evidence_fingerprint": canonical_fingerprint({"client_order_id": intent.client_order_id, "state": submission_state}),
         "production_contract_fingerprint": str(approval.get("production_contract_fingerprint")),
         "execution_safety_config_fingerprint": str(approval.get("execution_safety_config_fingerprint")),
@@ -1052,6 +1442,8 @@ def _fresh_gate_snapshot(*, client, intent: OrderIntent, approval: dict[str, obj
         "spot_availability_fresh": True,
         "instrument_metadata_fresh": True,
         "clock_evidence_fresh": True,
+        "clock_skew_within_limit": abs(clock_delta_seconds) <= MAX_CLOCK_SKEW_SECONDS,
+        "clock_measurement_quality_accepted": clock_round_trip_ms <= MAX_CLOCK_ROUND_TRIP_MS,
         "reconciliation_evidence_fresh": True,
         "duplicate_execution": False,
         "duplicate_attempt": False,
@@ -1067,35 +1459,13 @@ def _gate_d_evidence(bundle: dict[str, object], *, enablement: dict[str, object]
     dynamic Gate A/B evidence is collected separately and is never projected
     from this bundle.
     """
-    projected = dict(bundle)
-    checks = {
-        str(item.get("check_id")): item
-        for item in bundle.get("check_results", [])
-        if isinstance(item, dict)
-    }
-    required_to_check = {
-        "canonical_ci_healthy": "CANONICAL_CI",
-        "ledger_valid": "LEDGER_INTEGRITY",
-        "v1_strategy_valid": "V1_STRATEGY",
-        "production_contract_valid": "PRODUCTION_CONTRACT",
-        "account_identity_known": "BYBIT_ACCOUNT_IDENTITY",
-        "account_mode_accepted": "BYBIT_ACCOUNT",
-        "liabilities_clear": "BYBIT_LIABILITIES",
-        "credential_scope_accepted": "BYBIT_CREDENTIAL_SCOPE",
-        "withdrawal_disabled": "BYBIT_CREDENTIAL_SCOPE",
-        "spot_availability_operational": "BYBIT_SPOT_AVAILABLE_BALANCE",
-        "instrument_metadata_operational": "BYBIT_INSTRUMENT",
-        "clock_operational": "CLOCK_SKEW",
-        "reconciliation_operational": "UNRESOLVED_OPERATIONS",
-        "production_shadow_healthy": "PRODUCTION_SHADOW",
-        "watchdog_healthy": "WATCHDOG",
-        "no_unresolved_submission": "UNRESOLVED_OPERATIONS",
-        "no_reconciliation_required": "UNRESOLVED_OPERATIONS",
-        "no_artifact_corruption": "FILESYSTEM_DURABILITY",
-    }
-    for target, check_id in required_to_check.items():
-        status = str(checks.get(check_id, {}).get("status", "UNAVAILABLE"))
-        projected[target] = status in {"PASS", "HEALTHY", "CLEAR"}
+    projected = project_gate_d_evidence(
+        bundle,
+        # The persisted evidence bundle intentionally does not carry this
+        # governance fingerprint.  Gate D receives it from the separately
+        # persisted, digest-checked ProductionEnablement below.
+        contract_valid=bool(enablement.get("production_contract_fingerprint")),
+    )
     projected.update({
         "account_identity_fingerprint": bundle.get("account_identity_fingerprint"),
         "account_mode": enablement.get("expected_account_mode"),
@@ -1110,6 +1480,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
     config = load_execution_config()
     try:
         chain = _load_controlled_execution_artifacts(args)
+        _assert_readiness_selected_chain(chain, now_utc=datetime.now(UTC))
         verifier = ControlledProductionExecutor(engine=None, store=chain["store"])
         verifier._verify_persisted_chain(
             enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
@@ -1150,6 +1521,7 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
         )
         if preliminary_d.status.value != "READY_FOR_SUBMISSION":
             return ({"status": "blocked", "gate": "D", "reasons": preliminary_d.reasons, "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
+        gate_d_evidence = _gate_d_evidence(chain["evidence"], enablement=chain["enablement"])
         client = _private_read_client_factory()
         reconciler = _post_ack_reconciler_factory(client)
         gate_a_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=runtime_config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
@@ -1164,10 +1536,11 @@ def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
             activation=chain["activation"], activation_sha256=chain["activation_sha"],
             capability=None, approval=chain["approval"], approval_sha256=chain["approval_sha"],
             manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"], intent=chain["intent"],
-            decision=chain["decision"], runtime_config=runtime_config, evidence=chain["evidence"],
+            decision=chain["decision"], runtime_config=runtime_config, evidence=gate_d_evidence,
             repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
             calendar_month=args.month, ledger_path=args.ledger, read_client=client,
             reconciler=reconciler, run_id=args.run_id, transport_factory=lazy_transport,
+            artifact_evidence=chain["evidence"],
             decision_sha256=chain["decision_sha"], order_intent_sha256=chain["intent_sha"], evidence_sha256=chain["evidence_sha"],
             gate_a_current=gate_a_current, gate_b_current=gate_b_current,
         )
@@ -1313,7 +1686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "live-submit":
             result = _live_submit(args)
         elif args.command == "live-readiness":
-            result, exit_code = _live_readiness()
+            result, exit_code = _live_readiness(args)
         elif args.command == "live-authorize":
             result, exit_code = _live_authorize(args)
         elif args.command == "live-authorization-status":

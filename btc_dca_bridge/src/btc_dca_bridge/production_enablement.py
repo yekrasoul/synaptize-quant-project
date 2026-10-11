@@ -17,8 +17,10 @@ from .errors import ArtifactNotFoundError
 from .live_readiness import GateStatus, LiveExecutionGate, LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 from .live_activation import issue_execution_capability
 from .real_money_authorization import artifact_sha256
+from .readiness_checks import project_gate_d_evidence
+from .ttl_policy import PRODUCTION_ENABLEMENT_TTL
 
-ENABLEMENT_TTL = timedelta(hours=24)
+ENABLEMENT_TTL = PRODUCTION_ENABLEMENT_TTL
 ENABLEMENT_SCHEMA_VERSION = "5.4.0E"
 ENABLEMENT_CONFIRMATION = "ENABLE CONTROLLED BYBIT SPOT BTCUSDT ONE-SHOT EXECUTION POLICY"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -80,6 +82,11 @@ class ProductionEnablement:
                 execution_policy_fingerprint: str, production_contract_fingerprint: str,
                 account_identity_fingerprint: str, account_mode: str,
                 credential_scope: str, confirmation: str, now_utc: datetime) -> "ProductionEnablement":
+        if "check_results" in evidence:
+            evidence = project_gate_d_evidence(
+                evidence,
+                contract_valid=bool(production_contract_fingerprint),
+            )
         if any(evidence.get(key) is not True for key in REQUIRED_EVIDENCE):
             missing = [key for key in REQUIRED_EVIDENCE if evidence.get(key) is not True]
             raise LiveReadinessError("production enablement prerequisites are not proven: " + ", ".join(missing))
@@ -247,6 +254,7 @@ class ControlledProductionExecutor:
                 evidence: Mapping[str, Any], repository_commit_sha: str,
                 calendar_month: str, ledger_path: Any, read_client: Any,
                 reconciler: Any, run_id: str, transport_factory: Any,
+                artifact_evidence: Mapping[str, Any] | None = None,
                 decision_sha256: str | None = None,
                 order_intent_sha256: str | None = None,
                 evidence_sha256: str | None = None,
@@ -267,6 +275,7 @@ class ControlledProductionExecutor:
         if result.status is not GateStatus.READY_FOR_SUBMISSION:
             return {"status": "blocked", "gate": "D", "reasons": result.reasons, "message": "NO ORDER EXECUTED"}
         try:
+            persisted_evidence = evidence if artifact_evidence is None else artifact_evidence
             self._verify_persisted_chain(
                 enablement=enablement, enablement_sha256=enablement_sha256,
                 authorization=authorization, authorization_sha256=authorization_sha256,
@@ -275,7 +284,7 @@ class ControlledProductionExecutor:
                 manifest=manifest, manifest_sha256=manifest_sha256,
                 intent=intent, decision=decision,
                 decision_sha256=decision_sha256, order_intent_sha256=order_intent_sha256,
-                evidence=evidence, evidence_sha256=evidence_sha256,
+                evidence=persisted_evidence, evidence_sha256=evidence_sha256,
                 repository_commit_sha=repository_commit_sha,
                 calendar_month=calendar_month,
             )
@@ -341,8 +350,8 @@ class ControlledProductionExecutor:
         exact(ArtifactType.ORDER_INTENT, "order_intent_id", str(intent.order_intent_id), intent.to_dict(), order_intent_sha256 or artifact_sha256(intent.to_dict()))
         if evidence_sha256 is not None and artifact_sha256(evidence) != evidence_sha256:
             raise LiveReadinessError("production evidence SHA-256 binding is invalid")
-        if evidence.get("status") not in {"EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "EVIDENCE_COMPLETE_NOT_READY"}:
-            raise LiveReadinessError("production evidence is incomplete or stale")
+        if evidence.get("status") != "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION":
+            raise LiveReadinessError("production evidence is not ready for controlled execution")
         if evidence.get("real_money_authorization", {}).get("status") != "NOT_AUTHORIZED":
             raise LiveReadinessError("production evidence authorization boundary is invalid")
         if authorization.get("status") != "AUTHORIZED" or authorization.get("consumed") is not False:

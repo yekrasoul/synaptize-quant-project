@@ -14,6 +14,7 @@ from .artifacts import ArtifactStore
 from .errors import ArtifactCorruptError, ArtifactNotFoundError
 from .schemas import UnsupportedProductionEvidenceSchemaError
 from .readiness import ProductionReadinessService, production_connectivity
+from .live_readiness import account_identity_fingerprint
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitEvidence, QuoteUnitLimitValidationError, unavailable_quote_unit_limit, validate_quote_unit_limit_evidence
 
 EVIDENCE_TTL = timedelta(minutes=10)
@@ -71,8 +72,13 @@ def _account_fingerprint(client: Any) -> tuple[str | None, str]:
         if not identity:
             return None, "ACCOUNT_IDENTITY_UNPROVEN"
         account = client.account_info()
-        material = "|".join(("Bybit", str(account.unified_margin_status), str(account.margin_mode), str(account.spot_hedging_status), str(identity)))
-        return hashlib.sha256(material.encode("utf-8")).hexdigest(), "PROVEN"
+        return account_identity_fingerprint(
+            exchange="Bybit",
+            identity=identity,
+            unified_margin_status=account.unified_margin_status,
+            margin_mode=account.margin_mode,
+            spot_hedging_status=account.spot_hedging_status,
+        ), "PROVEN"
     except Exception:
         return None, "ACCOUNT_IDENTITY_UNPROVEN"
 

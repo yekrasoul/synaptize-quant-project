@@ -17,8 +17,9 @@ from .config import ExecutionConfig, load_execution_config
 from .errors import ArtifactNotFoundError
 from .live_readiness import GateResult, GateStatus, LiveExecutionApproval, LiveReadinessError, canonical_fingerprint
 from .real_money_authorization import artifact_sha256, verify_authorization_binding
+from .ttl_policy import EXECUTION_ACTIVATION_TTL
 
-ACTIVATION_TTL = timedelta(seconds=60)
+ACTIVATION_TTL = EXECUTION_ACTIVATION_TTL
 ACTIVATION_SCHEMA_VERSION = "5.4.0D"
 _PHRASE = re.compile(r"^ACTIVATE ONE SHOT BYBIT SPOT BTCUSDT BUY \$([0-9]+(?:\.[0-9]+)?) (dca-[a-f0-9]{32})$")
 
@@ -171,7 +172,10 @@ def create_execution_activation(
                 expires = datetime.fromisoformat(str(prior["expires_at_utc"]).replace("Z", "+00:00"))
             except (KeyError, ValueError) as exc:
                 raise LiveReadinessError("prior activation expiry is malformed") from exc
-            if prior.get("status") in {"ACTIVE", "CONSUMED", "REVOKED"} or now_utc.astimezone(UTC) < expires:
+            # An unconsumed ACTIVE artifact stops being usable at expiry and
+            # may be superseded append-only.  Consumed/revoked identities, or
+            # any still-live activation, remain permanently non-refreshable.
+            if prior.get("consumed") is True or prior.get("status") in {"CONSUMED", "REVOKED"} or now_utc.astimezone(UTC) < expires:
                 raise LiveReadinessError("an existing usable or consumed ExecutionActivation exists for this identity")
     activation = ExecutionActivation.from_authorization(
         authorization, authorization_sha256=authorization_sha256, approval=approval,

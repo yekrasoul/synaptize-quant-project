@@ -23,9 +23,10 @@ from .live_order import SpotMarketBuyRequest
 from .private_bybit import AccountInfo, ApiCredentialInfo, CredentialClassification, WalletBalance
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY, QuoteUnitLimitPolicy
 from .schemas import validate_artifact
+from .ttl_policy import CANARY_MANIFEST_TTL
 
 CANARY_SCHEMA_VERSION = "5.4.0"
-CANARY_EXPIRY = timedelta(minutes=15)
+CANARY_EXPIRY = CANARY_MANIFEST_TTL
 APPROVED_ACTIONS = {"SpotTrade", "OrderEntry", "SpotOrder"}
 
 
@@ -97,8 +98,14 @@ class CanaryManifest:
     availability_method: str
     liability_detected: bool | None
     instrument_min_order_amt: Decimal | None
+    instrument_base_quantity_minimum: Decimal | None
     instrument_qty_step: Decimal | None
     instrument_tick_size: Decimal | None
+    instrument_quote_precision: Decimal | None
+    instrument_max_market_order_qty: Decimal | None
+    instrument_max_limit_order_qty: Decimal | None
+    instrument_market_order_qty_unit: str | None
+    instrument_market_buy_quote_maximum: Decimal | None
     pre_submission_state: str
     order_payload_fingerprint: str
     prepared_at_utc: str
@@ -136,8 +143,14 @@ class CanaryManifest:
             "availability_method": self.availability_method,
             "liability_detected": self.liability_detected,
             "instrument_min_order_amt": None if self.instrument_min_order_amt is None else str(self.instrument_min_order_amt),
+            "instrument_base_quantity_minimum": None if self.instrument_base_quantity_minimum is None else str(self.instrument_base_quantity_minimum),
             "instrument_qty_step": None if self.instrument_qty_step is None else str(self.instrument_qty_step),
             "instrument_tick_size": None if self.instrument_tick_size is None else str(self.instrument_tick_size),
+            "instrument_quote_precision": None if self.instrument_quote_precision is None else str(self.instrument_quote_precision),
+            "instrument_max_market_order_qty": None if self.instrument_max_market_order_qty is None else str(self.instrument_max_market_order_qty),
+            "instrument_max_limit_order_qty": None if self.instrument_max_limit_order_qty is None else str(self.instrument_max_limit_order_qty),
+            "instrument_market_order_qty_unit": self.instrument_market_order_qty_unit,
+            "instrument_market_buy_quote_maximum": None if self.instrument_market_buy_quote_maximum is None else str(self.instrument_market_buy_quote_maximum),
             "pre_submission_state": self.pre_submission_state,
             "order_payload_fingerprint": self.order_payload_fingerprint, "prepared_at_utc": self.prepared_at_utc,
             "expires_at_utc": self.expires_at_utc, "live_execution_enabled": self.live_execution_enabled,
@@ -174,7 +187,7 @@ class CanaryPreparer:
             validate_artifact("decision", dict(decision))
         except Exception as exc:
             raise CanaryPreparationError(f"Decision schema validation failed: {exc}") from exc
-        intent = make_order_intent(decision, run_id=run_id, created_at_utc=str(decision["created_at_utc"]))
+        intent = make_order_intent(decision, run_id=run_id, created_at_utc=str(decision["created_at_utc"]), calendar_month=calendar_month)
         amount = _decimal(decision["final_purchase_usd"], "Decision.final_purchase_usd")
         request = SpotMarketBuyRequest(amount, intent.client_order_id)
         payload = request.to_payload()
@@ -278,14 +291,47 @@ class CanaryPreparer:
             self._wallet_value(balances, "USDT"), self._wallet_value(balances, "BTC"),
             authoritative_available_usdt, availability_method,
             any(balance.has_liability for balance in balances) if balances else None,
-            rules.quote_minimum if rules else None, rules.quantity_step if rules else None,
-            rules.price_tick_size if rules else None, pre_state, payload_fingerprint,
+            rules.quote_minimum if rules else None, rules.base_quantity_minimum if rules else None,
+            rules.quantity_step if rules else None, rules.price_tick_size if rules else None,
+            rules.quote_precision if rules else None, rules.max_market_order_qty if rules else None,
+            rules.max_limit_order_qty if rules else None, rules.market_order_qty_unit if rules else None,
+            rules.market_buy_quote_maximum if rules else None, pre_state, payload_fingerprint,
             prepared_at, expires_at, config.live_execution_enabled, config.kill_switch,
             "READY_FOR_MANUAL_APPROVAL" if not reasons else "BLOCKED", tuple(dict.fromkeys(reasons)))
         try:
-            receipt = self.artifact_store.persist(ArtifactType.CANARY_MANIFEST, manifest, run_id=run_id)
+            self.artifact_store.persist(
+                ArtifactType.ORDER_INTENT,
+                intent,
+                run_id=run_id,
+            )
+        except ArtifactAlreadyExistsError:
+            try:
+                persisted_intent, _ = self.artifact_store.find_artifact(
+                    ArtifactType.ORDER_INTENT,
+                    identity_field="order_intent_id",
+                    identity_value=intent.order_intent_id,
+                )
+            except Exception as exc:
+                raise CanaryPreparationError(
+                    "existing order intent could not be verified"
+                ) from exc
+
+            if persisted_intent != intent.to_dict():
+                raise CanaryPreparationError(
+                    "existing order intent does not exactly match canonical intent"
+                )
+
+        try:
+            receipt = self.artifact_store.persist(
+                ArtifactType.CANARY_MANIFEST,
+                manifest,
+                run_id=run_id,
+            )
         except ArtifactAlreadyExistsError as exc:
-            raise CanaryPreparationError("canary manifest identity already exists; create a new preparation run") from exc
+            raise CanaryPreparationError(
+                "canary manifest identity already exists; create a new preparation run"
+            ) from exc
+
         return CanaryPreparationResult(manifest, receipt, payload)
 
     @staticmethod

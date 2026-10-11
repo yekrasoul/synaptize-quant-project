@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from btc_dca_bridge.artifacts import ArtifactStore, ArtifactType
 from btc_dca_bridge.config import ExecutionConfig
@@ -62,7 +63,7 @@ class LiveOrderHardeningTests(unittest.TestCase):
         self.run_id = "run_20261007T120000Z_live0001"
         self.now = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
         self.decision = {"schema_version": "1.0.0", "decision_id": "decision_live", "created_at_utc": "2026-10-07T11:59:00Z", "strategy_id": "btc_adaptive_dca_v1", "strategy_version": "1.0.0", "final_purchase_usd": 25}
-        self.intent = replace(make_order_intent(self.decision, run_id=self.run_id, created_at_utc=self.decision["created_at_utc"]), live_execution_enabled=True)
+        self.intent = make_order_intent(self.decision, run_id=self.run_id, created_at_utc=self.decision["created_at_utc"])
         self.config = ExecutionConfig("1.0.0", True, False, True, Decimal("500"), "Bybit", "spot", "BTCUSDT", "implemented")
         payload = SpotMarketBuyRequest(Decimal("25"), self.intent.client_order_id).to_payload()
         self.manifest = {"schema_version": "5.4.0", "canary_id": "canary-" + "a" * 32, "run_id": self.run_id, "strategy_id": "btc_adaptive_dca_v1", "strategy_version": "1.0.0", "decision_id": self.intent.decision_id, "order_intent_id": self.intent.order_intent_id, "client_order_id": self.intent.client_order_id, "exchange": "Bybit", "market_type": "spot", "symbol": "BTCUSDT", "side": "Buy", "order_type": "Market", "approved_amount_usdt": "25", "calendar_month": "2026-10", "monthly_spent_usd": "0", "remaining_budget_usd": "500", "credential_classification": "TRADE_CAPABLE", "account_mode": "REGULAR_MARGIN", "account_unified_margin_status": "6", "account_spot_hedging_status": "OFF", "account_updated_time": "fresh", "wallet_usdt": "100", "wallet_btc": "0.1", "authoritative_available_usdt": "100", "availability_method": "explicit authoritative account-mode-specific Spot quote-buy availability", "liability_detected": False, "instrument_min_order_amt": "10", "instrument_qty_step": "0.00001", "instrument_tick_size": "0.01", "pre_submission_state": "conclusively_absent", "order_payload_fingerprint": hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "prepared_at_utc": "2026-10-07T11:50:00Z", "expires_at_utc": "2026-10-07T12:05:00Z", "live_execution_enabled": False, "kill_switch": True, "canary_status": "READY_FOR_MANUAL_APPROVAL", "reasons": []}
@@ -170,6 +171,66 @@ class LiveOrderHardeningTests(unittest.TestCase):
         self.assertEqual(result.outcome.outcome_category, "confirmed_execution")
         self.assertEqual(json.loads(self.ledger.read_text())["execution_id_bybit"], "exec-timeout")
 
+    def test_fault_after_attempt_before_network_is_not_retryable(self):
+        transport = FakeTransport(self.ack)
+        wrong_capability = ExecutionCapability.for_test(
+            activation_id=self.activation["activation_id"],
+            one_shot_identity=self.activation["one_shot_identity"],
+            request_fingerprint="0" * 64,
+        )
+        with self.assertRaises(LiveOrderSafetyError):
+            self.submit(transport=transport, capability=wrong_capability)
+        self.assertEqual(transport.calls, [])
+        self.assertEqual(len(list((self.data / "order_submission_attempts").rglob("*.json"))), 1)
+        with self.assertRaises(LiveOrderSafetyError):
+            self.submit(transport=transport)
+
+    def test_fault_after_ack_before_ack_persistence_leaves_attempt_for_recovery(self):
+        transport = FakeTransport(self.ack)
+        real_persist = self.engine.artifact_store.persist
+
+        def fail_ack(kind, artifact, *, run_id):
+            if kind is ArtifactType.ORDER_SUBMISSION_OUTCOME and run_id.endswith("_ack"):
+                raise OSError("injected acknowledgement persistence failure")
+            return real_persist(kind, artifact, run_id=run_id)
+
+        with patch.object(self.engine.artifact_store, "persist", side_effect=fail_ack):
+            with self.assertRaises(OSError):
+                self.submit(transport=transport)
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(list((self.data / "order_submission_attempts").rglob("*.json"))), 1)
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_fault_after_ack_persistence_before_reconciliation_is_recoverable(self):
+        transport = FakeTransport(self.ack)
+        with patch.object(self.engine, "_reconcile_after_possible_submission", side_effect=RuntimeError("injected post-ack crash")):
+            with self.assertRaises(RuntimeError):
+                self.submit(transport=transport)
+        outcomes = [json.loads(path.read_text()) for path in (self.data / "order_submission_outcomes").rglob("*.json")]
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual([item["outcome_category"] for item in outcomes], ["acknowledgement_received"])
+        self.assertEqual(self.ledger.read_text(), "")
+
+    def test_ack_checkpoint_identity_is_bounded_for_maximum_run_id(self):
+        maximum = "run_20261007T120000Z_" + "a" * 64
+        checkpoint = self.engine._checkpoint_run_id(maximum, "ack")
+        self.assertRegex(checkpoint, r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+        self.assertEqual(checkpoint, self.engine._checkpoint_run_id(maximum, "ack"))
+        reconciliation = self.engine._checkpoint_run_id(maximum, "recon_" + "b" * 12)
+        self.assertRegex(reconciliation, r"^run_\d{8}T\d{6}Z_[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
+
+    def test_fault_after_reconciliation_before_ledger_write_is_recoverable(self):
+        fill = self.fill("exec-after-recon", "0.0002", "24.98")
+        evidence = ReconciliationEvidence("confirmed", "order-1", (fill,), self.intent.client_order_id)
+        with patch.object(self.engine, "_append_aggregate_execution", side_effect=RuntimeError("injected pre-ledger crash")):
+            with self.assertRaises(RuntimeError):
+                self.submit(post_ack_reconciler=FakeReconciler(evidence))
+        self.assertEqual(self.ledger.read_text(), "")
+        self.assertEqual(len(list((self.data / "submission_reconciliations").rglob("*.json"))), 1)
+        recovered = self.reconcile_existing(evidence, run_id="run_20261007T120100Z_recover1")
+        self.assertEqual(recovered.outcome.outcome_category, "confirmed_execution")
+        self.assertEqual(len(self.ledger.read_text().splitlines()), 1)
+
     def test_uncertain_http_and_ack_shapes_reconcile_without_retry(self):
         responses = [
             HttpResponse(503, {}, b"server error"),
@@ -211,6 +272,24 @@ class LiveOrderHardeningTests(unittest.TestCase):
                 outcomes = list((self.data / "order_submission_outcomes").rglob("*.json"))
                 self.assertEqual(len(attempts), 1)
                 self.assertEqual(len(outcomes), 1)
+
+    def test_duplicate_identity_and_transient_responses_require_reconciliation(self):
+        responses = (
+            HttpResponse(409, {}, b"conflict"),
+            HttpResponse(429, {}, b"rate limited"),
+            HttpResponse(200, {}, json.dumps({"retCode": 10014, "retMsg": "duplicate request", "result": {}}).encode()),
+            HttpResponse(200, {}, json.dumps({"retCode": 110072, "retMsg": "OrderLinkedID is duplicate", "result": {}}).encode()),
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                self.setUp()
+                transport = FakeTransport(response=response)
+                reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "order-1", (), self.intent.client_order_id))
+                result = self.submit(transport=transport, post_ack_reconciler=reconciler)
+                self.assertEqual(len(transport.calls), 1)
+                self.assertEqual(reconciler.calls, [self.intent.client_order_id])
+                self.assertEqual(result.outcome.outcome_category, "reconciliation_required")
+                self.assertEqual(self.ledger.read_text(), "")
 
     def test_ack_order_id_must_match_reconciled_order_id(self):
         reconciler = FakeReconciler(ReconciliationEvidence("ambiguous", "different-order", (), self.intent.client_order_id))
@@ -333,6 +412,17 @@ class LiveOrderHardeningTests(unittest.TestCase):
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
         claim = self.ledger.parent / f".{self.ledger.name}.{payload['execution_id']}.claim"
         claim.write_text(json.dumps({"execution_id": payload["execution_id"], "payload_sha256": hashlib.sha256(canonical.encode()).hexdigest(), "status": "prepared"}))
+        self.assertTrue(append_execution_once(self.ledger, payload))
+
+    def test_ledger_replace_failure_leaves_old_ledger_valid_and_claim_recoverable(self):
+        payload = {"schema_version": "1.1.0", "execution_id": "execution_atomic", "executed_at_utc": "2026-10-07T12:00:00Z", "asset": "BTC", "quote_currency": "USDT", "executed_usd": 25, "reference_price_usdt": 100000, "btc_quantity": .00025, "status": "reconciled", "reconciliation": {"source": "Bybit private order/fill reconciliation", "note": "atomic recovery"}, "decision_id": "d", "canary_id": "canary-" + "a" * 32, "approval_id": "approval-" + "a" * 32, "order_id": "o", "order_link_id": "dca-" + "a" * 32, "execution_id_bybit": "x", "fee": 0, "fee_asset": "USDT"}
+        before = self.ledger.read_bytes()
+        with patch("btc_dca_bridge.ledger.os.replace", side_effect=OSError("injected replace failure")):
+            with self.assertRaises(OSError):
+                append_execution_once(self.ledger, payload)
+        self.assertEqual(self.ledger.read_bytes(), before)
+        claim = self.ledger.parent / f".{self.ledger.name}.{payload['execution_id']}.claim"
+        self.assertEqual(json.loads(claim.read_text())["status"], "prepared")
         self.assertTrue(append_execution_once(self.ledger, payload))
 
 

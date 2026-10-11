@@ -93,6 +93,7 @@ class CanaryExecuteWiringTests(unittest.TestCase):
             "btc_liability": False, "usdt_liability": False, "borrow_state": False,
             "spot_usdt_sufficient": True, "spot_availability_fresh": True,
             "instrument_metadata_fresh": True, "clock_evidence_fresh": True,
+            "clock_skew_within_limit": True, "clock_measurement_quality_accepted": True,
             "reconciliation_evidence_fresh": True, "duplicate_execution": False,
             "duplicate_attempt": False, "reconciliation_required": False,
             "request_fingerprint": "c" * 64,
@@ -166,6 +167,102 @@ class CanaryExecuteWiringTests(unittest.TestCase):
         engine.submit.assert_not_called()
         transport.assert_not_called()
 
+    def test_executor_validates_persisted_evidence_not_gate_d_projection(self):
+        config = load_execution_config()
+        ready_d = GateDResult(GateStatus.READY_FOR_SUBMISSION, (), "d" * 64)
+        persisted = {"evidence_id": "evidence-" + "1" * 32}
+        projected = {**persisted, "ledger_valid": True}
+        verifier = Mock()
+        engine = Mock()
+        executor = ControlledProductionExecutor(engine=engine, store=Mock())
+
+        with patch("btc_dca_bridge.production_enablement.gate_d", return_value=ready_d), \
+             patch.object(executor, "_verify_persisted_chain", verifier):
+            result = executor.execute(
+                enablement={}, enablement_sha256="e" * 64,
+                authorization={}, authorization_sha256="f" * 64,
+                activation={}, activation_sha256="g" * 64, capability=None,
+                approval={}, approval_sha256="h" * 64,
+                manifest={}, manifest_sha256="i" * 64,
+                intent=Mock(), decision={}, runtime_config=config,
+                evidence=projected, artifact_evidence=persisted,
+                repository_commit_sha="j" * 40, calendar_month="2026-10",
+                ledger_path=Path("/dev/null"), read_client=None,
+                reconciler=None, run_id="run_20261010T120000Z_wiretest6",
+                transport_factory=Mock(),
+                evidence_sha256=artifact_sha256(persisted),
+            )
+
+        self.assertEqual(result["gate"], "A/B")
+        self.assertIs(verifier.call_args.kwargs["evidence"], persisted)
+        self.assertEqual(verifier.call_args.kwargs["evidence_sha256"], artifact_sha256(persisted))
+        engine.submit.assert_not_called()
+
+    def test_cli_sha_arguments_are_fail_closed_when_swapped(self):
+        from btc_dca_bridge import cli
+
+        evidence_payload = {"evidence_id": "evidence-" + "1" * 32}
+        payloads = {
+            "manifest_sha": ({"canary_id": "canary-1", "decision_id": "decision-1", "order_intent_id": "intent-1", "run_id": "run_20261010T120000Z_wiretest7"}, "a" * 64),
+            "approval_sha": ({"approval_id": "approval-1", "decision_id": "decision-1", "order_intent_id": "intent-1", "one_shot_identity": "one-shot"}, "b" * 64),
+            "authorization_sha": ({"authorization_id": "authorization-1", "one_shot_identity": "one-shot"}, "c" * 64),
+            "activation_sha": ({"activation_id": "activation-1", "one_shot_identity": "one-shot"}, "d" * 64),
+            "enablement_sha": ({"enablement_id": "enablement-1"}, "e" * 64),
+            "evidence_sha": (evidence_payload, artifact_sha256(evidence_payload)),
+        }
+        payloads["manifest_sha"][0]["client_order_id"] = "dca-" + "1" * 32
+
+        class FakeStore:
+            def find_artifact(self, kind, *, identity_field, identity_value):
+                for name, (payload, digest) in payloads.items():
+                    if payload.get(identity_field) == identity_value:
+                        return payload, digest
+                raise AssertionError((identity_field, identity_value))
+
+            def read_production_evidence(self, evidence_id):
+                return payloads["evidence_sha"][0]
+
+        args = cli._parser().parse_args([
+            "canary-execute", "--run-id", "run_20261010T120000Z_wiretest7",
+            "--canary-id", "canary-1", "--approval-id", "approval-1",
+            "--manifest-sha", "a" * 64, "--approval-sha", "b" * 64,
+            "--authorization-id", "authorization-1", "--authorization-sha", "c" * 64,
+            "--activation-id", "activation-1", "--activation-sha", "d" * 64,
+            "--enablement-id", "enablement-1", "--enablement-sha", "e" * 64,
+            "--evidence-id", "evidence-" + "1" * 32, "--evidence-sha", artifact_sha256(evidence_payload),
+            "--data-root", ".", "--ledger", "/dev/null", "--month", "2026-10",
+        ])
+        intent_payload = {"order_intent_id": "intent-1", "decision_id": "decision-1", "client_order_id": "dca-" + "1" * 32, "run_id": "run_20261010T120000Z_wiretest7"}
+        original_find = FakeStore.find_artifact
+        def find_with_intent(self, kind, *, identity_field, identity_value):
+            if identity_field == "order_intent_id":
+                return intent_payload, "9" * 64
+            return original_find(self, kind, identity_field=identity_field, identity_value=identity_value)
+        FakeStore.find_artifact = find_with_intent
+        with patch("btc_dca_bridge.cli.ArtifactStore", return_value=FakeStore()), patch("btc_dca_bridge.cli._intent_from_dict", return_value=Mock()):
+            chain = cli._load_controlled_execution_artifacts(args)
+        self.assertEqual(chain["evidence_sha"], artifact_sha256(evidence_payload))
+
+        sha_names = tuple(payloads)
+        for left in range(len(sha_names)):
+            for right in range(left + 1, len(sha_names)):
+                swapped = dict(vars(args))
+                swapped[sha_names[left]], swapped[sha_names[right]] = swapped[sha_names[right]], swapped[sha_names[left]]
+                with self.subTest(left=sha_names[left], right=sha_names[right]), \
+                     patch("btc_dca_bridge.cli.ArtifactStore", return_value=FakeStore()), \
+                     patch("btc_dca_bridge.cli._intent_from_dict", return_value=Mock()):
+                    with self.assertRaises(ValueError):
+                        cli._load_controlled_execution_artifacts(type(args)(**swapped))
+
+        wrong_evidence = dict(vars(args), evidence_id="evidence-" + "2" * 32)
+        stale_run = dict(vars(args), run_id="run_20261010T120000Z_stalerun")
+        for mutation in (wrong_evidence, stale_run):
+            with self.subTest(mutation=mutation), \
+                 patch("btc_dca_bridge.cli.ArtifactStore", return_value=FakeStore()), \
+                 patch("btc_dca_bridge.cli._intent_from_dict", return_value=Mock()):
+                with self.assertRaises(ValueError):
+                    cli._load_controlled_execution_artifacts(type(args)(**mutation))
+
     def test_cli_enabled_path_collects_two_fresh_snapshots_and_posts_once(self):
         now, approval, approval_sha, authorization, authorization_sha = self._ceremony()
         canonical_config = load_execution_config()
@@ -193,6 +290,7 @@ class CanaryExecuteWiringTests(unittest.TestCase):
             output = StringIO()
             with patch("btc_dca_bridge.cli.load_execution_config", return_value=canonical_config), \
                  patch("btc_dca_bridge.cli._load_controlled_execution_artifacts", return_value=chain), \
+                 patch("btc_dca_bridge.cli._assert_readiness_selected_chain"), \
                  patch("btc_dca_bridge.cli.derive_ephemeral_execution_policy", return_value=policy), \
                  patch("btc_dca_bridge.cli.gate_d", return_value=ready_d), \
                  patch("btc_dca_bridge.production_enablement.gate_d", return_value=ready_d), \
@@ -242,7 +340,7 @@ class CanaryExecuteWiringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             chain = {"store": Mock(), "manifest": {}, "manifest_sha": "d" * 64, "approval": approval, "approval_sha": approval_sha, "authorization": authorization, "authorization_sha": authorization_sha, "activation": {"activation_id": "a", "status": "ACTIVE", "consumed": False}, "activation_sha": "e" * 64, "enablement": {}, "enablement_sha": "f" * 64, "evidence": {"status": "EVIDENCE_COMPLETE_READY_FOR_SEPARATE_AUTHORIZATION", "real_money_authorization": {"status": "NOT_AUTHORIZED"}}, "evidence_sha": "1" * 64, "decision": {}, "decision_sha": "2" * 64, "intent": SimpleNamespace(order_intent_id="intent-1", decision_id="decision-1", client_order_id=approval["client_order_id"], quote_amount_usdt=Decimal("25")), "intent_sha": "3" * 64}
-            with patch("btc_dca_bridge.cli.load_execution_config", return_value=canonical_config), patch("btc_dca_bridge.cli._load_controlled_execution_artifacts", return_value=chain), patch("btc_dca_bridge.cli.derive_ephemeral_execution_policy", return_value=policy), patch("btc_dca_bridge.cli.gate_d", return_value=ready_d), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=Mock()), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=Mock()), patch("btc_dca_bridge.cli._fresh_gate_snapshot", side_effect=[first, second]), patch("btc_dca_bridge.cli.ControlledProductionExecutor", side_effect=lambda **kwargs: ControlledProductionExecutor(engine=engine, store=chain["store"])), patch("btc_dca_bridge.production_enablement.gate_d", return_value=ready_d), patch("btc_dca_bridge.production_enablement.ControlledProductionExecutor._verify_persisted_chain"), patch("btc_dca_bridge.production_enablement.issue_execution_capability", return_value=object()):
+            with patch("btc_dca_bridge.cli.load_execution_config", return_value=canonical_config), patch("btc_dca_bridge.cli._load_controlled_execution_artifacts", return_value=chain), patch("btc_dca_bridge.cli._assert_readiness_selected_chain"), patch("btc_dca_bridge.cli.derive_ephemeral_execution_policy", return_value=policy), patch("btc_dca_bridge.cli.gate_d", return_value=ready_d), patch("btc_dca_bridge.cli._private_read_client_factory", return_value=Mock()), patch("btc_dca_bridge.cli._post_ack_reconciler_factory", return_value=Mock()), patch("btc_dca_bridge.cli._fresh_gate_snapshot", side_effect=[first, second]), patch("btc_dca_bridge.cli.ControlledProductionExecutor", side_effect=lambda **kwargs: ControlledProductionExecutor(engine=engine, store=chain["store"])), patch("btc_dca_bridge.production_enablement.gate_d", return_value=ready_d), patch("btc_dca_bridge.production_enablement.ControlledProductionExecutor._verify_persisted_chain"), patch("btc_dca_bridge.production_enablement.issue_execution_capability", return_value=object()):
                 code = main(["canary-execute", "--run-id", "run_20261010T120000Z_wiretest5", "--canary-id", "canary-1", "--approval-id", approval["approval_id"], "--manifest-sha", "d" * 64, "--approval-sha", approval_sha, "--data-root", str(root / "data"), "--ledger", str(root / "ledger.jsonl"), "--month", "2026-10"])
             self.assertEqual(code, EXIT_BLOCKED)
             self.assertEqual(engine.calls, 0)

@@ -16,10 +16,13 @@ from enum import Enum
 from typing import Any, Callable, Mapping
 
 from .artifacts import ArtifactStore, ArtifactType
+from .ttl_policy import LIVE_EXECUTION_APPROVAL_TTL
 from .config import ExecutionConfig
 
-APPROVAL_TTL = timedelta(minutes=10)
+APPROVAL_TTL = LIVE_EXECUTION_APPROVAL_TTL
 APPROVAL_SCHEMA_VERSION = "5.4.0B"
+MAX_CLOCK_SKEW_SECONDS = Decimal("2")
+MAX_CLOCK_ROUND_TRIP_MS = Decimal("2000")
 ORDER_CONTRACT = {
     "category": "spot", "symbol": "BTCUSDT", "side": "Buy",
     "orderType": "Market", "marketUnit": "quoteCoin", "isLeverage": 0,
@@ -44,6 +47,118 @@ def canonical_fingerprint(value: Any) -> str:
     except (TypeError, ValueError) as exc:
         raise LiveReadinessError("fingerprint input is not canonical JSON") from exc
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def canonical_decimal(value: Any) -> str | None:
+    """Normalize an optional finite decimal for cross-artifact projections."""
+    if value is None:
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise LiveReadinessError("canonical decimal is invalid") from exc
+    if not parsed.is_finite():
+        raise LiveReadinessError("canonical decimal is invalid")
+    return format(parsed.normalize(), "f")
+
+
+def instrument_execution_projection(value: Any) -> dict[str, Any]:
+    """Project only execution-relevant BTCUSDT Spot instrument semantics.
+
+    Response timestamps, ordering, descriptive fields, and unrelated symbols
+    never enter this projection.  Identity fields are explicit because the
+    parser proves them before constructing ``InstrumentRules``.
+    """
+    if isinstance(value, Mapping):
+        get = value.get
+    else:
+        get = lambda name, default=None: getattr(value, name, default)
+    return {
+        "exchange": "Bybit",
+        "category": "spot",
+        "symbol": "BTCUSDT",
+        "status": "Trading",
+        "base_coin": "BTC",
+        "quote_coin": "USDT",
+        "market_order_supported": True,
+        "market_unit": "quoteCoin",
+        "quote_minimum": canonical_decimal(get("quote_minimum")),
+        "base_quantity_minimum": canonical_decimal(get("base_quantity_minimum")),
+        "quantity_step": canonical_decimal(get("quantity_step")),
+        "price_tick_size": canonical_decimal(get("price_tick_size")),
+        "quote_precision": canonical_decimal(get("quote_precision")),
+        "max_market_order_qty": canonical_decimal(get("max_market_order_qty")),
+        "max_limit_order_qty": canonical_decimal(get("max_limit_order_qty")),
+        "market_order_qty_unit": get("market_order_qty_unit"),
+        "market_buy_quote_maximum": canonical_decimal(get("market_buy_quote_maximum")),
+    }
+
+
+def manifest_instrument_execution_projection(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the same semantic projection from a persisted CanaryManifest."""
+    return instrument_execution_projection({
+        "quote_minimum": manifest.get("instrument_min_order_amt"),
+        "base_quantity_minimum": manifest.get("instrument_base_quantity_minimum"),
+        "quantity_step": manifest.get("instrument_qty_step"),
+        "price_tick_size": manifest.get("instrument_tick_size"),
+        "quote_precision": manifest.get("instrument_quote_precision"),
+        "max_market_order_qty": manifest.get("instrument_max_market_order_qty"),
+        "max_limit_order_qty": manifest.get("instrument_max_limit_order_qty"),
+        "market_order_qty_unit": manifest.get("instrument_market_order_qty_unit"),
+        "market_buy_quote_maximum": manifest.get("instrument_market_buy_quote_maximum"),
+    })
+
+
+def gate_stability_projection(current: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the safety state that must not drift between Gate A and B.
+
+    Exact balances and timestamped clock measurements are deliberately
+    excluded.  Their safety is represented by threshold/freshness booleans.
+    """
+    safety = _safety_dict(current.get("safety_config", {}))
+    keys = (
+        "approval_sha256", "authorization_sha256", "repository_commit_sha",
+        "calendar_month", "monthly_spent_usdt", "remaining_monthly_budget_usdt",
+        "account_identity_fingerprint", "account_mode",
+        "credential_scope_classification", "liability_state",
+        "instrument_metadata_fingerprint", "reconciliation_evidence_fingerprint",
+        "production_contract_fingerprint", "execution_safety_config_fingerprint",
+        "ledger_valid", "credential_scope_accepted", "withdrawal_enabled",
+        "btc_liability", "usdt_liability", "borrow_state",
+        "spot_usdt_sufficient", "spot_availability_fresh",
+        "instrument_metadata_fresh", "clock_evidence_fresh",
+        "clock_skew_within_limit", "clock_measurement_quality_accepted",
+        "reconciliation_evidence_fresh", "duplicate_execution",
+        "duplicate_attempt", "reconciliation_required", "request_fingerprint",
+    )
+    return {"safety_config": safety, **{key: current.get(key) for key in keys}}
+
+
+def account_identity_fingerprint(
+    *,
+    exchange: str,
+    identity: str,
+    unified_margin_status: Any,
+    margin_mode: Any,
+    spot_hedging_status: Any,
+) -> str:
+    """Fingerprint only stable exchange/account/key identity attributes.
+
+    Account timestamps, balances, permissions, instruments, and runtime
+    reconciliation state are deliberately outside this identity boundary.
+    The pipe encoding is retained as the canonical representation for the
+    already-approved production identity chain.
+    """
+    material = "|".join(
+        (
+            str(exchange),
+            str(unified_margin_status),
+            str(margin_mode),
+            str(spot_hedging_status),
+            str(identity),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 def _timestamp(value: datetime) -> str:
@@ -215,7 +330,10 @@ class LiveExecutionGate:
         if p.get("state") != "PREPARED": reasons.append("approval is not PREPARED")
         if current.get("approval_consumed") or current.get("submission_attempted") or current.get("submission_outcome"): reasons.append("approval has prior use or outcome")
         if current.get("repository_commit_sha") != p.get("repository_commit_sha"): reasons.append("repository commit changed")
-        for key in ("canary_manifest_id", "canary_manifest_sha256", "decision_id", "decision_sha256", "order_intent_id", "order_intent_sha256", "client_order_id", "quote_amount_usdt", "calendar_month", "monthly_spent_usdt", "remaining_monthly_budget_usdt", "account_identity_fingerprint", "account_mode", "credential_scope_classification", "liability_state", "spot_usdt_availability_fingerprint", "instrument_metadata_fingerprint", "clock_skew_evidence_fingerprint", "reconciliation_evidence_fingerprint", "production_contract_fingerprint", "execution_safety_config_fingerprint"):
+        # Immutable identity/configuration remains exact.  Balance snapshots,
+        # clock measurements, and ledger totals are mutable conditions and are
+        # checked below using fresh semantic thresholds instead.
+        for key in ("canary_manifest_id", "canary_manifest_sha256", "decision_id", "decision_sha256", "order_intent_id", "order_intent_sha256", "client_order_id", "quote_amount_usdt", "calendar_month", "account_identity_fingerprint", "account_mode", "credential_scope_classification", "liability_state", "instrument_metadata_fingerprint", "reconciliation_evidence_fingerprint", "production_contract_fingerprint", "execution_safety_config_fingerprint"):
             if key in current and str(current[key]) != str(p.get(key)): reasons.append(f"{key} changed")
         if current.get("calendar_month") != p.get("calendar_month"): reasons.append("UTC month changed")
         if _decimal(current.get("remaining_monthly_budget_usdt", "0"), "current remaining budget") < _decimal(p["quote_amount_usdt"], "approved amount"): reasons.append("monthly budget is insufficient")
@@ -228,14 +346,11 @@ class LiveExecutionGate:
         if current.get("spot_availability_fresh") is not True: reasons.append("Spot availability evidence is stale")
         if current.get("instrument_metadata_fresh") is not True: reasons.append("instrument metadata is stale")
         if current.get("clock_evidence_fresh") is not True: reasons.append("clock evidence is stale")
+        if current.get("clock_skew_within_limit") is not True: reasons.append("clock skew exceeds the approved threshold")
+        if current.get("clock_measurement_quality_accepted") is not True: reasons.append("clock measurement quality is unacceptable")
         if current.get("reconciliation_evidence_fresh") is not True: reasons.append("reconciliation evidence is stale")
         if current.get("account_identity_fingerprint") != p.get("account_identity_fingerprint"): reasons.append("account identity changed")
-        current_for_fingerprint = dict(current)
-        current_for_fingerprint["safety_config"] = safety
-        # Gate A and Gate B must compare the same canonical evidence shape;
-        # including the label itself would make identical fresh evidence look
-        # like drift merely because one snapshot is named A and the other B.
-        fingerprint = canonical_fingerprint({"approval": p, "current": current_for_fingerprint})
+        fingerprint = canonical_fingerprint({"approval": p, "current": gate_stability_projection(current)})
         if reasons: return GateResult(GateStatus.BLOCKED, gate, tuple(dict.fromkeys(reasons)), fingerprint)
         return GateResult(GateStatus.READY_FOR_SUBMISSION, gate, (), fingerprint)
 
@@ -259,7 +374,11 @@ def prepare_submission_attempt(*, store: ArtifactStore, run_id: str, approval: L
     amount = _decimal(quote_amount_usdt, "quote amount")
     request = {**ORDER_CONTRACT, "qty": str(amount), "orderLinkId": approval.payload["client_order_id"]}
     request_fp = canonical_fingerprint(request)
-    seed = {"approval_id": approval.approval_id, "approval_sha256": approval_sha256, "client_order_id": approval.payload["client_order_id"], "request_fingerprint": request_fp, "created_at_utc": _timestamp(datetime.now(UTC))}
+    # Keep the attempt in the same canonical UTC date as its persisted
+    # approval.  Using wall-clock ``now`` here can place the immutable
+    # attempt under a different date than callers use to reread the chain.
+    created_at_utc = str(approval.payload["created_at_utc"])
+    seed = {"approval_id": approval.approval_id, "approval_sha256": approval_sha256, "client_order_id": approval.payload["client_order_id"], "request_fingerprint": request_fp, "created_at_utc": created_at_utc}
     payload = {"schema_version": APPROVAL_SCHEMA_VERSION, "attempt_id": "attempt5b-" + canonical_fingerprint(seed)[:32], "created_at_utc": seed["created_at_utc"], "approval_id": approval.approval_id, "approval_sha256": _sha(approval_sha256, "approval SHA"), "canary_manifest_id": approval.payload["canary_manifest_id"], "canary_manifest_sha256": approval.payload["canary_manifest_sha256"], "decision_id": decision_id, "decision_sha256": _sha(decision_sha256, "decision SHA"), "order_intent_id": order_intent_id, "order_intent_sha256": _sha(order_intent_sha256, "intent SHA"), "client_order_id": approval.payload["client_order_id"], "quote_amount_usdt": str(amount), "safe_request_fingerprint": request_fp, "repository_commit_sha": repository_commit_sha, "account_identity_fingerprint": _sha(account_identity_fingerprint, "account fingerprint"), "calendar_month": calendar_month, "safety_gate_fingerprint": gate_result.fingerprint, "reconciliation_fingerprint": _sha(reconciliation_fingerprint, "reconciliation fingerprint"), "status": "PREPARED_FOR_SUBMISSION", "no_order_executed": True}
     return store.persist(ArtifactType.LIVE_EXECUTION_ATTEMPT, payload, run_id=run_id)
 

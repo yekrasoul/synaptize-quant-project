@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class FoundationContractsTest(unittest.TestCase):
     def test_schema_files_are_valid_json_schema_documents(self):
         schemas = sorted((ROOT / "schemas").glob("*.schema.json"))
-        self.assertEqual(len(schemas), 30)
+        self.assertEqual(len(schemas), 31)
         for path in schemas:
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload["$schema"], "https://json-schema.org/draft/2020-12/schema")
@@ -28,10 +28,10 @@ class FoundationContractsTest(unittest.TestCase):
         strategy = load_strategy_config()
         september = derive_portfolio(history, "2026-09", strategy.monthly_cap_usd)
         october = derive_portfolio(history, "2026-10", strategy.monthly_cap_usd)
-        self.assertEqual(len(history), 12)
+        self.assertEqual(len(history), 13)
         self.assertEqual(september.monthly_confirmed_usd_deployed, Decimal("220"))
-        self.assertEqual(october.monthly_confirmed_usd_deployed, Decimal("95"))
-        self.assertEqual(october.remaining_monthly_budget_usd, Decimal("405"))
+        self.assertEqual(october.monthly_confirmed_usd_deployed, Decimal("104.963144"))
+        self.assertEqual(october.remaining_monthly_budget_usd, Decimal("395.036856"))
         self.assertEqual(october.confirmed_execution_count, len(active))
 
     def test_projection_distinguishes_historical_events_from_active_executions(self):
