@@ -160,11 +160,23 @@ class CanaryExecuteEndToEndTests(unittest.TestCase):
             test_ledger_before = ledger.read_bytes()
             store = ArtifactStore(data_root)
 
-            decision = json.loads((REPOSITORY / "data" / "decisions" / "2026" / "10" / "10" / "run_20261010T204000Z_0798546dbec5.json").read_text(encoding="utf-8"))
-            decision.update(
-                decision_id="decision_e2e_cli_boundary", created_at_utc=now.isoformat().replace("+00:00", "Z"),
-                final_purchase_usd=10, monthly_spent_before_usd=95, remaining_budget_before_usd=405,
-            )
+            decision = {
+                "schema_version": "1.0.0",
+                "decision_id": "decision_e2e_cli_boundary",
+                "created_at_utc": now.isoformat().replace("+00:00", "Z"),
+                "strategy_id": "btc_adaptive_dca_v1",
+                "strategy_version": "1.0.0",
+                "market_snapshot_id": "market_e2e_cli_boundary",
+                "drawdown_percent": -4,
+                "fear_greed_index": 55,
+                "base_allocation_usd": 10,
+                "sentiment_multiplier": 1,
+                "calculated_allocation_usd": 10,
+                "monthly_spent_before_usd": 95,
+                "remaining_budget_before_usd": 405,
+                "final_purchase_usd": 10,
+                "status": "approved",
+            }
             decision_receipt = store.persist(ArtifactType.DECISION, decision, run_id=run_id)
             prepared = CanaryPreparer(
                 artifact_store=store, client=reader, now=lambda: now,
