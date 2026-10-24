@@ -2,6 +2,7 @@ __pycache__/
 *.egg-info/
 # Immutable runtime artifacts.  Contracts and documentation are committed; payloads are not.
 data/market/
+data/bybit_account_evidence/
 data/sentiment/
 data/decisions/
 data/runs/

@@ -183,6 +183,9 @@ def _parser() -> argparse.ArgumentParser:
     execute_v2.add_argument("--policy", type=Path, default=Path("config/runtime_execution_policy.yaml"))
     private = subparsers.add_parser("private-verify", help="read-only authenticated Bybit verification")
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
+    capture = subparsers.add_parser("capture-bybit-evidence", help="read-only authenticated sanitized Bybit evidence")
+    capture.add_argument("--environment", required=True)
+    capture.add_argument("--data-root", type=Path, default=DATA_PATH)
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
     live.add_argument("--decision-json", type=Path, required=True)
     live_readiness = subparsers.add_parser("live-readiness", help="read-only controlled execution chain status")
@@ -1690,6 +1693,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _execution_plan(args)
         elif args.command == "private-verify":
             result = _private_verify(args)
+        elif args.command == "capture-bybit-evidence":
+            from .bybit_evidence import BybitEvidenceReadAdapter, capture
+            payload = capture(BybitEvidenceReadAdapter(BybitPrivateReadClient.from_environment()), environment=args.environment)
+            receipt = ArtifactStore(args.data_root).persist(ArtifactType.BYBIT_ACCOUNT_EVIDENCE, payload, run_id=f"run_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}_bybitevidence")
+            result = {"artifact": str(receipt.path), "sha256": receipt.sha256, "evidence": payload}
         elif args.command == "live-submit":
             result = _live_submit(args)
         elif args.command == "execute":

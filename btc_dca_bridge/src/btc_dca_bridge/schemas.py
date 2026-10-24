@@ -14,6 +14,7 @@ from .paths import SCHEMAS_PATH
 
 
 SCHEMA_FILES = {
+    "bybit_account_evidence": "bybit_account_evidence.schema.json",
     "decision": "decision.schema.json",
     "execution": "execution.schema.json",
     "execution_record_v2": "execution_record_v2.schema.json",
