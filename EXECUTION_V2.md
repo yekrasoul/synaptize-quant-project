@@ -39,3 +39,27 @@ At the application boundary, `SubmissionAlreadyClaimed` is distinct from a
 pre-claim validation failure. The losing service loads and returns the
 canonical durable order unchanged with `DUPLICATE_OR_RECONCILIATION_REQUIRED`;
 it never turns its stale `RISK_APPROVED` value into `FAILED_PRE_SUBMISSION`.
+
+## Canonical execution evidence
+
+The repository projects each lifecycle state into the `execution_record_v2`
+schema when audit evidence is required. The projection contains only canonical
+identity, strategy/decision linkage, venue/account/environment identity,
+lifecycle, claim, acknowledgement/reconciliation references, and ambiguity
+or rejection reason, normalized fills/fees, and an observed submission time
+when supplied. It intentionally excludes keys, secrets, signatures, and raw headers.
+It does not replace the durable repository as the mutable state owner.
+
+## Shared pre-submit boundary
+
+`plan_pre_submit` is the common path for production and Shadow:
+`OrderIntent -> current RiskContext -> RiskEngine -> VenueAdapter.validate_intent
+-> VenueAdapter.prepare_submission`. Production creates its durable claim only
+after an approved plan. Shadow stops at the plan, never creates a claim, and
+never calls `submit_once`. If Shadow cannot safely obtain current authenticated
+account or venue context, it reports `NOT_VERIFIED`; it does not invent a
+blocked account state.
+
+This shared-path capability is VERIFIED by tests. Operational Production Shadow
+parity is only PARTIALLY VERIFIED until the runtime can supply safe current
+account and venue context; its current `NOT_VERIFIED` output is intentional.

@@ -38,13 +38,25 @@ class CcxtVenueAdapter(VenueAdapter):
         minimum = limits.get("min")
         if minimum is not None and intent.quote_quantity < Decimal(str(minimum)):
             raise ValueError("venue minimum notional is not met")
+        # A quote-denominated Bybit market buy must not silently be rounded by
+        # the transport.  If CCXT exposes its venue precision helper, reject a
+        # non-representable cost before the durable claim/network boundary.
+        cost_to_precision = getattr(self._client, "cost_to_precision", None)
+        if callable(cost_to_precision):
+            normalized = Decimal(str(cost_to_precision(intent.market.canonical_symbol, str(intent.quote_quantity))))
+            if normalized != intent.quote_quantity:
+                raise ValueError("venue quote amount precision is not met")
 
     def submit_once(self, intent: OrderIntent) -> VenueOrderAcknowledgement:
-        # Bybit's quote-denominated Market Buy mapping is isolated in its mapper.
-        from ..bybit.mapper import ccxt_order_arguments
-        symbol, side, order_type, amount, price, params = ccxt_order_arguments(intent)
+        prepared = self.prepare_submission(intent)
+        symbol, side, order_type, amount, price, params = prepared["symbol"], prepared["side"], prepared["type"], prepared["amount"], prepared["price"], prepared["params"]
         try:
             response = self._client.create_order(symbol, order_type, side, amount, price, params)
+        except self._deterministic_rejection_types() as exc:
+            # These CCXT exception classes conclusively mean the venue did not
+            # accept this order.  They are deliberately handled inside the
+            # venue adapter, never exposed to Core.
+            raise DeterministicVenueRejection(str(exc)) from exc
         except Exception as exc:
             # CCXT/network exceptions are uncertain unless an adapter-specific
             # caller has established a deterministic venue rejection.
@@ -53,6 +65,18 @@ class CcxtVenueAdapter(VenueAdapter):
         if not order_id:
             raise AmbiguousSubmissionError("venue acknowledgement has no order id")
         return VenueOrderAcknowledgement(order_id, intent.client_order_id)
+
+    def prepare_submission(self, intent: OrderIntent) -> Mapping[str, Any]:
+        # Bybit's quote-denominated Market Buy mapping is isolated in its mapper.
+        from ..bybit.mapper import ccxt_order_arguments
+        symbol, side, order_type, amount, price, params = ccxt_order_arguments(intent)
+        return {"symbol": symbol, "side": side, "type": order_type, "amount": amount, "price": price, "params": params}
+
+    @staticmethod
+    def _deterministic_rejection_types() -> tuple[type[BaseException], ...]:
+        """The small CCXT error allow-list safe to classify before recovery."""
+        import ccxt
+        return (ccxt.InvalidOrder, ccxt.InsufficientFunds)
 
     def reconcile(self, intent: OrderIntent, venue_order_id: str | None) -> VenueReconciliation:
         if venue_order_id:

@@ -16,6 +16,7 @@ from .paths import SCHEMAS_PATH
 SCHEMA_FILES = {
     "decision": "decision.schema.json",
     "execution": "execution.schema.json",
+    "execution_record_v2": "execution_record_v2.schema.json",
     "market_snapshot": "market_snapshot.schema.json",
     "notification_event": "notification_event.schema.json",
     "portfolio_state": "portfolio_state.schema.json",

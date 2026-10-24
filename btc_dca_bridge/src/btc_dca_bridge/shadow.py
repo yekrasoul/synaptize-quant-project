@@ -31,6 +31,7 @@ from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH, PROJECT_ROOT
 from .portfolio import derive_portfolio
 from .schemas import validate_artifact
 from .sentiment import AlternativeMeFearGreedAdapter, SentimentSnapshot
+from .execution_v2.shadow import plan_v2_shadow
 
 
 class MarketProvider(Protocol):
@@ -58,6 +59,7 @@ class ShadowRunResult:
     mode: str = "shadow"
     status: str = "completed"
     no_order_executed: bool = True
+    v2_preflight: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +75,7 @@ class ShadowRunResult:
             "manifest": dict(self.manifest),
             "manifest_path": str(self.manifest_receipt.path),
             "no_order_executed": self.no_order_executed,
+            "v2_preflight": self.v2_preflight,
         }
 
 
@@ -194,6 +197,7 @@ class ShadowPipeline:
             self._raise(ShadowRunErrorCode.PERSISTENCE_FAILED, "immutable artifact publication failed", exc)
 
         instant = _iso(run_at)
+        v2_preflight = plan_v2_shadow(decision.to_dict(), run_id=shared_run_id, created_at_utc=instant, monthly_spend=portfolio.monthly_confirmed_usd_deployed)
         return ShadowRunResult(
             shared_run_id,
             instant,
@@ -207,6 +211,7 @@ class ShadowPipeline:
             decision_receipt,
             manifest,
             manifest_receipt,
+            v2_preflight=v2_preflight,
         )
 
     def _reject_completed(self, run_id: str) -> None:

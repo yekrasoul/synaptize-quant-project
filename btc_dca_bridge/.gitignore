@@ -11,6 +11,7 @@ data/order_intents/
 data/live_execution_approvals/
 data/real_money_authorizations/
 data/execution_activations/
+data/execution_records_v2/
 data/live_approvals/
 data/live_execution_attempts/
 data/order_submission_attempts/

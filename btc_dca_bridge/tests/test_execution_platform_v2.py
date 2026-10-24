@@ -30,6 +30,7 @@ class FakeVenue:
     def account_identity(self): return AccountIdentity("bybit", "account-1")
     def quote_balance(self, _): return Decimal("500")
     def validate_intent(self, _): return None
+    def prepare_submission(self, order): return {"client_order_id": order.client_order_id}
     def submit_once(self, order):
         self.posts += 1
         if self.timeout: raise TimeoutError("socket closed after POST")
