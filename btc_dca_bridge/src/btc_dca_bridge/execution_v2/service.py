@@ -8,6 +8,7 @@ from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
 from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
 from ..venues.health import VenueCircuitBreaker
+from ..accounting.deployment import confirmed_monthly_spend
 from .oms import ExecutionRepository, SubmissionAlreadyClaimed
 from .pre_submit import plan_pre_submit
 from typing import Protocol
@@ -24,6 +25,16 @@ class VenueHealthRiskContextProvider:
 
     def current(self, intent: OrderIntent) -> RiskContext:
         return replace(self.source.current(intent), venue_health=self.breaker.current().state)
+
+
+class UnifiedSpendRiskContextProvider:
+    """Infrastructure supplies confirmed history; Risk receives only the total."""
+    def __init__(self, source: FreshRiskContextProvider, legacy_reader, v2_reader) -> None:
+        self.source, self.legacy_reader, self.v2_reader = source, legacy_reader, v2_reader
+
+    def current(self, intent: OrderIntent) -> RiskContext:
+        context = self.source.current(intent)
+        return replace(context, monthly_spend=confirmed_monthly_spend(legacy=self.legacy_reader(), v2_entries=self.v2_reader(), calendar_month=context.calendar_month))
 
 
 @dataclass(frozen=True)

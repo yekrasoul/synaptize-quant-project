@@ -15,7 +15,7 @@ requirements:
   acknowledgement_fill_fee_parity: VERIFIED
   canonical_execution_record_schema: VERIFIED
   reconciliation_gated_durable_accounting: VERIFIED
-  v2_accounting_monthly_spend_projection: NOT_VERIFIED
+  v2_accounting_monthly_spend_projection: VERIFIED
   failure_injection: VERIFIED
   production_shadow_v2_pre_network: PARTIALLY_VERIFIED
   one_reachable_production_submit_path: NOT_VERIFIED

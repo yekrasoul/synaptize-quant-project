@@ -11,7 +11,7 @@ import unittest
 from btc_dca_bridge.accounting.service import AccountingService
 from btc_dca_bridge.core.models import AccountIdentity, Asset, Fill, Market, OrderIntent, OrderType, Side
 from btc_dca_bridge.core.state import ExecutionState, Order
-from btc_dca_bridge.execution_v2.service import ExecutionService, VenueHealthRiskContextProvider
+from btc_dca_bridge.execution_v2.service import ExecutionService, VenueHealthRiskContextProvider, UnifiedSpendRiskContextProvider
 from btc_dca_bridge.infrastructure.accounting_repository import JsonAccountingRepository
 from btc_dca_bridge.infrastructure.execution_repository import JsonExecutionRepository
 from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
@@ -113,6 +113,17 @@ class DurableExecutionV2Tests(unittest.TestCase):
             breaker.record_success()
             result = self.service(root, venue, VenueHealthRiskContextProvider(source, breaker)).execute(OrderIntent("next", "adaptive_dca_v1", "next", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-client", "2026-10-24T00:00:00Z"), context())
             self.assertEqual(venue.posts, 1)
+
+    def test_final_risk_reads_unified_confirmed_spend_before_claim(self):
+        with TemporaryDirectory() as root:
+            venue = Venue()
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            confirmed = Order(intent()).transition(ExecutionState.RISK_APPROVED).transition(ExecutionState.SUBMISSION_STARTED).transition(ExecutionState.SUBMITTED, venue_order_id="venue-confirmed").transition(ExecutionState.RECONCILING).transition(ExecutionState.CONFIRMED)
+            fill = Fill("fill-confirmed", "venue-confirmed", Decimal("0.005"), Decimal("490"), Decimal("0"), Asset("USDT"), "2026-10-01T00:00:00Z")
+            AccountingService(accounting).post_confirmed(confirmed, VenueReconciliation("CONFIRMED", "venue-confirmed", (fill,)))
+            provider = UnifiedSpendRiskContextProvider(Provider(context()), lambda: (), accounting.read_confirmed)
+            result = self.service(root, venue, provider).execute(OrderIntent("next-spend", "adaptive_dca_v1", "next-spend", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-spend-client", "2026-10-24T00:00:00Z"), context())
+            self.assertEqual((result.order.state, venue.posts), (ExecutionState.BLOCKED, 0))
 
     def test_exclusive_claim_is_process_safe_and_survives_restart(self):
         with TemporaryDirectory() as root:
