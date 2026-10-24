@@ -69,6 +69,7 @@ from .ttl_policy import (
 )
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
+from .infrastructure.policy import load_runtime_execution_policy
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -177,6 +178,9 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--data-root", type=Path, default=DATA_PATH)
     plan.add_argument("--instrument-metadata", type=Path, help="validated read-only Bybit Spot instrument-info JSON")
     plan.add_argument("--submission-evidence", type=Path, help="read-only submission/reconciliation evidence JSONL")
+    execute_v2 = subparsers.add_parser("execute", help="V2 automated execution entry point; no confirmation ceremony")
+    execute_v2.add_argument("--decision-json", type=Path, required=True)
+    execute_v2.add_argument("--policy", type=Path, default=Path("config/runtime_execution_policy.yaml"))
     private = subparsers.add_parser("private-verify", help="read-only authenticated Bybit verification")
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     live = subparsers.add_parser("live-submit", help="disabled-by-default Phase 5.3 submission gate")
@@ -618,6 +622,22 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
     if config.kill_switch:
         return {"status": "blocked", "reason": "KILL SWITCH ACTIVE", "message": "NO ORDER SUBMITTED"}
     return {"status": "blocked", "reason": "LIVE SUBMISSION REQUIRES CONTROLLED APPROVAL", "message": "NO ORDER SUBMITTED"}
+
+
+def _execute_v2(args: argparse.Namespace) -> tuple[dict[str, object], int]:
+    """Safe CLI seam for the V2 service.
+
+    The shipped policy is fail-closed, so this command performs no credential
+    lookup or network I/O in normal operation.  Enabling it is deliberately a
+    separate, reviewed deployment step after CCXT parity characterization.
+    """
+    policy = load_runtime_execution_policy(args.policy)
+    decision = read_json_object(args.decision_json)
+    if policy.kill_switch_active:
+        return {"status": "BLOCKED", "reason_codes": ["KILL_SWITCH_ACTIVE"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
+    if not policy.execution_enabled:
+        return {"status": "BLOCKED", "reason_codes": ["EXECUTION_POLICY_DISABLED"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
+    return {"status": "BLOCKED", "reason_codes": ["VENUE_ADAPTER_NOT_ACTIVATED"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
 
 
 _READINESS_ARTIFACTS = (
@@ -1672,6 +1692,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = _private_verify(args)
         elif args.command == "live-submit":
             result = _live_submit(args)
+        elif args.command == "execute":
+            result, exit_code = _execute_v2(args)
         elif args.command == "live-readiness":
             result, exit_code = _live_readiness(args)
         elif args.command == "live-authorize":
