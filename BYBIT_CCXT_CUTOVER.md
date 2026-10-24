@@ -8,6 +8,13 @@ Baseline: `4c54cbe7038c0d273050668cbf884ea409b57251`.
 with its kill switch active. No live endpoint was invoked to produce this
 report.
 
+The `venue_health` RiskContext input is not an operational circuit breaker;
+there is no owned health-state provider or transition evidence yet. It is
+therefore **NOT VERIFIED**. Likewise, V2 accounting persistence is confirmed
+and idempotent, but the legacy-only monthly-spend projection does not yet read
+confirmed V2 entries, so `v2_accounting_monthly_spend_projection` is **NOT
+VERIFIED**. Both independently block activation.
+
 ## Observable contract evidence
 
 | Safety contract | Evidence | Status |
@@ -65,3 +72,7 @@ in `config/v2_activation_checklist.yaml` are `VERIFIED`, a controlled
 non-production account proves final wire/response parity, and routing leaves
 exactly one reachable production network-write path. Historical schema readers
 are not removal candidates merely because current code no longer emits them.
+
+`execution_record_v2` limits its market field to `BTC/USDT:spot` only because
+that is the current production canonical scope. It is not a permanent Core or
+multi-venue domain constraint.

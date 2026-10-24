@@ -8,13 +8,14 @@ requirements:
   ambiguous_network_semantics: VERIFIED
   fresh_final_risk_state: VERIFIED
   kill_switch: VERIFIED
-  venue_health_circuit_breaker: VERIFIED
+  venue_health_circuit_breaker: NOT_VERIFIED
   account_environment_identity: NOT_VERIFIED
   credential_scope_withdrawal_exclusion: NOT_VERIFIED
   bybit_ccxt_request_mapping: PARTIALLY_VERIFIED
   acknowledgement_fill_fee_parity: VERIFIED
   canonical_execution_record_schema: VERIFIED
   reconciliation_gated_durable_accounting: VERIFIED
+  v2_accounting_monthly_spend_projection: NOT_VERIFIED
   failure_injection: VERIFIED
   production_shadow_v2_pre_network: VERIFIED
   one_reachable_production_submit_path: NOT_VERIFIED

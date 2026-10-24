@@ -49,3 +49,13 @@ lifecycle, claim, acknowledgement/reconciliation references, and ambiguity
 or rejection reason, normalized fills/fees, and an observed submission time
 when supplied. It intentionally excludes keys, secrets, signatures, and raw headers.
 It does not replace the durable repository as the mutable state owner.
+
+## Shared pre-submit boundary
+
+`plan_pre_submit` is the common path for production and Shadow:
+`OrderIntent -> current RiskContext -> RiskEngine -> VenueAdapter.validate_intent
+-> VenueAdapter.prepare_submission`. Production creates its durable claim only
+after an approved plan. Shadow stops at the plan, never creates a claim, and
+never calls `submit_once`. If Shadow cannot safely obtain current authenticated
+account or venue context, it reports `NOT_VERIFIED`; it does not invent a
+blocked account state.

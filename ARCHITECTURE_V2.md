@@ -19,5 +19,10 @@ record per client identity; `execution_record_v2` is its schema-validated,
 immutable, secret-free audit projection, not a second state owner. Production
 Shadow calls the V2 pre-network planning path and cannot create a claim or POST.
 
+Venue health is presently a Risk input, not an implemented operational circuit
+breaker; the activation checklist correctly marks that capability NOT VERIFIED.
+Similarly, confirmed V2 accounting persistence is not yet consumed by the
+legacy monthly-spend projection, so that integration remains NOT VERIFIED.
+
 The V2 cutover decision and remaining legacy boundaries are in
 [`BYBIT_CCXT_CUTOVER.md`](BYBIT_CCXT_CUTOVER.md).

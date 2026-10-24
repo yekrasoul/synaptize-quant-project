@@ -48,9 +48,8 @@ class CcxtVenueAdapter(VenueAdapter):
                 raise ValueError("venue quote amount precision is not met")
 
     def submit_once(self, intent: OrderIntent) -> VenueOrderAcknowledgement:
-        # Bybit's quote-denominated Market Buy mapping is isolated in its mapper.
-        from ..bybit.mapper import ccxt_order_arguments
-        symbol, side, order_type, amount, price, params = ccxt_order_arguments(intent)
+        prepared = self.prepare_submission(intent)
+        symbol, side, order_type, amount, price, params = prepared["symbol"], prepared["side"], prepared["type"], prepared["amount"], prepared["price"], prepared["params"]
         try:
             response = self._client.create_order(symbol, order_type, side, amount, price, params)
         except self._deterministic_rejection_types() as exc:
@@ -66,6 +65,12 @@ class CcxtVenueAdapter(VenueAdapter):
         if not order_id:
             raise AmbiguousSubmissionError("venue acknowledgement has no order id")
         return VenueOrderAcknowledgement(order_id, intent.client_order_id)
+
+    def prepare_submission(self, intent: OrderIntent) -> Mapping[str, Any]:
+        # Bybit's quote-denominated Market Buy mapping is isolated in its mapper.
+        from ..bybit.mapper import ccxt_order_arguments
+        symbol, side, order_type, amount, price, params = ccxt_order_arguments(intent)
+        return {"symbol": symbol, "side": side, "type": order_type, "amount": amount, "price": price, "params": params}
 
     @staticmethod
     def _deterministic_rejection_types() -> tuple[type[BaseException], ...]:

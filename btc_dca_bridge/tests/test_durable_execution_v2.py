@@ -34,6 +34,7 @@ class _ProcessVenue:
     name = "bybit"
     def __init__(self, root: str): self.marker = Path(root) / "simulated-post"; self.posts = 0
     def validate_intent(self, _): return None
+    def prepare_submission(self, order): return {"client_order_id": order.client_order_id}
     def submit_once(self, intent):
         self.posts += 1
         fd = os.open(self.marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -66,6 +67,7 @@ class Venue:
     def account_identity(self): return AccountIdentity("bybit", "account")
     def quote_balance(self, _): return Decimal("100")
     def validate_intent(self, _): return None
+    def prepare_submission(self, order): return {"client_order_id": order.client_order_id}
     def submit_once(self, order):
         self.posts += 1
         if self.outcome == "timeout": raise TimeoutError("post timeout")

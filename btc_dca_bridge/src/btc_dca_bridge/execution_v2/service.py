@@ -8,6 +8,7 @@ from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
 from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
 from .oms import ExecutionRepository, SubmissionAlreadyClaimed
+from .pre_submit import plan_pre_submit
 from typing import Protocol
 
 
@@ -55,13 +56,10 @@ class ExecutionService:
 
     def _submit_risk_approved(self, order: Order, context: RiskContext) -> ExecutionResult:
         # Re-read mutable controls immediately before the durable network claim.
-        final = self.risk_engine.evaluate(order.intent, self._context(order.intent, context))
-        if not final.approved:
-            return ExecutionResult(self.oms.save(order.transition(ExecutionState.BLOCKED, reason=",".join(final.reason_codes))), final.status, final.reason_codes)
-        try:
-            self.venue.validate_intent(order.intent)
-        except (PreSubmissionFailure, ValueError) as exc:
-            return ExecutionResult(self.oms.save(order.transition(ExecutionState.FAILED_PRE_SUBMISSION, reason=str(exc))), "BLOCKED", ("PRE_SUBMISSION_FAILURE",))
+        plan = plan_pre_submit(intent=order.intent, context=self._context(order.intent, context), risk_engine=self.risk_engine, venue=self.venue)
+        if not plan.approved:
+            state = ExecutionState.FAILED_PRE_SUBMISSION if plan.reason_codes and plan.reason_codes[0] == "PRE_SUBMISSION_FAILURE" else ExecutionState.BLOCKED
+            return ExecutionResult(self.oms.save(order.transition(state, reason=",".join(plan.reason_codes))), plan.risk_status, plan.reason_codes)
         try:
             order = self.oms.claim_submission(order)
         except SubmissionAlreadyClaimed:
