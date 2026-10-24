@@ -372,12 +372,12 @@ class SystemHealthMonitorTest(unittest.TestCase):
         for text in ("🩺 BTC DCA SYSTEM HEALTH", "✅ Critical Monitor:", "✅ Ledger Integrity:", "Authorization: NOT_AUTHORIZED", "NO ORDER EXECUTED"):
             self.assertIn(text, summary)
 
-    def test_workflow_preserves_read_only_guards_and_old_monitors_remain(self):
+    def test_workflow_preserves_read_only_guards_and_is_single_health_orchestrator(self):
         for forbidden in ("place_order", "createorder", "ledger-record", "canary-execute", "live_submit"):
             self.assertNotIn(forbidden, self.text.lower())
         self.assertIn("actions: read", self.text)
-        self.assertTrue((ROOT / ".github/workflows/production-shadow-watchdog.yml").is_file())
-        self.assertTrue((ROOT / ".github/workflows/bybit-contract-watch.yml").is_file())
+        self.assertFalse((ROOT / ".github/workflows/production-shadow-watchdog.yml").exists())
+        self.assertFalse((ROOT / ".github/workflows/bybit-contract-watch.yml").exists())
 
 
 if __name__ == "__main__":

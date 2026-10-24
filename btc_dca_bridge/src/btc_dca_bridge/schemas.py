@@ -38,7 +38,6 @@ SCHEMA_FILES = {
     "execution_activation": "execution_activation.schema.json",
     "production_enablement": "production_enablement.schema.json",
     "production_enablement_revocation": "production_enablement_revocation.schema.json",
-    "branch_guardian_result": "branch_guardian_result.schema.json",
     "production_evidence": "production_evidence.schema.json",
     "production_status": "production_status.schema.json",
     "production_status_6_0": "production_status_v6_0.schema.json",
