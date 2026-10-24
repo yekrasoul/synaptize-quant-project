@@ -10,7 +10,8 @@ Future work can add transfers, cost basis, realised/unrealised PnL, and funding
 without making the ledger authoritative before reconciliation.
 
 The V2 JSON accounting repository is an atomic create-once port keyed by the
-confirmed execution identity. It proves idempotent posting without modifying
+confirmed execution identity and fsyncs both the entry and containing
+directory. It proves idempotent posting without modifying
 the historical canonical execution ledger.
 
 The V2 `ExecutionRecord` projection is schema-validated evidence, while venue

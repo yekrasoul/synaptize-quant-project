@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "execution_id", "created_at_utc", "strategy_id", "decision_id", "client_order_id", "venue", "market", "state", "submission_claimed", "venue_order_id", "ambiguity_reason", "account_fingerprint", "environment", "reconciliation_reference"],
+    "required": ["schema_version", "execution_id", "created_at_utc", "strategy_id", "decision_id", "client_order_id", "venue", "market", "state", "submission_claimed", "submission_started_at_utc", "acknowledgement", "venue_order_id", "normalized_fills", "ambiguity_reason", "rejection_reason", "account_fingerprint", "environment", "reconciliation_reference", "reconciliation_outcome"],
   "properties": {
     "schema_version": {"const": "2.0.0"},
     "execution_id": {"type": "string", "minLength": 1},
@@ -14,10 +14,15 @@
     "market": {"const": "BTC/USDT:spot"},
     "state": {"enum": ["CREATED", "RISK_APPROVED", "SUBMISSION_STARTED", "SUBMITTED", "RECONCILING", "CONFIRMED", "REJECTED", "BLOCKED", "FAILED_PRE_SUBMISSION", "AMBIGUOUS", "PARTIALLY_FILLED", "CANCELLED"]},
     "submission_claimed": {"type": "boolean"},
+    "submission_started_at_utc": {"type": ["string", "null"], "format": "date-time"},
+    "acknowledgement": {"type": ["string", "null"]},
     "venue_order_id": {"type": ["string", "null"]},
+    "normalized_fills": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["fill_id", "order_id", "base_quantity", "quote_quantity", "fee_quantity", "fee_asset", "occurred_at_utc"], "properties": {"fill_id": {"type": "string", "minLength": 1}, "order_id": {"type": "string", "minLength": 1}, "base_quantity": {"type": "string", "minLength": 1}, "quote_quantity": {"type": "string", "minLength": 1}, "fee_quantity": {"type": "string", "minLength": 1}, "fee_asset": {"type": "string", "minLength": 1}, "occurred_at_utc": {"type": "string", "format": "date-time"}}}},
     "ambiguity_reason": {"type": ["string", "null"]},
+    "rejection_reason": {"type": ["string", "null"]},
     "account_fingerprint": {"type": ["string", "null"]},
     "environment": {"type": "string", "minLength": 1},
-    "reconciliation_reference": {"type": ["string", "null"]}
+    "reconciliation_reference": {"type": ["string", "null"]},
+    "reconciliation_outcome": {"type": ["string", "null"]}
   }
 }

@@ -46,5 +46,6 @@ The repository projects each lifecycle state into the `execution_record_v2`
 schema when audit evidence is required. The projection contains only canonical
 identity, strategy/decision linkage, venue/account/environment identity,
 lifecycle, claim, acknowledgement/reconciliation references, and ambiguity
-reason. It intentionally excludes keys, secrets, signatures, and raw headers.
+or rejection reason, normalized fills/fees, and an observed submission time
+when supplied. It intentionally excludes keys, secrets, signatures, and raw headers.
 It does not replace the durable repository as the mutable state owner.

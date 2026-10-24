@@ -31,21 +31,24 @@ as proven by a unit fixture.
 
 ## Submit-path matrix
 
-| Current owner | V2 replacement | Parity / removal status |
-| --- | --- | --- |
-| `live_order.SignedBybitSubmissionTransport` and `LiveOrderEngine` | `ExecutionService -> CcxtVenueAdapter.submit_once` | Keep: wire parity and single-path cutover not verified |
-| `bybit_spot_transport.BybitSpotRestTransport` | `CcxtVenueAdapter` | Keep: legacy behavior reference until controlled parity capture |
-| `private_bybit.BybitPostAckReconciler` | `CcxtVenueAdapter.reconcile` by `orderLinkId` | Keep: live response parity not verified |
-| `bybit_submission.BybitSubmissionReconciler` | V2 reconciliation + confirmed accounting | Keep: historical/current readers may still be required |
-| `execution_v2.ExecutionService` | Same | Candidate canonical path; currently blocked by runtime policy |
-| Production Shadow | `plan_v2_shadow` pre-network mapping/risk path | Active read-only validation; creates no claim and never POSTs |
+| Component | Current responsibility / unique invariant | V2 replacement | Status |
+| --- | --- | --- | --- |
+| `live_order.SignedBybitSubmissionTransport` and `LiveOrderEngine` | Legacy signed POST and durable pre-POST evidence | `ExecutionService -> CcxtVenueAdapter.submit_once`, durable OMS claim | KEEP TEMPORARILY: wire parity and routing not verified |
+| `bybit_spot_transport.BybitSpotRestTransport` | Legacy V5 request/signing reference | `CcxtVenueAdapter` | KEEP TEMPORARILY: controlled wire capture pending |
+| `private_bybit.BybitPostAckReconciler` | Legacy post-ack venue lookup | `CcxtVenueAdapter.reconcile` by `orderLinkId` | KEEP TEMPORARILY: live response parity pending |
+| `bybit_submission.BybitSubmissionReconciler` | Legacy fill reconciliation / historic reader | V2 reconciliation + confirmed accounting | LEGACY READ-ONLY after parity; reader compatibility may remain |
+| Canary execute and approval/authorization/activation/enablement chain | Historical explicit human authorization | Runtime policy + Risk + durable OMS | REMOVE DURING CUTOVER only after one V2 writer is verified |
+| `execution_v2.ExecutionService` | Canonical new OMS/EMS flow | Same | Candidate canonical path; blocked by committed policy |
+| Production Shadow | Read-only operational validation | `plan_v2_shadow` pre-network mapping/risk path | KEEP: creates no claim and never POSTs |
 
 ## Canonical durable evidence
 
 `execution_record_v2` is the schema-validated, secret-free projection of the
 durable OMS record. It carries canonical/client identity, decision and
 strategy linkage, venue/market/account/environment identity, lifecycle,
-claim state, venue order identity, ambiguity and reconciliation references.
+claim state, submission timestamp when observed, normalized acknowledgement,
+venue order identity, normalized fills/fees, ambiguity/rejection and
+reconciliation references/outcome.
 The repository remains the single mutable lifecycle source; the immutable
 artifact is an audit projection, not a competing state machine.
 

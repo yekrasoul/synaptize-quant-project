@@ -28,4 +28,9 @@ class JsonAccountingRepository:
             return entry, False
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(image); handle.flush(); os.fsync(handle.fileno())
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
         return entry, True
