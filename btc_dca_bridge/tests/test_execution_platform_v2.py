@@ -66,7 +66,7 @@ class ExecutionPlatformV2Tests(unittest.TestCase):
         result = ExecutionService(oms=oms, risk_engine=RiskEngine(), venue=venue).execute(intent(), context())
         self.assertEqual((result.order.state, venue.posts), (ExecutionState.AMBIGUOUS, 1))
         with self.assertRaises(ValueError):
-            oms.claim_submission(intent().client_order_id)
+            oms.claim_submission(result.order)
         with self.assertRaises(ValueError):
             result.order.transition(ExecutionState.SUBMISSION_STARTED)
 

@@ -47,6 +47,10 @@ class Market:
 class AccountIdentity:
     venue: str
     fingerprint: str
+    account_id: str | None = None
+    subaccount_id: str | None = None
+    environment: str | None = None
+    credential_scope_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if not self.venue or not self.fingerprint:

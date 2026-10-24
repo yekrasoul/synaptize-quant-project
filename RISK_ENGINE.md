@@ -11,3 +11,8 @@ strategy still computes V1 allocation but no longer owns the platform hard cap.
 The one current-generation operational control is
 `btc_dca_bridge/config/runtime_execution_policy.yaml`. It owns the kill switch
 and execution-enabled state and ships fail-closed.
+
+The execution service receives a `FreshRiskContextProvider`; it fetches a new
+context immediately before the durable submission claim rather than reusing
+preflight state. Venue health is a separate circuit-breaker input (`healthy`,
+`degraded`, or `unavailable`); it never replaces the authoritative kill switch.

@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
-from ..venues.base import VenueAdapter
-from .oms import InMemoryOms
+from ..venues.base import AmbiguousSubmissionError, DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
+from .oms import ExecutionRepository
+from typing import Protocol
+
+
+class FreshRiskContextProvider(Protocol):
+    def current(self, intent: OrderIntent) -> RiskContext: ...
 
 
 @dataclass(frozen=True)
@@ -18,10 +23,14 @@ class ExecutionResult:
 
 
 class ExecutionService:
-    def __init__(self, *, oms: InMemoryOms, risk_engine: RiskEngine, venue: VenueAdapter) -> None:
+    def __init__(self, *, oms: ExecutionRepository, risk_engine: RiskEngine, venue: VenueAdapter, risk_context_provider: FreshRiskContextProvider | None = None) -> None:
         self.oms = oms
         self.risk_engine = risk_engine
         self.venue = venue
+        self.risk_context_provider = risk_context_provider
+
+    def _context(self, intent: OrderIntent, fallback: RiskContext) -> RiskContext:
+        return self.risk_context_provider.current(intent) if self.risk_context_provider else fallback
 
     def execute(self, intent: OrderIntent, context: RiskContext) -> ExecutionResult:
         order = self.oms.create(Order(intent))
@@ -29,24 +38,37 @@ class ExecutionService:
         if not assessment.approved:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.BLOCKED, reason=",".join(assessment.reason_codes))), assessment.status, assessment.reason_codes)
         order = self.oms.save(order.transition(ExecutionState.RISK_APPROVED))
-        # This final evaluation is deliberately immediately before the network boundary.
-        final = self.risk_engine.evaluate(intent, context)
+        # Re-read mutable controls immediately before the durable network claim.
+        final = self.risk_engine.evaluate(intent, self._context(intent, context))
         if not final.approved:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.BLOCKED, reason=",".join(final.reason_codes))), final.status, final.reason_codes)
         try:
             self.venue.validate_intent(intent)
-            self.oms.claim_submission(intent.client_order_id)
-        except Exception as exc:
+            order = self.oms.claim_submission(order)
+        except (PreSubmissionFailure, ValueError) as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.FAILED_PRE_SUBMISSION, reason=str(exc))), "BLOCKED", ("PRE_SUBMISSION_FAILURE",))
-        order = self.oms.save(order.transition(ExecutionState.SUBMISSION_STARTED))
         try:
             ack = self.venue.submit_once(intent)
-        except TimeoutError as exc:
-            return ExecutionResult(self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason=str(exc))), "AMBIGUOUS", ("RECONCILIATION_REQUIRED",))
-        except Exception as exc:
+        except DeterministicVenueRejection as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.REJECTED, reason=str(exc))), "REJECTED", ("VENUE_REJECTED",))
+        except (AmbiguousSubmissionError, TimeoutError, Exception) as exc:
+            return ExecutionResult(self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason=str(exc))), "AMBIGUOUS", ("RECONCILIATION_REQUIRED",))
         order = self.oms.save(order.transition(ExecutionState.SUBMITTED, venue_order_id=ack.venue_order_id))
         reconciliation = self.venue.reconcile(intent, ack.venue_order_id)
         order = self.oms.save(order.transition(ExecutionState.RECONCILING))
         state = ExecutionState(reconciliation.status)
         return ExecutionResult(self.oms.save(order.transition(state, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason)), "APPROVED")
+
+    def recover_unresolved(self) -> tuple[ExecutionResult, ...]:
+        """Restart path: reconcile durable identities only; never submit again."""
+        recovered: list[ExecutionResult] = []
+        for order in self.oms.unresolved():
+            if order.state is ExecutionState.SUBMISSION_STARTED:
+                order = self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason="restart after durable claim"))
+            if order.state in {ExecutionState.AMBIGUOUS, ExecutionState.PARTIALLY_FILLED, ExecutionState.SUBMITTED}:
+                order = self.oms.save(order.transition(ExecutionState.RECONCILING))
+            reconciliation = self.venue.reconcile(order.intent, order.venue_order_id)
+            target = ExecutionState(reconciliation.status)
+            order = self.oms.save(order.transition(target, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason))
+            recovered.append(ExecutionResult(order, "RECOVERED"))
+        return tuple(recovered)

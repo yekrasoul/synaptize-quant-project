@@ -8,3 +8,7 @@ and dependency direction.
 Legacy tests remain while legacy production code remains reachable. No test was
 deleted merely to increase the apparent simplification rate. Tests that freeze
 old workflow or guardian structure were already removed in PR #76.
+
+Durable V2 tests cover crash after claim, timeout/reset/outage ambiguity,
+deterministic rejection, recovery without a venue order ID, fresh kill-switch
+recheck, duplicate identity across restart, and idempotent accounting posting.

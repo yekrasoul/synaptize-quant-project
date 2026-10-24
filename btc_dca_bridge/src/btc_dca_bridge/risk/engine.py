@@ -25,6 +25,9 @@ class RiskContext:
     quote_balance: Decimal
     unresolved_execution_exists: bool
     duplicate_execution_exists: bool
+    venue_health: str = "healthy"
+    allowed_venue: str = "bybit"
+    allowed_market: str = "BTC/USDT:spot"
     leverage_enabled: bool = False
     borrowing_enabled: bool = False
 
@@ -49,6 +52,12 @@ class RiskEngine:
             reasons.append("KILL_SWITCH_ACTIVE")
         if not context.runtime_execution_enabled:
             reasons.append("EXECUTION_POLICY_DISABLED")
+        if context.venue_health != "healthy":
+            reasons.append("VENUE_HEALTH_NOT_HEALTHY")
+        if intent.preferred_venue != context.allowed_venue:
+            reasons.append("VENUE_NOT_ALLOWED")
+        if f"{intent.market.canonical_symbol}:{intent.market.instrument_type}" != context.allowed_market:
+            reasons.append("MARKET_NOT_ALLOWED")
         if intent.market.instrument_type != "spot":
             reasons.append("MARKET_NOT_SPOT")
         if intent.side is not Side.BUY:

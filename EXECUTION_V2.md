@@ -13,3 +13,13 @@ submission. Only reconciliation may subsequently establish venue truth.
 The committed policy blocks it before credentials or network access. Enabling
 live submission is intentionally deferred until CCXT/Bybit parity fixtures and
 durable V2 execution-record persistence are accepted.
+
+## Durable recovery and network boundary
+
+V2 persists an execution identity, then persists `SUBMISSION_STARTED`, before
+an EMS call may write to a venue. `SUBMISSION_STARTED`, `SUBMITTED`,
+`RECONCILING`, `AMBIGUOUS`, and `PARTIALLY_FILLED` are recovery-only states.
+On restart they are reconciled by canonical client identity; they are never
+submitted again. A failure before the durable submission claim may become
+`FAILED_PRE_SUBMISSION`. Any error after a possible network write is
+`AMBIGUOUS`, except an explicit `DeterministicVenueRejection`.
