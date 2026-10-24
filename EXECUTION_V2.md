@@ -59,3 +59,7 @@ after an approved plan. Shadow stops at the plan, never creates a claim, and
 never calls `submit_once`. If Shadow cannot safely obtain current authenticated
 account or venue context, it reports `NOT_VERIFIED`; it does not invent a
 blocked account state.
+
+This shared-path capability is VERIFIED by tests. Operational Production Shadow
+parity is only PARTIALLY VERIFIED until the runtime can supply safe current
+account and venue context; its current `NOT_VERIFIED` output is intentional.

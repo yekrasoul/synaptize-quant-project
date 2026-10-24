@@ -15,6 +15,14 @@ and idempotent, but the legacy-only monthly-spend projection does not yet read
 confirmed V2 entries, so `v2_accounting_monthly_spend_projection` is **NOT
 VERIFIED**. Both independently block activation.
 
+**Capability parity is VERIFIED in tests:** a supplied safe RiskContext and
+VenueAdapter exercise the same shared `plan_pre_submit` boundary used by
+ExecutionService, and Shadow stops before a claim or POST. **Operational
+Production Shadow parity is PARTIALLY VERIFIED:** its current runtime has no
+safe authenticated account/venue context, so it correctly emits
+`NOT_VERIFIED / FRESH_ACCOUNT_AND_VENUE_CONTEXT_UNAVAILABLE` rather than
+fabricating those facts. This remains an activation blocker.
+
 ## Observable contract evidence
 
 | Safety contract | Evidence | Status |

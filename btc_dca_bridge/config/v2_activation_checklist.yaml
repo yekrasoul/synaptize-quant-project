@@ -17,5 +17,5 @@ requirements:
   reconciliation_gated_durable_accounting: VERIFIED
   v2_accounting_monthly_spend_projection: NOT_VERIFIED
   failure_injection: VERIFIED
-  production_shadow_v2_pre_network: VERIFIED
+  production_shadow_v2_pre_network: PARTIALLY_VERIFIED
   one_reachable_production_submit_path: NOT_VERIFIED
