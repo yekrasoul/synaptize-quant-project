@@ -19,7 +19,7 @@ fill evidence remains authoritative for a confirmation. The existing immutable
 ledger continues to project historical confirmed deployment into the Risk
 Engine's monthly-spend input; no legacy entry is rewritten by V2.
 
-V2 confirmed entries are deliberately not yet merged into that monthly-spend
-projection. `v2_accounting_monthly_spend_projection` is therefore an explicit
-activation blocker, avoiding any claim that create-once persistence alone
-completes Risk integration.
+`UnifiedSpendRiskContextProvider` merges immutable reconciled legacy history
+with confirmed V2 accounting rows at the final Risk read. Legacy identity wins
+an overlap, unconfirmed V2 rows are excluded, and the $500 cap remains owned
+by Risk.
