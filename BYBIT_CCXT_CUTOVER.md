@@ -8,9 +8,9 @@ Baseline: `4c54cbe7038c0d273050668cbf884ea409b57251`.
 with its kill switch active. No live endpoint was invoked to produce this
 report.
 
-The `venue_health` RiskContext input is not an operational circuit breaker;
-there is no owned health-state provider or transition evidence yet. It is
-therefore **NOT VERIFIED**. Likewise, V2 accounting persistence is confirmed
+`VenueCircuitBreaker` is the owned operational health state provider. Its
+deterministic failure/degraded/open/recovery transition tests are VERIFIED,
+and Risk consumes its current state separately from the kill switch. V2 accounting persistence is confirmed
 and idempotent, but the legacy-only monthly-spend projection does not yet read
 confirmed V2 entries, so `v2_accounting_monthly_spend_projection` is **NOT
 VERIFIED**. Both independently block activation.

@@ -16,3 +16,8 @@ The execution service receives a `FreshRiskContextProvider`; it fetches a new
 context immediately before the durable submission claim rather than reusing
 preflight state. Venue health is a separate circuit-breaker input (`healthy`,
 `degraded`, or `unavailable`); it never replaces the authoritative kill switch.
+Venue availability is owned outside Risk by `VenueCircuitBreaker`. Its current
+state is supplied through `VenueHealthRiskContextProvider` at the final
+pre-submit Risk read. Breaker state deliberately restarts UNAVAILABLE until a
+successful health probe; it never silently resets to HEALTHY. This is separate
+from the authoritative kill switch.
