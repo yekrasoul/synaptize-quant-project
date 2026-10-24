@@ -35,6 +35,7 @@ from ..schemas import UnsupportedProductionEvidenceSchemaError, validate_artifac
 
 
 class ArtifactType(str, Enum):
+    BYBIT_ACCOUNT_EVIDENCE = "bybit_account_evidence"
     MARKET = "market"
     SENTIMENT = "sentiment"
     DECISION = "decision"
@@ -59,6 +60,7 @@ class ArtifactType(str, Enum):
 
 
 _DIRECTORIES = {
+    ArtifactType.BYBIT_ACCOUNT_EVIDENCE: "bybit_account_evidence",
     ArtifactType.MARKET: "market",
     ArtifactType.SENTIMENT: "sentiment",
     ArtifactType.DECISION: "decisions",
@@ -82,6 +84,7 @@ _DIRECTORIES = {
     ArtifactType.PRODUCTION_STATUS_ALERT: "production_status_alerts",
 }
 _SCHEMAS = {
+    ArtifactType.BYBIT_ACCOUNT_EVIDENCE: "bybit_account_evidence",
     ArtifactType.MARKET: "market_snapshot",
     ArtifactType.SENTIMENT: "sentiment_snapshot",
     ArtifactType.DECISION: "decision",
@@ -105,6 +108,7 @@ _SCHEMAS = {
     ArtifactType.PRODUCTION_STATUS_ALERT: "production_status_alert",
 }
 _TIMESTAMPS = {
+    ArtifactType.BYBIT_ACCOUNT_EVIDENCE: "captured_at",
     ArtifactType.MARKET: "captured_at_utc",
     ArtifactType.SENTIMENT: "retrieved_at_utc",
     ArtifactType.DECISION: "created_at_utc",
