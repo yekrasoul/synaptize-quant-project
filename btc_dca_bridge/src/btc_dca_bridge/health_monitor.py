@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-CRITICAL_CRON = "17 * * * *"
-FULL_CRON = "43 */6 * * *"
-PRODUCTION_SHADOW_CRON = "23 */6 * * *"
+from .monitoring.schedule import classify_production_shadow_freshness, system_health_crons, utc as _utc
+
+CRITICAL_CRON, FULL_CRON = system_health_crons()
 CRITICAL_CHECKS = (
     "self_hosted_runner", "production_shadow", "watchdog", "canonical_ci",
     "artifacts", "ledger_integrity", "telegram",
@@ -31,13 +31,6 @@ ALERTING_STATES = {"ALERT", "CRITICAL", "FAILURE", "FAILED"}
 NON_ALERTING_STATES = {"INITIALIZING", "CONFIGURED", "NOT_APPLICABLE", "NOT_CONFIGURED", "UNKNOWN", "NOT_RUN"}
 
 
-def _utc(value: str | datetime) -> datetime:
-    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("health timestamps must be timezone-aware")
-    return parsed.astimezone(UTC)
-
-
 def derive_mode(*, event_name: str, schedule: str | None, requested_mode: str | None) -> str:
     if event_name == "schedule":
         if schedule == CRITICAL_CRON:
@@ -50,15 +43,6 @@ def derive_mode(*, event_name: str, schedule: str | None, requested_mode: str | 
     raise ValueError("monitoring mode/event is invalid")
 
 
-def expected_production_slot(observed_at: str | datetime) -> datetime:
-    """Return the prior production slot, preserving the watchdog's strict-before rule."""
-    observed = _utc(observed_at)
-    day = observed.replace(hour=0, minute=23, second=0, microsecond=0)
-    slots = [day + timedelta(hours=hour) for hour in (0, 6, 12, 18)]
-    prior = [slot for slot in slots if slot < observed]
-    return prior[-1] if prior else day - timedelta(hours=6)
-
-
 def _parse_run_time(run: Mapping[str, Any]) -> datetime:
     value = run.get("created_at")
     if not isinstance(value, str):
@@ -66,35 +50,9 @@ def _parse_run_time(run: Mapping[str, Any]) -> datetime:
     return _utc(value)
 
 
-def classify_production_shadow(observed_at: str | datetime, runs: Sequence[Mapping[str, Any]], *, grace_minutes: int = 60) -> dict[str, Any]:
-    """Classify only the expected scheduled main production-shadow run."""
-    try:
-        observed = _utc(observed_at)
-        slot = expected_production_slot(observed)
-        grace_end = slot + timedelta(minutes=grace_minutes)
-        candidates = []
-        for run in runs:
-            if run.get("event") != "schedule" or run.get("head_branch") != "main":
-                continue
-            created = _parse_run_time(run)
-            if slot <= created < grace_end:
-                candidates.append((created, run))
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        if not candidates:
-            return {"state": "ALERT", "expected_slot": slot.isoformat().replace("+00:00", "Z"), "run_id": None, "reason": "missing expected scheduled production shadow"}
-        created, run = candidates[0]
-        status, conclusion = run.get("status"), run.get("conclusion")
-        if status == "completed" and conclusion == "success":
-            state = "HEALTHY"
-        elif status in {"queued", "in_progress"}:
-            state = "ALERT"
-        elif status == "completed" and conclusion in {"failure", "cancelled", "timed_out"}:
-            state = "ALERT"
-        else:
-            state = "UNKNOWN"
-        return {"state": state, "expected_slot": slot.isoformat().replace("+00:00", "Z"), "run_id": run.get("id"), "created_at": created.isoformat().replace("+00:00", "Z"), "status": status, "conclusion": conclusion, "reason": f"scheduled main run is {status}/{conclusion}"}
-    except (TypeError, ValueError, KeyError) as exc:
-        return {"state": "UNKNOWN", "expected_slot": None, "run_id": None, "reason": f"production shadow evidence error: {exc}"}
+def classify_production_shadow(observed_at: str | datetime, runs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Compatibility facade; schedule policy is owned by monitoring.schedule."""
+    return classify_production_shadow_freshness(observed_at, runs)
 
 
 def classify_self_hosted_runner(shadow: Mapping[str, Any], jobs_by_run_id: Mapping[str, Any]) -> str:

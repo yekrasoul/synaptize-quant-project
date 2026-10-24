@@ -57,6 +57,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
         with:
+          version: "0.9.18"
           enable-cache: true
 
       - name: Install locked dependencies
@@ -81,33 +82,39 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         with:
+          retries: 3
+          retry-exempt-status-codes: 400,401,403,404,422
           script: |
-            const runsFor = async (workflow) => github.paginate(
-              github.rest.actions.listWorkflowRuns,
-              { owner: context.repo.owner, repo: context.repo.repo, workflow_id: workflow, per_page: 100 }
+            const getRuns = (workflow) => github.rest.actions.listWorkflowRuns(
+              { owner: context.repo.owner, repo: context.repo.repo, workflow_id: workflow, per_page: 20 }
             );
-            const shadowRuns = await runsFor('production-shadow.yml');
-            const monitorRuns = await runsFor('system-health-monitor.yml');
-            const ciRuns = await runsFor('ci.yml');
-            const artifacts = await github.paginate(
-              github.rest.actions.listArtifactsForRepo,
-              { owner: context.repo.owner, repo: context.repo.repo, per_page: 100 }
-            );
-            const scheduledShadow = shadowRuns.filter(run => run.event === 'schedule' && run.head_branch === 'main');
-            const shadowJobsByRunId = {};
-            for (const run of scheduledShadow) {
-              shadowJobsByRunId[String(run.id)] = await github.paginate(
-                github.rest.actions.listJobsForWorkflowRun,
-                { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 }
-              );
+            const [shadow, monitor, ci, artifactResponse] = await Promise.all([
+              getRuns('production-shadow.yml'), getRuns('system-health-monitor.yml'), getRuns('ci.yml'),
+              github.rest.actions.listArtifactsForRepo({ owner: context.repo.owner, repo: context.repo.repo, per_page: 20 }),
+            ]);
+            const candidate = shadow.data.workflow_runs
+              .filter(run => run.event === 'schedule' && run.head_branch === 'main')
+              .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))[0];
+            let shadowJobsByRunId = {};
+            let shadowJobsEvidenceError = null;
+            if (candidate) {
+              try {
+                const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                  owner: context.repo.owner, repo: context.repo.repo, run_id: candidate.id, per_page: 20
+                });
+                shadowJobsByRunId = { [String(candidate.id)]: jobs.data.jobs };
+              } catch (error) {
+                shadowJobsEvidenceError = `relevant shadow job evidence unavailable: ${error.status || 'unknown'}`;
+              }
             }
             const evidence = {
               observed_at: new Date().toISOString(),
-              shadow_runs: shadowRuns,
+              shadow_runs: shadow.data.workflow_runs,
               shadow_jobs_by_run_id: shadowJobsByRunId,
-              monitor_runs: monitorRuns,
-              ci_runs: ciRuns,
-              artifacts,
+              shadow_jobs_evidence_error: shadowJobsEvidenceError,
+              monitor_runs: monitor.data.workflow_runs,
+              ci_runs: ci.data.workflow_runs,
+              artifacts: artifactResponse.data.artifacts,
               telegram_configured: Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
             };
             require('fs').writeFileSync('/tmp/system-health-github-evidence.json', JSON.stringify(evidence), 'utf8');
@@ -239,6 +246,7 @@ jobs:
           diagnostics = {
               "watchdog": {"state": watchdog_state, "reason": {"INITIALIZING": "no prior successful scheduled monitor history", "HEALTHY": "recent successful scheduled monitor history", "ALERT": "scheduled monitor history is stale or failed", "UNKNOWN": "monitor history is malformed or unavailable"}.get(watchdog_state, "monitor state unavailable")},
               "canonical_ci": {"state": ci, "reason": {"HEALTHY": "latest relevant Canonical CI run succeeded", "ALERT": "latest relevant Canonical CI run failed", "UNKNOWN": "no relevant Canonical CI run found or evidence is malformed"}.get(ci, "Canonical CI state unavailable")},
+              "self_hosted_runner": {"state": runner_state, "reason": evidence.get("shadow_jobs_evidence_error") or "selected scheduled shadow runner evidence evaluated"},
           }
           checks = {
               "self_hosted_runner": runner_state,
@@ -289,6 +297,9 @@ jobs:
               output.write(f"notify={'true' if messages else 'false'}\n")
               output.write(f"summary={'true' if result['daily_summary_due'] else 'false'}\n")
               output.write(f"overall={result['overall']}\n")
+              output.write("monitor_execution_status=SUCCESS\n")
+              output.write(f"system_health_status={result['overall']}\n")
+              output.write(f"scheduler_health_status={result['components'].get('production_shadow', 'UNKNOWN')}\n")
           PY
           cp "$state_dir/result.json" /tmp/system-health-result.json
 
@@ -365,6 +376,9 @@ jobs:
             echo
             echo "- Mode: ${{ steps.mode.outputs.mode }}"
             echo "- Overall: ${{ steps.evaluate.outputs.overall }}"
+            echo "- Monitor execution: ${{ steps.evaluate.outputs.monitor_execution_status }}"
+            echo "- System health: ${{ steps.evaluate.outputs.system_health_status }}"
+            echo "- Scheduler health: ${{ steps.evaluate.outputs.scheduler_health_status }}"
             echo "- Immediate notifications: ${{ steps.evaluate.outputs.notify }}"
             echo "- Daily summary: ${{ steps.evaluate.outputs.summary }}"
             echo "- Read-only: yes"
