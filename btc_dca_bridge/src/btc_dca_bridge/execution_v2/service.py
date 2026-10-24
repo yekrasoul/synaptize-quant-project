@@ -1,12 +1,13 @@
 """One automated Decision -> Risk -> Submit once -> Reconcile flow."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
 from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
+from ..venues.health import VenueCircuitBreaker
 from .oms import ExecutionRepository, SubmissionAlreadyClaimed
 from .pre_submit import plan_pre_submit
 from typing import Protocol
@@ -14,6 +15,15 @@ from typing import Protocol
 
 class FreshRiskContextProvider(Protocol):
     def current(self, intent: OrderIntent) -> RiskContext: ...
+
+
+class VenueHealthRiskContextProvider:
+    """Inject the breaker state at the final fresh-risk read."""
+    def __init__(self, source: FreshRiskContextProvider, breaker: VenueCircuitBreaker) -> None:
+        self.source, self.breaker = source, breaker
+
+    def current(self, intent: OrderIntent) -> RiskContext:
+        return replace(self.source.current(intent), venue_health=self.breaker.current().state)
 
 
 @dataclass(frozen=True)
@@ -24,11 +34,12 @@ class ExecutionResult:
 
 
 class ExecutionService:
-    def __init__(self, *, oms: ExecutionRepository, risk_engine: RiskEngine, venue: VenueAdapter, risk_context_provider: FreshRiskContextProvider | None = None) -> None:
+    def __init__(self, *, oms: ExecutionRepository, risk_engine: RiskEngine, venue: VenueAdapter, risk_context_provider: FreshRiskContextProvider | None = None, venue_breaker: VenueCircuitBreaker | None = None) -> None:
         self.oms = oms
         self.risk_engine = risk_engine
         self.venue = venue
         self.risk_context_provider = risk_context_provider
+        self.venue_breaker = venue_breaker
 
     def _context(self, intent: OrderIntent, fallback: RiskContext) -> RiskContext:
         return self.risk_context_provider.current(intent) if self.risk_context_provider else fallback
@@ -73,9 +84,13 @@ class ExecutionService:
         except DeterministicVenueRejection as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.REJECTED, reason=str(exc))), "REJECTED", ("VENUE_REJECTED",))
         except Exception as exc:
+            if self.venue_breaker is not None:
+                self.venue_breaker.record_failure(type(exc).__name__)
             # No post-boundary exception is assumed to prove non-delivery.
             # DeterministicVenueRejection is the only earlier rejected branch.
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason=str(exc))), "AMBIGUOUS", ("RECONCILIATION_REQUIRED",))
+        if self.venue_breaker is not None:
+            self.venue_breaker.record_success()
         order = self.oms.save(order.transition(ExecutionState.SUBMITTED, venue_order_id=ack.venue_order_id))
         reconciliation = self.venue.reconcile(order.intent, ack.venue_order_id)
         order = self.oms.save(order.transition(ExecutionState.RECONCILING))

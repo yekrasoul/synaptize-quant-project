@@ -11,11 +11,12 @@ import unittest
 from btc_dca_bridge.accounting.service import AccountingService
 from btc_dca_bridge.core.models import AccountIdentity, Asset, Fill, Market, OrderIntent, OrderType, Side
 from btc_dca_bridge.core.state import ExecutionState, Order
-from btc_dca_bridge.execution_v2.service import ExecutionService
+from btc_dca_bridge.execution_v2.service import ExecutionService, VenueHealthRiskContextProvider
 from btc_dca_bridge.infrastructure.accounting_repository import JsonAccountingRepository
 from btc_dca_bridge.infrastructure.execution_repository import JsonExecutionRepository
 from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
 from btc_dca_bridge.venues.base import AmbiguousSubmissionError, DeterministicVenueRejection, VenueOrderAcknowledgement, VenueReconciliation
+from btc_dca_bridge.venues.health import VenueCircuitBreaker
 
 
 def _concurrent_claim(root: str, client_order_id: str, start, results) -> None:
@@ -100,6 +101,17 @@ class DurableExecutionV2Tests(unittest.TestCase):
             self.assertEqual(restarted.oms.get(intent().client_order_id).state, ExecutionState.AMBIGUOUS)
             duplicate = restarted.execute(intent(), context())
             self.assertEqual(duplicate.risk_status, "DUPLICATE_OR_RECONCILIATION_REQUIRED")
+            self.assertEqual(venue.posts, 1)
+
+    def test_final_risk_reads_breaker_and_blocks_before_claim_or_post(self):
+        with TemporaryDirectory() as root:
+            breaker = VenueCircuitBreaker(); source = Provider(context())
+            venue = Venue()
+            service = self.service(root, venue, VenueHealthRiskContextProvider(source, breaker))
+            result = service.execute(intent(), context())
+            self.assertEqual((result.order.state, venue.posts), (ExecutionState.BLOCKED, 0))
+            breaker.record_success()
+            result = self.service(root, venue, VenueHealthRiskContextProvider(source, breaker)).execute(OrderIntent("next", "adaptive_dca_v1", "next", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-client", "2026-10-24T00:00:00Z"), context())
             self.assertEqual(venue.posts, 1)
 
     def test_exclusive_claim_is_process_safe_and_survives_restart(self):

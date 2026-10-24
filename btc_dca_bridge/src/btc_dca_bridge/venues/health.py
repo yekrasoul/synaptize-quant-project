@@ -24,8 +24,10 @@ class VenueCircuitBreaker:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be positive")
         self.failure_threshold = failure_threshold
-        self._failures = 0
-        self._reason: str | None = None
+        # State is deliberately not persisted. A restart starts open until a
+        # successful fresh probe supplies new evidence.
+        self._failures = failure_threshold
+        self._reason: str | None = "startup health probe required"
 
     def record_failure(self, reason: str) -> VenueHealthEvidence:
         self._failures += 1
