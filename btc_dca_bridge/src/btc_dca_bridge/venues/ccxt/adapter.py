@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Callable, Mapping
 
 from ...core.models import AccountIdentity, Asset, Fill, OrderIntent
-from ..base import VenueAdapter, VenueOrderAcknowledgement, VenueReconciliation
+from ..base import AmbiguousSubmissionError, DeterministicVenueRejection, VenueAdapter, VenueOrderAcknowledgement, VenueReconciliation
 
 
 class CcxtVenueAdapter(VenueAdapter):
@@ -43,18 +43,33 @@ class CcxtVenueAdapter(VenueAdapter):
         # Bybit's quote-denominated Market Buy mapping is isolated in its mapper.
         from ..bybit.mapper import ccxt_order_arguments
         symbol, side, order_type, amount, price, params = ccxt_order_arguments(intent)
-        response = self._client.create_order(symbol, order_type, side, amount, price, params)
+        try:
+            response = self._client.create_order(symbol, order_type, side, amount, price, params)
+        except Exception as exc:
+            # CCXT/network exceptions are uncertain unless an adapter-specific
+            # caller has established a deterministic venue rejection.
+            raise AmbiguousSubmissionError(str(exc)) from exc
         order_id = str(response.get("id") or "")
         if not order_id:
-            raise RuntimeError("venue acknowledgement has no order id")
+            raise AmbiguousSubmissionError("venue acknowledgement has no order id")
         return VenueOrderAcknowledgement(order_id, intent.client_order_id)
 
     def reconcile(self, intent: OrderIntent, venue_order_id: str | None) -> VenueReconciliation:
-        if not venue_order_id:
-            return VenueReconciliation("AMBIGUOUS", None, (), "missing venue order identity")
-        order = self._client.fetch_order(venue_order_id, intent.market.canonical_symbol)
+        if venue_order_id:
+            order = self._client.fetch_order(venue_order_id, intent.market.canonical_symbol)
+        else:
+            # Bybit exposes orderLinkId; query by canonical client identity when
+            # acknowledgement was lost. Absence is ambiguous, never a retry cue.
+            rows = self._client.fetch_orders(intent.market.canonical_symbol, params={"orderLinkId": intent.client_order_id})
+            matches = [row for row in rows if str(row.get("clientOrderId") or row.get("orderLinkId") or (row.get("info") or {}).get("orderLinkId") or "") == intent.client_order_id]
+            if len(matches) != 1:
+                return VenueReconciliation("AMBIGUOUS", None, (), "client identity evidence is absent or conflicting")
+            order = matches[0]
+            venue_order_id = str(order.get("id") or "") or None
+            if venue_order_id is None:
+                return VenueReconciliation("AMBIGUOUS", None, (), "matching client identity has no venue order id")
         status = str(order.get("status", "")).lower()
-        raw_fills = self._client.fetch_my_trades(intent.market.canonical_symbol, params={"orderId": venue_order_id})
+        raw_fills = self._client.fetch_my_trades(intent.market.canonical_symbol, params={"orderId": venue_order_id, "orderLinkId": intent.client_order_id})
         fills = tuple(
             Fill(str(row["id"]), venue_order_id, Decimal(str(row["amount"])), Decimal(str(row["cost"])), Decimal(str((row.get("fee") or {}).get("cost", 0))), Asset(str((row.get("fee") or {}).get("currency", intent.market.quote.code)).upper()), str(row.get("timestamp", "")))
             for row in raw_fills

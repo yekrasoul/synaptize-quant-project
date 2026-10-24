@@ -8,3 +8,7 @@ historical accounting source and is not rewritten.
 
 Future work can add transfers, cost basis, realised/unrealised PnL, and funding
 without making the ledger authoritative before reconciliation.
+
+The V2 JSON accounting repository is an atomic create-once port keyed by the
+confirmed execution identity. It proves idempotent posting without modifying
+the historical canonical execution ledger.

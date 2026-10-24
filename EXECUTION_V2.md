@@ -13,3 +13,29 @@ submission. Only reconciliation may subsequently establish venue truth.
 The committed policy blocks it before credentials or network access. Enabling
 live submission is intentionally deferred until CCXT/Bybit parity fixtures and
 durable V2 execution-record persistence are accepted.
+
+## Durable recovery and network boundary
+
+V2 persists an execution identity, then persists `SUBMISSION_STARTED`, before
+an EMS call may write to a venue. `SUBMISSION_STARTED`, `SUBMITTED`,
+`RECONCILING`, `AMBIGUOUS`, and `PARTIALLY_FILLED` are recovery-only states.
+On restart they are reconciled by canonical client identity; they are never
+submitted again. A failure before the durable submission claim may become
+`FAILED_PRE_SUBMISSION`. Any error after a possible network write is
+`AMBIGUOUS`, except an explicit `DeterministicVenueRejection`.
+
+## Exactly-once durability
+
+`JsonExecutionRepository` creates a per-client-identity submission claim with
+`O_CREAT | O_EXCL`, fsyncs the claim file and its directory, then atomically
+replaces the execution record with `SUBMISSION_STARTED` and fsyncs the
+directory again. Independent processes therefore have one winner; any existing
+claim blocks a second network write forever. If a crash occurs between claim
+creation and record replacement, repository reads project the claimed
+`RISK_APPROVED` record as `SUBMISSION_STARTED`, forcing recovery-only
+reconciliation.
+
+At the application boundary, `SubmissionAlreadyClaimed` is distinct from a
+pre-claim validation failure. The losing service loads and returns the
+canonical durable order unchanged with `DUPLICATE_OR_RECONCILIATION_REQUIRED`;
+it never turns its stale `RISK_APPROVED` value into `FAILED_PRE_SUBMISSION`.

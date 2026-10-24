@@ -57,8 +57,8 @@ class ExecutionPlatformV2Tests(unittest.TestCase):
         service = ExecutionService(oms=InMemoryOms(), risk_engine=RiskEngine(), venue=venue)
         result = service.execute(intent(), context())
         self.assertEqual((result.order.state, venue.posts), (ExecutionState.CONFIRMED, 1))
-        with self.assertRaises(ValueError):
-            service.execute(intent(), context())
+        duplicate = service.execute(intent(), context())
+        self.assertEqual((duplicate.risk_status, duplicate.order.state), ("DUPLICATE_OR_RECONCILIATION_REQUIRED", ExecutionState.CONFIRMED))
 
     def test_timeout_is_ambiguous_and_no_automatic_resubmission_is_possible(self):
         venue = FakeVenue(timeout=True)
@@ -66,7 +66,7 @@ class ExecutionPlatformV2Tests(unittest.TestCase):
         result = ExecutionService(oms=oms, risk_engine=RiskEngine(), venue=venue).execute(intent(), context())
         self.assertEqual((result.order.state, venue.posts), (ExecutionState.AMBIGUOUS, 1))
         with self.assertRaises(ValueError):
-            oms.claim_submission(intent().client_order_id)
+            oms.claim_submission(result.order)
         with self.assertRaises(ValueError):
             result.order.transition(ExecutionState.SUBMISSION_STARTED)
 

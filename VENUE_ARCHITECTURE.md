@@ -9,3 +9,8 @@ it maps a canonical BTC/USDT Spot market buy to the required CCXT/Bybit
 parameters. It has not yet replaced legacy transports in production. That
 replacement requires request/response parity, fill normalization, durable
 pre-submit evidence, and fault-injection sign-off.
+
+If acknowledgement lacks a venue order ID, the adapter queries Bybit/CCXT by
+the canonical client identity (`orderLinkId`). Zero or conflicting matches stay
+ambiguous. Offline mapping and normalization tests are present; exact live
+request-byte parity remains **NOT VERIFIED** and is an activation blocker.

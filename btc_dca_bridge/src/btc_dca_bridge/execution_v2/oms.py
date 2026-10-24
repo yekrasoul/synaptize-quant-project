@@ -1,9 +1,25 @@
-"""Lightweight OMS: identity, state, and exactly-once submission claim."""
+"""OMS port: durable lifecycle identity is claimed before a network write."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
-from ..core.state import Order
+from ..core.state import ExecutionState, Order
+
+
+UNRESOLVED_STATES = frozenset({ExecutionState.SUBMISSION_STARTED, ExecutionState.SUBMITTED, ExecutionState.RECONCILING, ExecutionState.AMBIGUOUS, ExecutionState.PARTIALLY_FILLED})
+
+
+class SubmissionAlreadyClaimed(ValueError):
+    """Another durable owner holds this canonical submission identity."""
+
+
+class ExecutionRepository(Protocol):
+    def create(self, order: Order) -> Order: ...
+    def save(self, order: Order) -> Order: ...
+    def get(self, client_order_id: str) -> Order | None: ...
+    def unresolved(self) -> tuple[Order, ...]: ...
+    def claim_submission(self, order: Order) -> Order: ...
 
 
 @dataclass
@@ -22,7 +38,14 @@ class InMemoryOms:
         self._orders[order.intent.client_order_id] = order
         return order
 
-    def claim_submission(self, client_order_id: str) -> None:
-        if client_order_id in self._submission_claims:
-            raise ValueError("submission already claimed; reconciliation required")
-        self._submission_claims.add(client_order_id)
+    def get(self, client_order_id: str) -> Order | None:
+        return self._orders.get(client_order_id)
+
+    def unresolved(self) -> tuple[Order, ...]:
+        return tuple(order for order in self._orders.values() if order.state in UNRESOLVED_STATES)
+
+    def claim_submission(self, order: Order) -> Order:
+        if order.intent.client_order_id in self._submission_claims:
+            raise SubmissionAlreadyClaimed("submission already claimed; reconciliation required")
+        self._submission_claims.add(order.intent.client_order_id)
+        return self.save(order.transition(ExecutionState.SUBMISSION_STARTED))

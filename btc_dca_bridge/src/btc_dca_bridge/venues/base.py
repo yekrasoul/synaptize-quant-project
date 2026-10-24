@@ -8,6 +8,18 @@ from typing import Protocol
 from ..core.models import AccountIdentity, Fill, OrderIntent
 
 
+class PreSubmissionFailure(RuntimeError):
+    """No network write has occurred; a submission attempt was not made."""
+
+
+class DeterministicVenueRejection(RuntimeError):
+    """The venue conclusively rejected this exact order identity."""
+
+
+class AmbiguousSubmissionError(RuntimeError):
+    """A network write may have reached the venue; reconciliation is required."""
+
+
 @dataclass(frozen=True)
 class VenueOrderAcknowledgement:
     venue_order_id: str
