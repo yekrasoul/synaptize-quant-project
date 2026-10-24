@@ -34,3 +34,8 @@ claim blocks a second network write forever. If a crash occurs between claim
 creation and record replacement, repository reads project the claimed
 `RISK_APPROVED` record as `SUBMISSION_STARTED`, forcing recovery-only
 reconciliation.
+
+At the application boundary, `SubmissionAlreadyClaimed` is distinct from a
+pre-claim validation failure. The losing service loads and returns the
+canonical durable order unchanged with `DUPLICATE_OR_RECONCILIATION_REQUIRED`;
+it never turns its stale `RISK_APPROVED` value into `FAILED_PRE_SUBMISSION`.

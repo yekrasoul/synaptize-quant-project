@@ -14,3 +14,5 @@ deterministic rejection, recovery without a venue order ID, fresh kill-switch
 recheck, duplicate identity across restart, and idempotent accounting posting.
 It additionally uses two spawned processes against one repository root to
 exercise the filesystem-exclusive claim rather than a shared in-memory lock.
+Service-level contention verifies that a `SubmissionAlreadyClaimed` outcome
+reloads the durable winner state without a lifecycle write or network call.

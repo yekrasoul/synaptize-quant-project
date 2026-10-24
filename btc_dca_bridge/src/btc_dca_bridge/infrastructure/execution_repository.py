@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..core.models import Asset, Market, OrderIntent, OrderType, Side
 from ..core.state import ExecutionState, Order
-from ..execution_v2.oms import UNRESOLVED_STATES
+from ..execution_v2.oms import SubmissionAlreadyClaimed, UNRESOLVED_STATES
 
 
 class JsonExecutionRepository:
@@ -99,13 +99,13 @@ class JsonExecutionRepository:
     def claim_submission(self, order: Order) -> Order:
         current = self.get(order.intent.client_order_id)
         if current is None or current.state is not ExecutionState.RISK_APPROVED:
-            raise ValueError("submission already claimed or execution is not risk approved")
+            raise SubmissionAlreadyClaimed("submission already claimed or execution is not risk approved")
         claim = self._claim_path(order.intent.client_order_id)
         claim_payload = json.dumps({"client_order_id": order.intent.client_order_id, "state": ExecutionState.SUBMISSION_STARTED.value}, sort_keys=True, separators=(",", ":"))
         try:
             descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError as exc:
-            raise ValueError("submission already claimed; reconciliation required") from exc
+            raise SubmissionAlreadyClaimed("submission already claimed; reconciliation required") from exc
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(claim_payload); handle.flush(); os.fsync(handle.fileno())
         self._fsync_directory()

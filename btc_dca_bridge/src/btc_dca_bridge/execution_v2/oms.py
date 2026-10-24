@@ -10,6 +10,10 @@ from ..core.state import ExecutionState, Order
 UNRESOLVED_STATES = frozenset({ExecutionState.SUBMISSION_STARTED, ExecutionState.SUBMITTED, ExecutionState.RECONCILING, ExecutionState.AMBIGUOUS, ExecutionState.PARTIALLY_FILLED})
 
 
+class SubmissionAlreadyClaimed(ValueError):
+    """Another durable owner holds this canonical submission identity."""
+
+
 class ExecutionRepository(Protocol):
     def create(self, order: Order) -> Order: ...
     def save(self, order: Order) -> Order: ...
@@ -42,6 +46,6 @@ class InMemoryOms:
 
     def claim_submission(self, order: Order) -> Order:
         if order.intent.client_order_id in self._submission_claims:
-            raise ValueError("submission already claimed; reconciliation required")
+            raise SubmissionAlreadyClaimed("submission already claimed; reconciliation required")
         self._submission_claims.add(order.intent.client_order_id)
         return self.save(order.transition(ExecutionState.SUBMISSION_STARTED))

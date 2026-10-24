@@ -7,7 +7,7 @@ from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
 from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
-from .oms import ExecutionRepository
+from .oms import ExecutionRepository, SubmissionAlreadyClaimed
 from typing import Protocol
 
 
@@ -33,22 +33,45 @@ class ExecutionService:
         return self.risk_context_provider.current(intent) if self.risk_context_provider else fallback
 
     def execute(self, intent: OrderIntent, context: RiskContext) -> ExecutionResult:
-        order = self.oms.create(Order(intent))
+        try:
+            order = self.oms.create(Order(intent))
+        except ValueError:
+            existing = self.oms.get(intent.client_order_id)
+            if existing is None:
+                raise
+            return ExecutionResult(existing, "DUPLICATE_OR_RECONCILIATION_REQUIRED", ("DUPLICATE_EXECUTION_IDENTITY",))
         assessment = self.risk_engine.evaluate(intent, context)
         if not assessment.approved:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.BLOCKED, reason=",".join(assessment.reason_codes))), assessment.status, assessment.reason_codes)
         order = self.oms.save(order.transition(ExecutionState.RISK_APPROVED))
+        return self._submit_risk_approved(order, context)
+
+    def resume_risk_approved(self, order: Order, context: RiskContext) -> ExecutionResult:
+        """Resume one durable pre-claim order; used for recovery, never a new identity."""
+        current = self.oms.get(order.intent.client_order_id)
+        if current is None or current.state is not ExecutionState.RISK_APPROVED:
+            return ExecutionResult(current or order, "DUPLICATE_OR_RECONCILIATION_REQUIRED", ("DUPLICATE_EXECUTION_IDENTITY",))
+        return self._submit_risk_approved(current, context)
+
+    def _submit_risk_approved(self, order: Order, context: RiskContext) -> ExecutionResult:
         # Re-read mutable controls immediately before the durable network claim.
-        final = self.risk_engine.evaluate(intent, self._context(intent, context))
+        final = self.risk_engine.evaluate(order.intent, self._context(order.intent, context))
         if not final.approved:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.BLOCKED, reason=",".join(final.reason_codes))), final.status, final.reason_codes)
         try:
-            self.venue.validate_intent(intent)
-            order = self.oms.claim_submission(order)
+            self.venue.validate_intent(order.intent)
         except (PreSubmissionFailure, ValueError) as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.FAILED_PRE_SUBMISSION, reason=str(exc))), "BLOCKED", ("PRE_SUBMISSION_FAILURE",))
         try:
-            ack = self.venue.submit_once(intent)
+            order = self.oms.claim_submission(order)
+        except SubmissionAlreadyClaimed:
+            # The repository is canonical: never save or transition stale state.
+            existing = self.oms.get(order.intent.client_order_id)
+            if existing is None:
+                raise
+            return ExecutionResult(existing, "DUPLICATE_OR_RECONCILIATION_REQUIRED", ("SUBMISSION_ALREADY_CLAIMED",))
+        try:
+            ack = self.venue.submit_once(order.intent)
         except DeterministicVenueRejection as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.REJECTED, reason=str(exc))), "REJECTED", ("VENUE_REJECTED",))
         except Exception as exc:
@@ -56,7 +79,7 @@ class ExecutionService:
             # DeterministicVenueRejection is the only earlier rejected branch.
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason=str(exc))), "AMBIGUOUS", ("RECONCILIATION_REQUIRED",))
         order = self.oms.save(order.transition(ExecutionState.SUBMITTED, venue_order_id=ack.venue_order_id))
-        reconciliation = self.venue.reconcile(intent, ack.venue_order_id)
+        reconciliation = self.venue.reconcile(order.intent, ack.venue_order_id)
         order = self.oms.save(order.transition(ExecutionState.RECONCILING))
         state = ExecutionState(reconciliation.status)
         return ExecutionResult(self.oms.save(order.transition(state, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason)), "APPROVED")

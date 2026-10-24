@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 import multiprocessing
+import os
 from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,6 +28,27 @@ def _concurrent_claim(root: str, client_order_id: str, start, results) -> None:
         results.put("blocked")
     else:
         results.put("network-boundary")
+
+
+class _ProcessVenue:
+    name = "bybit"
+    def __init__(self, root: str): self.marker = Path(root) / "simulated-post"; self.posts = 0
+    def validate_intent(self, _): return None
+    def submit_once(self, intent):
+        self.posts += 1
+        fd = os.open(self.marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        return VenueOrderAcknowledgement("venue-process", intent.client_order_id)
+    def reconcile(self, _, venue_order_id): return VenueReconciliation("AMBIGUOUS", venue_order_id, (), "test keeps result unresolved")
+
+
+def _concurrent_service_resume(root: str, start, results) -> None:
+    repository = JsonExecutionRepository(Path(root) / "executions")
+    order = repository.get(intent().client_order_id)
+    service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=_ProcessVenue(root))
+    start.wait(10)
+    result = service.resume_risk_approved(order, context())
+    results.put((result.risk_status, result.order.state.value))
 
 
 def intent() -> OrderIntent:
@@ -74,7 +96,8 @@ class DurableExecutionV2Tests(unittest.TestCase):
             self.assertEqual((result.order.state, venue.posts), (ExecutionState.AMBIGUOUS, 1))
             restarted = self.service(root, venue)
             self.assertEqual(restarted.oms.get(intent().client_order_id).state, ExecutionState.AMBIGUOUS)
-            with self.assertRaises(ValueError): restarted.execute(intent(), context())
+            duplicate = restarted.execute(intent(), context())
+            self.assertEqual(duplicate.risk_status, "DUPLICATE_OR_RECONCILIATION_REQUIRED")
             self.assertEqual(venue.posts, 1)
 
     def test_exclusive_claim_is_process_safe_and_survives_restart(self):
@@ -105,6 +128,34 @@ class DurableExecutionV2Tests(unittest.TestCase):
             restarted = JsonExecutionRepository(Path(root) / "executions")
             self.assertEqual(restarted.get(intent().client_order_id).state, ExecutionState.SUBMISSION_STARTED)
             self.assertEqual(restarted.unresolved()[0].state, ExecutionState.SUBMISSION_STARTED)
+
+    def test_service_claim_conflict_does_not_overwrite_winner_state(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            stale = repository.save(repository.create(Order(intent())).transition(ExecutionState.RISK_APPROVED))
+            winner = repository.claim_submission(stale)
+            result = ExecutionService(oms=JsonExecutionRepository(Path(root) / "executions"), risk_engine=RiskEngine(), venue=Venue()).resume_risk_approved(stale, context())
+            self.assertEqual((result.risk_status, result.order.state), ("DUPLICATE_OR_RECONCILIATION_REQUIRED", ExecutionState.SUBMISSION_STARTED))
+            self.assertEqual(repository.get(intent().client_order_id), winner)
+
+    def test_two_services_allow_one_post_and_preserve_winner_lifecycle(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            repository.save(repository.create(Order(intent())).transition(ExecutionState.RISK_APPROVED))
+            ctx = multiprocessing.get_context("spawn")
+            start, results = ctx.Event(), ctx.Queue()
+            contenders = [ctx.Process(target=_concurrent_service_resume, args=(root, start, results)) for _ in range(2)]
+            for contender in contenders: contender.start()
+            start.set()
+            for contender in contenders: contender.join(15)
+            self.assertTrue(all(not contender.is_alive() and contender.exitcode == 0 for contender in contenders))
+            outcomes = [results.get(timeout=2) for _ in contenders]
+            self.assertEqual(sum(status == "APPROVED" for status, _ in outcomes), 1)
+            self.assertEqual(sum(status == "DUPLICATE_OR_RECONCILIATION_REQUIRED" for status, _ in outcomes), 1)
+            self.assertTrue((Path(root) / "simulated-post").exists())
+            restarted = JsonExecutionRepository(Path(root) / "executions")
+            self.assertEqual(restarted.get(intent().client_order_id).state, ExecutionState.AMBIGUOUS)
+            self.assertEqual(len(restarted.unresolved()), 1)
 
     def test_restart_after_claim_recovers_by_client_identity_without_post(self):
         with TemporaryDirectory() as root:

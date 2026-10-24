@@ -42,3 +42,7 @@ exclusive creation of a per-client identity claim file (`O_CREAT|O_EXCL`) plus
 file and directory fsync. A spawned two-process test proves exactly one
 contender reaches the simulated network boundary and restart cannot claim it
 again.
+
+The service-level race is also covered with two independent processes. One
+receives submission ownership and reaches a simulated POST; the loser performs
+no POST and cannot overwrite the winner's unresolved lifecycle state.
