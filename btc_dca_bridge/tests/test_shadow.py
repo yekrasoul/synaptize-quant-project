@@ -148,6 +148,9 @@ class ShadowPipelineTest(unittest.TestCase):
         self.assertEqual(decision["remaining_budget_before_usd"], 440)
         self.assertEqual(decision["final_purchase_usd"], 98)
         self.assertTrue(result.no_order_executed)
+        self.assertEqual(result.v2_preflight["status"], "BLOCKED")
+        self.assertTrue(result.v2_preflight["no_order_executed"])
+        self.assertEqual(result.v2_preflight["ccxt_mapping"]["params"]["isLeverage"], 0)
 
     def test_canonical_bybit_failures_fail_closed_without_fallback_or_completion(self):
         class FailingBybitAdapter:

@@ -1,0 +1,16 @@
+# Live V2 submission is permitted only when every item is VERIFIED.
+# This committed baseline is deliberately fail-closed.
+activation_decision: BLOCKED
+requirements:
+  durable_oms_recovery: VERIFIED
+  process_safe_exactly_once_claim: VERIFIED
+  client_identity_reconciliation: VERIFIED
+  deterministic_reject_vs_ambiguous: VERIFIED
+  final_risk_kill_switch_account_venue_health: VERIFIED
+  credential_scope_and_intended_account: NOT_VERIFIED
+  bybit_ccxt_request_response_fill_parity: PARTIALLY_VERIFIED
+  canonical_execution_record_schema: VERIFIED
+  reconciliation_gated_durable_accounting: VERIFIED
+  failure_injection: VERIFIED
+  production_shadow_v2_pre_network: VERIFIED
+  one_reachable_production_submit_path: NOT_VERIFIED

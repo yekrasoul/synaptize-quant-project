@@ -39,3 +39,12 @@ At the application boundary, `SubmissionAlreadyClaimed` is distinct from a
 pre-claim validation failure. The losing service loads and returns the
 canonical durable order unchanged with `DUPLICATE_OR_RECONCILIATION_REQUIRED`;
 it never turns its stale `RISK_APPROVED` value into `FAILED_PRE_SUBMISSION`.
+
+## Canonical execution evidence
+
+The repository projects each lifecycle state into the `execution_record_v2`
+schema when audit evidence is required. The projection contains only canonical
+identity, strategy/decision linkage, venue/account/environment identity,
+lifecycle, claim, acknowledgement/reconciliation references, and ambiguity
+reason. It intentionally excludes keys, secrets, signatures, and raw headers.
+It does not replace the durable repository as the mutable state owner.

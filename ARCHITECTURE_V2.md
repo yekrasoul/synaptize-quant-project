@@ -14,4 +14,10 @@ reconciled execution truth. The legacy Phase 5.x modules remain read-only
 compatibility/reference code until their behavior is fully characterized.
 
 Architecture tests prevent Core/Risk from importing venue or CLI code and keep
-CCXT confined to `venues/ccxt`.
+CCXT confined to `venues/ccxt`. The durable OMS has one mutable lifecycle
+record per client identity; `execution_record_v2` is its schema-validated,
+immutable, secret-free audit projection, not a second state owner. Production
+Shadow calls the V2 pre-network planning path and cannot create a claim or POST.
+
+The V2 cutover decision and remaining legacy boundaries are in
+[`BYBIT_CCXT_CUTOVER.md`](BYBIT_CCXT_CUTOVER.md).

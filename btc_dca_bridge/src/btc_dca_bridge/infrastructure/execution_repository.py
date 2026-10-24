@@ -110,3 +110,13 @@ class JsonExecutionRepository:
             handle.write(claim_payload); handle.flush(); os.fsync(handle.fileno())
         self._fsync_directory()
         return self.save(current.transition(ExecutionState.SUBMISSION_STARTED))
+
+    @staticmethod
+    def execution_record(order: Order, *, account_fingerprint: str | None = None, environment: str = "production", reconciliation_reference: str | None = None) -> dict[str, object]:
+        """Canonical schema projection; no secrets or transport headers."""
+        return {"schema_version": "2.0.0", "execution_id": order.intent.intent_id, "created_at_utc": order.intent.created_at_utc,
+                "strategy_id": order.intent.strategy_id, "decision_id": order.intent.decision_id, "client_order_id": order.intent.client_order_id,
+                "venue": order.intent.preferred_venue, "market": f"{order.intent.market.canonical_symbol}:{order.intent.market.instrument_type}",
+                "state": order.state.value, "submission_claimed": order.state is not ExecutionState.CREATED and order.state is not ExecutionState.RISK_APPROVED and order.state is not ExecutionState.BLOCKED,
+                "venue_order_id": order.venue_order_id, "ambiguity_reason": order.reason if order.state is ExecutionState.AMBIGUOUS else None,
+                "account_fingerprint": account_fingerprint, "environment": environment, "reconciliation_reference": reconciliation_reference}

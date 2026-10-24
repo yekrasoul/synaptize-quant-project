@@ -16,3 +16,9 @@ It additionally uses two spawned processes against one repository root to
 exercise the filesystem-exclusive claim rather than a shared in-memory lock.
 Service-level contention verifies that a `SubmissionAlreadyClaimed` outcome
 reloads the durable winner state without a lifecycle write or network call.
+
+The parity suite adds fixture-backed checks for legacy Bybit observable request
+semantics versus V2 CCXT mapping, native minimum/precision checks,
+acknowledgement/client-identity reconciliation, fills/fees, deterministic
+rejection, uncertain network errors, canonical ExecutionRecord schema
+round-trip, and Production Shadow's no-claim/no-POST V2 preflight.
