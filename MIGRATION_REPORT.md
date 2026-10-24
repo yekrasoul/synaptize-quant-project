@@ -48,3 +48,18 @@ again.
 The service-level race is also covered with two independent processes. One
 receives submission ownership and reaches a simulated POST; the loser performs
 no POST and cannot overwrite the winner's unresolved lifecycle state.
+
+## Wire parity and writer audit
+
+A no-network CCXT interception test now executes the real installed Bybit
+CCXT order constructor from `ExecutionService` and records its generated V5
+Spot request. This verifies quote-denominated BTC/USDT market-buy mapping,
+`marketUnit=quoteCoin`, `isLeverage=0`, and canonical `orderLinkId` at the
+closest safe pre-network boundary. It does not verify signed HTTP bytes or
+headers, so `bybit_ccxt_request_mapping` remains PARTIALLY VERIFIED.
+
+The writer audit finds zero production-reachable network writers on committed
+main: V2 is not wired into a CLI, and the historical canary writer is blocked
+by checked-in execution disablement and the active kill switch. The legacy
+writer remains in place until a future cutover makes V2 the sole reachable
+writer; `one_reachable_production_submit_path` remains NOT VERIFIED.
