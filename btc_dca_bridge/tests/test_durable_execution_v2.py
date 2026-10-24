@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import multiprocessing
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -13,6 +15,18 @@ from btc_dca_bridge.infrastructure.accounting_repository import JsonAccountingRe
 from btc_dca_bridge.infrastructure.execution_repository import JsonExecutionRepository
 from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
 from btc_dca_bridge.venues.base import AmbiguousSubmissionError, DeterministicVenueRejection, VenueOrderAcknowledgement, VenueReconciliation
+
+
+def _concurrent_claim(root: str, client_order_id: str, start, results) -> None:
+    """Independent interpreter contender; success represents reaching EMS."""
+    repository = JsonExecutionRepository(Path(root) / "executions")
+    start.wait(10)
+    try:
+        repository.claim_submission(repository.get(client_order_id))
+    except ValueError:
+        results.put("blocked")
+    else:
+        results.put("network-boundary")
 
 
 def intent() -> OrderIntent:
@@ -62,6 +76,35 @@ class DurableExecutionV2Tests(unittest.TestCase):
             self.assertEqual(restarted.oms.get(intent().client_order_id).state, ExecutionState.AMBIGUOUS)
             with self.assertRaises(ValueError): restarted.execute(intent(), context())
             self.assertEqual(venue.posts, 1)
+
+    def test_exclusive_claim_is_process_safe_and_survives_restart(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            approved = repository.save(repository.create(Order(intent())).transition(ExecutionState.RISK_APPROVED))
+            self.assertEqual(approved.state, ExecutionState.RISK_APPROVED)
+            ctx = multiprocessing.get_context("spawn")
+            start, results = ctx.Event(), ctx.Queue()
+            contenders = [ctx.Process(target=_concurrent_claim, args=(root, intent().client_order_id, start, results)) for _ in range(2)]
+            for contender in contenders: contender.start()
+            start.set()
+            for contender in contenders: contender.join(15)
+            self.assertTrue(all(not contender.is_alive() and contender.exitcode == 0 for contender in contenders))
+            outcomes = sorted(results.get(timeout=2) for _ in contenders)
+            self.assertEqual(outcomes, ["blocked", "network-boundary"])
+            restarted = JsonExecutionRepository(Path(root) / "executions")
+            self.assertEqual(restarted.get(intent().client_order_id).state, ExecutionState.SUBMISSION_STARTED)
+            with self.assertRaises(ValueError):
+                restarted.claim_submission(restarted.get(intent().client_order_id))
+
+    def test_crash_after_claim_before_record_replace_is_recovery_only(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            approved = repository.save(repository.create(Order(intent())).transition(ExecutionState.RISK_APPROVED))
+            with patch.object(repository, "save", side_effect=OSError("simulated crash before replace")):
+                with self.assertRaises(OSError): repository.claim_submission(approved)
+            restarted = JsonExecutionRepository(Path(root) / "executions")
+            self.assertEqual(restarted.get(intent().client_order_id).state, ExecutionState.SUBMISSION_STARTED)
+            self.assertEqual(restarted.unresolved()[0].state, ExecutionState.SUBMISSION_STARTED)
 
     def test_restart_after_claim_recovers_by_client_identity_without_post(self):
         with TemporaryDirectory() as root:

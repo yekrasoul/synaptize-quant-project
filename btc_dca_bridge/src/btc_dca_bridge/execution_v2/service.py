@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
 from ..risk.engine import RiskContext, RiskEngine
-from ..venues.base import AmbiguousSubmissionError, DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
+from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
 from .oms import ExecutionRepository
 from typing import Protocol
 
@@ -51,7 +51,9 @@ class ExecutionService:
             ack = self.venue.submit_once(intent)
         except DeterministicVenueRejection as exc:
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.REJECTED, reason=str(exc))), "REJECTED", ("VENUE_REJECTED",))
-        except (AmbiguousSubmissionError, TimeoutError, Exception) as exc:
+        except Exception as exc:
+            # No post-boundary exception is assumed to prove non-delivery.
+            # DeterministicVenueRejection is the only earlier rejected branch.
             return ExecutionResult(self.oms.save(order.transition(ExecutionState.AMBIGUOUS, reason=str(exc))), "AMBIGUOUS", ("RECONCILIATION_REQUIRED",))
         order = self.oms.save(order.transition(ExecutionState.SUBMITTED, venue_order_id=ack.venue_order_id))
         reconciliation = self.venue.reconcile(intent, ack.venue_order_id)

@@ -23,3 +23,14 @@ On restart they are reconciled by canonical client identity; they are never
 submitted again. A failure before the durable submission claim may become
 `FAILED_PRE_SUBMISSION`. Any error after a possible network write is
 `AMBIGUOUS`, except an explicit `DeterministicVenueRejection`.
+
+## Exactly-once durability
+
+`JsonExecutionRepository` creates a per-client-identity submission claim with
+`O_CREAT | O_EXCL`, fsyncs the claim file and its directory, then atomically
+replaces the execution record with `SUBMISSION_STARTED` and fsyncs the
+directory again. Independent processes therefore have one winner; any existing
+claim blocks a second network write forever. If a crash occurs between claim
+creation and record replacement, repository reads project the claimed
+`RISK_APPROVED` record as `SUBMISSION_STARTED`, forcing recovery-only
+reconciliation.

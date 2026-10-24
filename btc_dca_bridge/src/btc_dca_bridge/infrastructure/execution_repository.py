@@ -27,6 +27,16 @@ class JsonExecutionRepository:
     def _path(self, identity: str) -> Path:
         return self.root / f"{hashlib.sha256(identity.encode()).hexdigest()}.json"
 
+    def _claim_path(self, identity: str) -> Path:
+        return self.root / f"{hashlib.sha256(identity.encode()).hexdigest()}.submission-claim"
+
+    def _fsync_directory(self) -> None:
+        descriptor = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
     @staticmethod
     def _payload(order: Order) -> dict[str, object]:
         i = order.intent
@@ -51,6 +61,7 @@ class JsonExecutionRepository:
             except FileExistsError as exc: raise ValueError("duplicate canonical execution identity") from exc
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(data); handle.flush(); os.fsync(handle.fileno())
+            self._fsync_directory()
             return
         fd, name = tempfile.mkstemp(prefix=".execution-", dir=self.root)
         temporary = Path(name)
@@ -58,6 +69,7 @@ class JsonExecutionRepository:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(data); handle.flush(); os.fsync(handle.fileno())
             os.replace(temporary, path)
+            self._fsync_directory()
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -73,13 +85,28 @@ class JsonExecutionRepository:
 
     def get(self, client_order_id: str) -> Order | None:
         path = self._path(client_order_id)
-        return None if not path.exists() else self._order(json.loads(path.read_text(encoding="utf-8")))
+        if not path.exists(): return None
+        order = self._order(json.loads(path.read_text(encoding="utf-8")))
+        # A crash may occur after the exclusive claim file is durable but before
+        # the record replace. Treat that identity as submitted-started forever.
+        if self._claim_path(client_order_id).exists() and order.state is ExecutionState.RISK_APPROVED:
+            return order.transition(ExecutionState.SUBMISSION_STARTED, reason="durable submission claim present")
+        return order
 
     def unresolved(self) -> tuple[Order, ...]:
-        return tuple(order for path in self.root.glob("*.json") for order in (self._order(json.loads(path.read_text(encoding="utf-8"))),) if order.state in UNRESOLVED_STATES)
+        return tuple(order for path in self.root.glob("*.json") for order in (self.get(self._order(json.loads(path.read_text(encoding="utf-8"))).intent.client_order_id),) if order is not None and order.state in UNRESOLVED_STATES)
 
     def claim_submission(self, order: Order) -> Order:
         current = self.get(order.intent.client_order_id)
         if current is None or current.state is not ExecutionState.RISK_APPROVED:
             raise ValueError("submission already claimed or execution is not risk approved")
+        claim = self._claim_path(order.intent.client_order_id)
+        claim_payload = json.dumps({"client_order_id": order.intent.client_order_id, "state": ExecutionState.SUBMISSION_STARTED.value}, sort_keys=True, separators=(",", ":"))
+        try:
+            descriptor = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            raise ValueError("submission already claimed; reconciliation required") from exc
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(claim_payload); handle.flush(); os.fsync(handle.fileno())
+        self._fsync_directory()
         return self.save(current.transition(ExecutionState.SUBMISSION_STARTED))

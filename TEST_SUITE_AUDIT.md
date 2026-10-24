@@ -12,3 +12,5 @@ old workflow or guardian structure were already removed in PR #76.
 Durable V2 tests cover crash after claim, timeout/reset/outage ambiguity,
 deterministic rejection, recovery without a venue order ID, fresh kill-switch
 recheck, duplicate identity across restart, and idempotent accounting posting.
+It additionally uses two spawned processes against one repository root to
+exercise the filesystem-exclusive claim rather than a shared in-memory lock.

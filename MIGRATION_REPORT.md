@@ -36,3 +36,9 @@ client-identity reconciliation, fresh-risk provider, venue-health risk input,
 and idempotent accounting repository. Live request-byte parity, durable
 artifact/schema integration, and cutover from the legacy submit path remain
 unverified activation blockers; V2 remains fail-closed.
+
+The durable claim is filesystem compare-and-set, not an in-memory lock:
+exclusive creation of a per-client identity claim file (`O_CREAT|O_EXCL`) plus
+file and directory fsync. A spawned two-process test proves exactly one
+contender reaches the simulated network boundary and restart cannot claim it
+again.
