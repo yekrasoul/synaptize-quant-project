@@ -1,0 +1,11 @@
+# Venue Architecture
+
+`VenueAdapter` is the platform port: account identity, balance, native intent
+validation, one submission, and reconciliation. `CcxtVenueAdapter` is the CEX
+implementation. CCXT types never cross into Core or Strategy.
+
+`venues/bybit/mapper.py` is the only current-generation Bybit order mapping;
+it maps a canonical BTC/USDT Spot market buy to the required CCXT/Bybit
+parameters. It has not yet replaced legacy transports in production. That
+replacement requires request/response parity, fill normalization, durable
+pre-submit evidence, and fault-injection sign-off.

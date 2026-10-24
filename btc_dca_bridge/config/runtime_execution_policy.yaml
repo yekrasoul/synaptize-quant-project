@@ -1,0 +1,6 @@
+execution_enabled: false
+kill_switch_active: true
+monthly_cap_usd: 500
+allowed_venue: bybit
+allowed_market: BTC/USDT:spot
+expected_account_fingerprint: UNCONFIGURED
