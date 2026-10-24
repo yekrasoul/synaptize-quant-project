@@ -52,7 +52,6 @@ from .live_readiness import (
 from .runtime_execution import derive_ephemeral_execution_policy
 from .errors import ArtifactNotFoundError
 from .final_readiness import final_readiness_audit
-from .branch_guardian import classify_branch, write_result
 from .quote_limits import PRODUCTION_QUOTE_UNIT_LIMIT_POLICY
 from .blocked_production import active_production_blockers, contract_status
 from .operations import EXIT_BLOCKED, EXIT_CORRUPT, EXIT_RECONCILIATION, OperationLock, OperationsService
@@ -235,10 +234,6 @@ def _parser() -> argparse.ArgumentParser:
     canary_readiness = subparsers.add_parser("bybit-canary-readiness", help="read-only Bybit Spot BTCUSDT canary readiness audit")
     canary_readiness.add_argument("--data-root", type=Path, default=DATA_PATH)
     canary_readiness.add_argument("--ledger", type=Path, default=LEDGER_PATH)
-    guardian = subparsers.add_parser("branch-guardian-classify", help="classify a branch diff without merging")
-    guardian.add_argument("--branch", required=True); guardian.add_argument("--head-sha", required=True); guardian.add_argument("--base-sha", required=True)
-    guardian.add_argument("--changed-files", type=Path, required=True); guardian.add_argument("--diff", type=Path, required=True); guardian.add_argument("--output", type=Path, required=True)
-    guardian.add_argument("--bootstrap", action="store_true")
     canary = subparsers.add_parser("canary-prepare", help="prepare a read-only one-shot canary manifest")
     canary.add_argument("--decision-json", type=Path, required=True)
     canary.add_argument("--run-id", required=True)
@@ -1051,14 +1046,6 @@ def _bybit_canary_readiness(args: argparse.Namespace) -> tuple[dict[str, object]
     return result, 0 if result["readiness"] == "CANARY_READY_READ_ONLY" else EXIT_BLOCKED
 
 
-def _branch_guardian_classify(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    result = classify_branch(branch=args.branch, head_sha=args.head_sha, base_sha=args.base_sha,
-        changed_files=args.changed_files.read_text(encoding="utf-8").splitlines(), diff_text=args.diff.read_text(encoding="utf-8"), bootstrap=args.bootstrap)
-    validate_artifact("branch_guardian_result", result)
-    write_result(result, args.output)
-    return result, 0 if result["classification"] != "FAIL" else EXIT_CORRUPT
-
-
 def _canary_prepare(args: argparse.Namespace) -> dict[str, object]:
     decision = read_json_object(args.decision_json)
     try:
@@ -1705,8 +1692,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             result, exit_code = _final_readiness_audit()
         elif args.command == "bybit-canary-readiness":
             result, exit_code = _bybit_canary_readiness(args)
-        elif args.command == "branch-guardian-classify":
-            result, exit_code = _branch_guardian_classify(args)
         elif args.command == "canary-prepare":
             result = _canary_prepare(args)
         elif args.command in {"ops-status", "ops-plan", "ops-health", "audit-run"}:

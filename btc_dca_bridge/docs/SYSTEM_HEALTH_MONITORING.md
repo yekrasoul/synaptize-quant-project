@@ -12,4 +12,7 @@ The monitor is read-only: it has `contents: read` and `actions: read`, runs on `
 
 GitHub Actions APIs cannot prove that a self-hosted runner is currently online with these permissions. The runner check therefore reports recent activity from the expected scheduled shadow job, and treats missing/stale/queued evidence as unhealthy; a historical `runner_name` is not treated as indefinite online proof. Market-data freshness likewise requires a recent retained Bybit Spot BTCUSDT artifact; generic connectivity is insufficient.
 
-The legacy `production-shadow-watchdog.yml` and `bybit-contract-watch.yml` remain present during cutover. Their behavior is covered alongside the unified monitor. They are safe to delete only after the unified workflow is enabled and its first scheduled runs are observed, because the unified workflow now owns their expected-slot, contract-drift, and delivery-deduplication responsibilities.
+System Health Monitor is the single operational-health workflow. It owns
+production-shadow freshness, contract drift, and delivery deduplication through
+the canonical Python monitoring policy; standalone watchdog and contract-watch
+workflows are intentionally removed.
