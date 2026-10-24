@@ -375,6 +375,9 @@ class RuntimeConfig:
     timezone: str
     intended_local_time: str
     github_cron_utc: str
+    watchdog_github_cron_utc: str
+    system_health_critical_cron_utc: str
+    system_health_full_cron_utc: str
     scheduled_utc_hour: int
     scheduled_utc_minute: int
     scheduled_interval_hours: int
@@ -382,6 +385,7 @@ class RuntimeConfig:
     shadow_mode_enabled: bool
     live_execution_enabled: bool
     workflow_timeout_minutes: int
+    scheduler_lateness_tolerance_minutes: int
 
 
 @dataclass(frozen=True)
@@ -494,7 +498,7 @@ def load_sentiment_config(path: Path = SENTIMENT_CONFIG_PATH) -> SentimentConfig
 def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
     root = _operational_yaml(path, "runtime")
     _version(root, "runtime")
-    required = {"config_version", "timezone", "intended_local_time", "github_cron_utc", "scheduled_utc_hour", "scheduled_utc_minute", "scheduled_interval_hours", "minute_alignment_required", "shadow_mode_enabled", "live_execution_enabled", "workflow_timeout_minutes"}
+    required = {"config_version", "timezone", "intended_local_time", "github_cron_utc", "watchdog_github_cron_utc", "system_health_critical_cron_utc", "system_health_full_cron_utc", "scheduled_utc_hour", "scheduled_utc_minute", "scheduled_interval_hours", "minute_alignment_required", "shadow_mode_enabled", "live_execution_enabled", "workflow_timeout_minutes", "scheduler_lateness_tolerance_minutes"}
     if set(root) != required:
         raise ConfigurationError("runtime has unsupported or missing fields")
     try:
@@ -512,9 +516,11 @@ def load_runtime_config(path: Path = RUNTIME_CONFIG_PATH) -> RuntimeConfig:
         raise ConfigurationError("runtime.scheduled_interval_hours must divide 24")
     if root["github_cron_utc"] != f"{minute} */{interval} * * *":
         raise ConfigurationError("runtime.github_cron_utc must match the configured UTC cadence")
+    if root["watchdog_github_cron_utc"] != f"{minute} 1,7,13,19 * * *" or root["system_health_critical_cron_utc"] != "17 * * * *" or root["system_health_full_cron_utc"] != f"43 */{interval} * * *":
+        raise ConfigurationError("runtime monitoring schedules are invalid")
     if root["minute_alignment_required"] is not True or root["shadow_mode_enabled"] is not True or root["live_execution_enabled"] is not False:
         raise ConfigurationError("Phase 4 runtime must be minute-aligned shadow-only with live execution disabled")
-    return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], hour, minute, interval, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360))
+    return RuntimeConfig(OPERATIONAL_CONFIG_VERSION, root["timezone"], root["intended_local_time"], root["github_cron_utc"], root["watchdog_github_cron_utc"], root["system_health_critical_cron_utc"], root["system_health_full_cron_utc"], hour, minute, interval, True, True, False, _positive_int(root["workflow_timeout_minutes"], "runtime.workflow_timeout_minutes", maximum=360), _positive_int(root["scheduler_lateness_tolerance_minutes"], "runtime.scheduler_lateness_tolerance_minutes", maximum=720))
 
 
 def load_notification_config(path: Path = NOTIFICATIONS_CONFIG_PATH) -> NotificationConfig:

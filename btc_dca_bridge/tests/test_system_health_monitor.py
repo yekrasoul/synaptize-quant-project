@@ -23,7 +23,6 @@ from btc_dca_bridge.health_monitor import (
     commit_state,
     derive_mode,
     evaluate,
-    expected_production_slot,
     render_summary,
     safety_violations,
 )
@@ -69,6 +68,14 @@ class SystemHealthMonitorTest(unittest.TestCase):
         self.assertIn('read_text(encoding="utf-8")', self.text)
         self.assertIn('/tmp/system-health-github-evidence.json', self.text)
 
+    def test_github_evidence_is_bounded_and_retries_transient_failures(self):
+        collector = self.text.split("- name: Collect GitHub operational evidence", 1)[1].split("- name: Locate prior monitor state", 1)[0]
+        self.assertIn("per_page: 20", collector)
+        self.assertIn("retries: 3", collector)
+        self.assertIn("listJobsForWorkflowRun", collector)
+        self.assertNotIn("for (const run", collector)
+        self.assertNotIn("github.paginate", collector)
+
     def test_package_importing_evaluator_uses_uv_project_environment(self):
         evaluator = self.text.split("- name: Evaluate local read-only health", 1)[1].split("uv run python -m btc_dca_bridge.health_monitor --evaluate", 1)[0]
         self.assertIn('SEND_TEST_SUMMARY="$SEND_TEST_SUMMARY" uv run python - "$state_dir/input.json" <<\'PY\'', evaluator)
@@ -93,24 +100,20 @@ class SystemHealthMonitorTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             derive_mode(event_name="schedule", schedule="17 */6 * * *", requested_mode=None)
 
-    def test_production_shadow_slot_calculation_and_rollover(self):
-        self.assertEqual(expected_production_slot("2026-10-10T01:23:00Z").isoformat(), "2026-10-10T00:23:00+00:00")
-        self.assertEqual(expected_production_slot("2026-10-10T07:23:00Z").isoformat(), "2026-10-10T06:23:00+00:00")
-        self.assertEqual(expected_production_slot("2026-10-10T00:10:00Z").isoformat(), "2026-10-09T18:23:00+00:00")
-
-    def test_production_shadow_matching_and_fail_closed_statuses(self):
+    def test_production_shadow_freshness_and_fail_closed_statuses(self):
         observed = "2026-10-10T07:23:00Z"
         success = {"id": 1, "event": "schedule", "head_branch": "main", "created_at": "2026-10-10T06:23:00Z", "status": "completed", "conclusion": "success"}
         self.assertEqual(classify_production_shadow(observed, [success])["state"], "HEALTHY")
         manual = {**success, "id": 2, "event": "workflow_dispatch"}
         self.assertEqual(classify_production_shadow(observed, [manual])["state"], "ALERT")
         self.assertEqual(classify_production_shadow(observed, [])["state"], "ALERT")
-        outside = {**success, "id": 3, "created_at": "2026-10-10T07:24:00Z"}
-        self.assertEqual(classify_production_shadow(observed, [outside])["state"], "ALERT")
+        delayed = {**success, "id": 3, "created_at": "2026-10-10T09:24:00Z"}
+        self.assertEqual(classify_production_shadow("2026-10-10T10:00:00Z", [delayed])["state"], "HEALTHY")
         for status, conclusion in (("queued", None), ("in_progress", None), ("completed", "failure"), ("completed", "cancelled"), ("completed", "timed_out")):
             with self.subTest(status=status, conclusion=conclusion):
                 run = {**success, "status": status, "conclusion": conclusion}
-                self.assertEqual(classify_production_shadow(observed, [run])["state"], "ALERT")
+                expected_state = "DEGRADED" if status in {"queued", "in_progress"} else "ALERT"
+                self.assertEqual(classify_production_shadow(observed, [run])["state"], expected_state)
         malformed = {**success, "created_at": "not-a-time"}
         self.assertEqual(classify_production_shadow(observed, [malformed])["state"], "UNKNOWN")
 

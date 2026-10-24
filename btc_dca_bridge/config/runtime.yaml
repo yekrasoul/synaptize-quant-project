@@ -2,6 +2,9 @@ config_version: "1.0.0"
 timezone: Europe/London
 intended_local_time: "00:23"
 github_cron_utc: "23 */6 * * *"
+watchdog_github_cron_utc: "23 1,7,13,19 * * *"
+system_health_critical_cron_utc: "17 * * * *"
+system_health_full_cron_utc: "43 */6 * * *"
 scheduled_utc_hour: 0
 scheduled_utc_minute: 23
 scheduled_interval_hours: 6
@@ -9,3 +12,7 @@ minute_alignment_required: true
 shadow_mode_enabled: true
 live_execution_enabled: false
 workflow_timeout_minutes: 30
+# GitHub schedule delivery is best-effort, not a real-time execution guarantee.
+# The tolerance covers observed multi-hour delivery delay; freshness is cadence +
+# this tolerance + workflow timeout, and is monitoring policy only.
+scheduler_lateness_tolerance_minutes: 240
