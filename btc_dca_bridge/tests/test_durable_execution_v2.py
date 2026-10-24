@@ -117,8 +117,12 @@ class DurableExecutionV2Tests(unittest.TestCase):
     def test_final_risk_reads_unified_confirmed_spend_before_claim(self):
         with TemporaryDirectory() as root:
             venue = Venue()
-            provider = UnifiedSpendRiskContextProvider(Provider(context()), lambda: (), lambda: ({"execution_id":"confirmed", "occurred_at_utc":"2026-10-01T00:00:00Z", "quote_decrease":"490", "reconciliation_outcome":"CONFIRMED"},))
-            result = self.service(root, venue, provider).execute(intent(), context())
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            confirmed = Order(intent()).transition(ExecutionState.RISK_APPROVED).transition(ExecutionState.SUBMISSION_STARTED).transition(ExecutionState.SUBMITTED, venue_order_id="venue-confirmed").transition(ExecutionState.RECONCILING).transition(ExecutionState.CONFIRMED)
+            fill = Fill("fill-confirmed", "venue-confirmed", Decimal("0.005"), Decimal("490"), Decimal("0"), Asset("USDT"), "2026-10-01T00:00:00Z")
+            AccountingService(accounting).post_confirmed(confirmed, VenueReconciliation("CONFIRMED", "venue-confirmed", (fill,)))
+            provider = UnifiedSpendRiskContextProvider(Provider(context()), lambda: (), accounting.read_confirmed)
+            result = self.service(root, venue, provider).execute(OrderIntent("next-spend", "adaptive_dca_v1", "next-spend", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-spend-client", "2026-10-24T00:00:00Z"), context())
             self.assertEqual((result.order.state, venue.posts), (ExecutionState.BLOCKED, 0))
 
     def test_exclusive_claim_is_process_safe_and_survives_restart(self):
