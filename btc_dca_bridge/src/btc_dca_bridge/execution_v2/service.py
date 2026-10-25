@@ -7,7 +7,7 @@ from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
 from ..accounting.service import AccountingService
 from ..risk.engine import RiskContext, RiskEngine
-from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
+from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter, VenueReconciliation
 from ..venues.health import VenueCircuitBreaker
 from ..accounting.deployment import confirmed_monthly_spend
 from .oms import ExecutionRepository, SubmissionAlreadyClaimed
@@ -107,13 +107,17 @@ class ExecutionService:
         order = self.oms.save(order.transition(ExecutionState.SUBMITTED, venue_order_id=ack.venue_order_id))
         reconciliation = self.venue.reconcile(order.intent, ack.venue_order_id)
         order = self.oms.save(order.transition(ExecutionState.RECONCILING))
+        return self._finalize_reconciliation(order, reconciliation, risk_status="APPROVED")
+
+    def _finalize_reconciliation(self, order: Order, reconciliation: VenueReconciliation, *, risk_status: str) -> ExecutionResult:
+        """Converge normal and recovery confirmation on one accounting boundary."""
         state = ExecutionState(reconciliation.status)
         final_order = order.transition(state, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason)
         if self.accounting is not None and state is ExecutionState.CONFIRMED:
             # Accounting is downstream of reconciliation; if this fails the
-            # lifecycle remains RECONCILING and can be recovered safely.
+            # durable lifecycle remains RECONCILING and can be recovered.
             self.accounting.post_confirmed(final_order, reconciliation)
-        return ExecutionResult(self.oms.save(final_order), "APPROVED")
+        return ExecutionResult(self.oms.save(final_order), risk_status)
 
     def recover_unresolved(self) -> tuple[ExecutionResult, ...]:
         """Restart path: reconcile durable identities only; never submit again."""
@@ -124,7 +128,5 @@ class ExecutionService:
             if order.state in {ExecutionState.AMBIGUOUS, ExecutionState.PARTIALLY_FILLED, ExecutionState.SUBMITTED}:
                 order = self.oms.save(order.transition(ExecutionState.RECONCILING))
             reconciliation = self.venue.reconcile(order.intent, order.venue_order_id)
-            target = ExecutionState(reconciliation.status)
-            order = self.oms.save(order.transition(target, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason))
-            recovered.append(ExecutionResult(order, "RECOVERED"))
+            recovered.append(self._finalize_reconciliation(order, reconciliation, risk_status="RECOVERED"))
         return tuple(recovered)
