@@ -60,7 +60,7 @@ def intent() -> OrderIntent:
 
 def context(**changes) -> RiskContext:
     decision_id = changes.pop("decision_id", "decision-durable")
-    values = dict(calendar_month="2026-10", monthly_spend=Decimal("0"), monthly_cap=Decimal("500"), runtime_execution_enabled=True, kill_switch_active=False, market_data_fresh=True, account_identity=AccountIdentity("bybit", "account"), expected_account_fingerprint="account", quote_balance=Decimal("100"), unresolved_execution_exists=False, duplicate_execution_exists=False, venue_health="healthy", market_evidence=MarketEvidenceBinding(decision_id, "market-durable", "a" * 64, "sentiment-durable", "b" * 64, True, 35))
+    values = dict(calendar_month="2026-10", monthly_spend=Decimal("0"), monthly_cap=Decimal("500"), runtime_execution_enabled=True, kill_switch_active=False, market_data_fresh=True, account_identity=AccountIdentity("bybit", "account"), expected_account_fingerprint="account", quote_balance=Decimal("100"), unresolved_execution_exists=False, duplicate_execution_exists=False, venue_health="healthy", market_evidence=MarketEvidenceBinding(decision_id, "market-durable", "a" * 64, "sentiment-durable", "b" * 64, True, 35, Decimal("25")))
     values.update(changes); return RiskContext(**values)
 
 

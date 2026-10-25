@@ -21,6 +21,7 @@ class MarketEvidenceBinding:
     sentiment_snapshot_sha256: str
     verified: bool
     fear_greed_index: int | None = None
+    final_purchase_usd: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ class RiskEngine:
             or evidence.sentiment_snapshot_id != intent.sentiment_snapshot_id
             or evidence.sentiment_snapshot_sha256 != intent.sentiment_snapshot_sha256
             or evidence.fear_greed_index != intent.fear_greed_index
+            or evidence.final_purchase_usd != intent.quote_quantity
         ):
             reasons.append("MARKET_DATA_EVIDENCE_UNVERIFIED")
         if context.account_identity is None or context.account_identity.fingerprint != context.expected_account_fingerprint:

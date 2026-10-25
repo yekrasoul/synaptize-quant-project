@@ -64,7 +64,7 @@ def v2_context(**changes: object) -> RiskContext:
         False,
         False,
         venue_health="healthy",
-        market_evidence=MarketEvidenceBinding("decision-parity", "market-parity", "a" * 64, "sentiment-parity", "b" * 64, True, 35),
+        market_evidence=MarketEvidenceBinding("decision-parity", "market-parity", "a" * 64, "sentiment-parity", "b" * 64, True, 35, Decimal("25")),
     )
     return replace(base, **changes)
 

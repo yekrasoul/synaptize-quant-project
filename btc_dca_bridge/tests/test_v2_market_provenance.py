@@ -91,9 +91,10 @@ def decision(*, market_sha: str, sentiment_sha: str, include_evidence: bool = Tr
         "created_at_utc": ISO_NOW, "strategy_id": "btc_adaptive_dca_v1",
         "strategy_version": "1.0.0", "market_snapshot_id": "market_provenance",
         "drawdown_percent": -10, "fear_greed_index": 35,
-        "base_allocation_usd": 25, "sentiment_multiplier": 1,
-        "calculated_allocation_usd": 25, "monthly_spent_before_usd": 0,
-        "remaining_budget_before_usd": 500, "final_purchase_usd": 25,
+        "base_allocation_usd": 25,
+        "calculated_allocation_usd": 33, "monthly_spent_before_usd": 0,
+        "remaining_budget_before_usd": 500, "final_purchase_usd": 33,
+        "sentiment_multiplier": 1.3,
         "status": "approved",
     }
     if include_evidence:
@@ -111,7 +112,7 @@ def intent_from(payload: dict[str, object]) -> OrderIntent:
 
 
 class V2MarketProvenanceTests(unittest.TestCase):
-    def build(self, *, market=None, sentiment=None, include_evidence=True):
+    def build(self, *, market=None, sentiment=None, include_evidence=True, decision_overrides=None):
         root = TemporaryDirectory()
         store = ArtifactStore(Path(root.name))
         market = market or market_snapshot()
@@ -123,6 +124,8 @@ class V2MarketProvenanceTests(unittest.TestCase):
             sentiment_sha=sentiment_receipt.sha256,
             include_evidence=include_evidence,
         )
+        if decision_overrides:
+            decision_payload.update(decision_overrides)
         validate_artifact("decision", decision_payload)
         store.persist(ArtifactType.DECISION, decision_payload, run_id="run_20261025T120000Z_provenance")
         context = BybitProductionAccountContext(
@@ -186,6 +189,23 @@ class V2MarketProvenanceTests(unittest.TestCase):
             self.assertEqual(venue.validated, 0)
         finally:
             root.cleanup()
+
+    def test_modified_quote_quantity_blocks_at_final_risk(self):
+        root, context, intent = self.build()
+        try:
+            tampered = replace(intent, quote_quantity=Decimal("34"))
+            risk = context.current(tampered)
+            result = RiskEngine().evaluate(
+                tampered,
+                replace(risk, runtime_execution_enabled=True, kill_switch_active=False),
+            )
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertIn("MARKET_DATA_EVIDENCE_UNVERIFIED", result.reason_codes)
+        finally:
+            root.cleanup()
+
+    def test_economically_inconsistent_persisted_decision_blocks(self):
+        self.assert_blocked(decision_overrides={"drawdown_percent": -1})
 
     def test_missing_evidence_blocks(self):
         self.assert_blocked(include_evidence=False)

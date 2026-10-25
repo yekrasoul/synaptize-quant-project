@@ -8,6 +8,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from ..core.models import AccountIdentity, OrderIntent
+from ..models import MarketSnapshot
+from ..engine import calculate_decision
+from ..config import load_strategy_config
 from ..artifacts import ArtifactStore, ArtifactType
 from ..execution_v2.composition import V2ExecutionRuntime, build_v2_execution_runtime
 from ..infrastructure.accounting_repository import JsonAccountingRepository
@@ -140,6 +143,47 @@ class BybitProductionAccountContext:
             observed = datetime.fromisoformat(str(sentiment["observed_at_utc"]).replace("Z", "+00:00")).astimezone(UTC)
             if retrieved > now or observed > retrieved or now - observed > timedelta(hours=36):
                 return None
+            metadata = market["market_data_metadata"]
+            canonical_decision = calculate_decision(
+                MarketSnapshot(
+                    schema_version=str(market["schema_version"]),
+                    snapshot_id=str(market["snapshot_id"]),
+                    captured_at_utc=str(market["captured_at_utc"]),
+                    source_exchange=str(market["source_exchange"]),
+                    market_type=str(market["market_type"]),
+                    symbol=str(market["symbol"]),
+                    current_price_usdt=Decimal(str(market["current_price_usdt"])),
+                    rolling_7d_high_usdt=Decimal(str(market["rolling_7d_high_usdt"])),
+                    window_start_utc=str(market["window_start_utc"]),
+                    window_end_utc=str(market["window_end_utc"]),
+                    same_source_price_and_high=market["validation"]["same_source_price_and_high"],
+                    full_168h_coverage=market["validation"]["full_168h_coverage"],
+                    fresh=market["validation"]["fresh"],
+                    observation_resolution_seconds=int(metadata["observation_resolution_seconds"]),
+                    trade_level_exact=metadata["trade_level_exact"],
+                    source=str(metadata["source"]),
+                    external_symbol=str(metadata["external_symbol"]),
+                    primary_source=str(metadata.get("primary_source", "bybit_api")),
+                    primary_failure_category=metadata.get("primary_failure_category"),
+                    fallback_attempted=metadata.get("fallback_attempted", False),
+                ),
+                int(sentiment["value"]),
+                Decimal(str(decision["monthly_spent_before_usd"])),
+                load_strategy_config(),
+            ).to_dict()
+            economic_fields = (
+                "drawdown_percent",
+                "fear_greed_index",
+                "base_allocation_usd",
+                "sentiment_multiplier",
+                "calculated_allocation_usd",
+                "monthly_spent_before_usd",
+                "remaining_budget_before_usd",
+                "final_purchase_usd",
+                "status",
+            )
+            if any(decision.get(field) != canonical_decision.get(field) for field in economic_fields):
+                return None
         except Exception:
             return None
         return MarketEvidenceBinding(
@@ -150,6 +194,7 @@ class BybitProductionAccountContext:
             sentiment_snapshot_sha256=str(intent.sentiment_snapshot_sha256),
             verified=True,
             fear_greed_index=int(intent.fear_greed_index),
+            final_purchase_usd=Decimal(str(decision["final_purchase_usd"])),
         )
 
     def current(self, intent: OrderIntent) -> RiskContext:

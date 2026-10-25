@@ -17,7 +17,7 @@ class RecordingVenue:
 
 
 def context():
-    return RiskContext("2026-10", Decimal("0"), Decimal("500"), True, False, True, AccountIdentity("bybit", "account-1"), "account-1", Decimal("100"), False, False, venue_health="healthy", market_evidence=MarketEvidenceBinding("decision-x", "market-x", "a" * 64, "sentiment-x", "b" * 64, True, 35))
+    return RiskContext("2026-10", Decimal("0"), Decimal("500"), True, False, True, AccountIdentity("bybit", "account-1"), "account-1", Decimal("100"), False, False, venue_health="healthy", market_evidence=MarketEvidenceBinding("decision-x", "market-x", "a" * 64, "sentiment-x", "b" * 64, True, 35, Decimal("25")))
 
 
 class V2ShadowParityTests(unittest.TestCase):

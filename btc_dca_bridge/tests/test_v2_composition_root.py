@@ -51,7 +51,7 @@ def account_context() -> RiskContext:
         False,
         False,
         venue_health="healthy",
-        market_evidence=MarketEvidenceBinding("decision-composition", "market-composition", "a" * 64, "sentiment-composition", "b" * 64, True, 35),
+        market_evidence=MarketEvidenceBinding("decision-composition", "market-composition", "a" * 64, "sentiment-composition", "b" * 64, True, 35, Decimal("25")),
     )
 
 

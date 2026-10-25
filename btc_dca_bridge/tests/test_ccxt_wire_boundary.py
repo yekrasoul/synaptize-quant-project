@@ -39,7 +39,7 @@ def context() -> RiskContext:
         account_identity=AccountIdentity("bybit", "account-1"), expected_account_fingerprint="account-1",
         quote_balance=Decimal("500"), unresolved_execution_exists=False,
         duplicate_execution_exists=False, venue_health="healthy",
-        market_evidence=MarketEvidenceBinding("wire-decision", "market-wire", "a" * 64, "sentiment-wire", "b" * 64, True, 35),
+        market_evidence=MarketEvidenceBinding("wire-decision", "market-wire", "a" * 64, "sentiment-wire", "b" * 64, True, 35, Decimal("25")),
     )
 
 
