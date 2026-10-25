@@ -1,12 +1,25 @@
-## graphify
+# Agent Working Agreement
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+## Canonical authority
 
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
+- GitHub `main` is the canonical repository state. Fetch it before resuming work; do not assume a remembered SHA is current.
+- Read [`docs/START_HERE.md`](docs/START_HERE.md), then follow its links to the owning configuration, contracts, and documentation.
+- Configuration and active contracts govern their domains. Historical reports are evidence of past state, not current policy.
+- Distinguish **CURRENT CANONICAL** behavior from **TARGET** architecture. A target design or passing unit test does not establish production reachability or activation readiness.
 
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- Dirty graphify-out/ files are expected after hooks or incremental updates; dirty graph files are not a reason to skip graphify. Only skip graphify if the task is about stale or incorrect graph output, or the user explicitly says not to use it.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+## Safety and change scope
+
+- Preserve the approved LIVE V1 strategy economics. Change them only under an explicit, separately reviewed strategy-change task.
+- Preserve fail-closed execution controls. Explicit task authorization is necessary but never sufficient for real-money execution or policy changes: all canonical readiness gates, fresh Risk checks, and intended-account restrictions still apply. Never activate execution, disable the kill switch, or submit/cancel orders to complete documentation or ordinary engineering tasks.
+- Prefer focused work and the minimum changes needed to complete the task. Inspect the current worktree and relevant source before editing; do not overwrite unrelated work.
+- Verify claims against canonical source and report unresolved conflicts instead of guessing.
+
+## Code intelligence
+
+- Graphify is optional. Use it only when its CLI and index are available and current for the checked-out commit.
+- If Graphify is unavailable or stale, use targeted source inspection (`rg`, tests, and direct file reads); do not install replacements or reconfigure indexing as part of ordinary work.
+- Graph-derived paths and impact analysis are navigation aids, never test, runtime, or verification evidence.
+
+## Interrupted work
+
+Use [`docs/continuity/RESUME_PROTOCOL.md`](docs/continuity/RESUME_PROTOCOL.md) to resume an interrupted task. Keep task-specific progress in the canonical PR/Issue and its checkpoint; do not depend on chat history or create generated checkpoint files.
