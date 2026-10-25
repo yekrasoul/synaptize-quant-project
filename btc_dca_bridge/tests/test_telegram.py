@@ -32,6 +32,7 @@ def completed_outcome(*, source="bybit_api", fallback_attempted=False):
                 },
             },
             "sentiment_snapshot": {"value": 35},
+            "portfolio_state": {"monthly_cap_usd": 500},
             "decision": {
                 "drawdown_percent": -20,
                 "base_allocation_usd": 75,

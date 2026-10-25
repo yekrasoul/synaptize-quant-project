@@ -16,7 +16,6 @@ from ..errors import NotificationError, NotificationErrorCode
 
 TELEGRAM_HOST = "api.telegram.org"
 MAX_MESSAGE_LENGTH = 4096
-CANONICAL_MONTHLY_CAP_USD = Decimal("500")
 
 
 @dataclass(frozen=True)
@@ -199,6 +198,7 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
     shadow = _mapping(outcome.get("shadow_result"), "shadow_result")
     market = _mapping(shadow.get("market_snapshot"), "market_snapshot")
     sentiment = _mapping(shadow.get("sentiment_snapshot"), "sentiment_snapshot")
+    portfolio = _mapping(shadow.get("portfolio_state"), "portfolio_state")
     decision = _mapping(shadow.get("decision"), "decision")
     lines = [
         "BTC DCA — SHADOW",
@@ -211,7 +211,7 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
         f"Base: ${_display_number(decision['base_allocation_usd'])} · Multiplier: x{_display_number(decision['sentiment_multiplier'])}",
         f"Allocation: ${_display_number(decision['final_purchase_usd'])}",
         "",
-        f"Month: ${_display_number(decision['monthly_spent_before_usd'])} / ${_display_number(CANONICAL_MONTHLY_CAP_USD)}",
+        f"Month: ${_display_number(decision['monthly_spent_before_usd'])} / ${_display_number(portfolio['monthly_cap_usd'])}",
         f"Remaining: ${_display_number(decision['remaining_budget_before_usd'])}",
         "",
         f"DECISION: BUY ${_display_number(decision['final_purchase_usd'])} BTC",
