@@ -20,11 +20,26 @@ class ProjectManifestTests(unittest.TestCase):
         self.assertTrue(manifest.strategy_config.is_file())
         self.assertTrue(manifest.resource("ledger").is_file())
 
-    def test_project_instructions_template_contains_governance_not_mutable_values(self):
+    def test_project_instructions_template_links_canonical_authority_without_runtime_values(self):
         template = (PROJECT_ROOT / "docs/PROJECT_INSTRUCTIONS_TEMPLATE.md").read_text(encoding="utf-8")
-        for required in ("live canonical GitHub", "btc_dca_bridge/config/project_manifest.yaml", "Project Instructions outrank chat memory", "canonical ledger outranks", "expected-SHA", "at most 3 attempts"):
+        # Bootstrap references owning sources, rather than duplicating mutable
+        # implementation details or the ledger CAS procedure.
+        for required in (
+            "btc_dca_bridge/config/project_manifest.yaml",
+            "PROJECT_CHAT_CONTRACT",
+            "docs/START_HERE.md",
+            "AGENTS.md",
+            "RESUME_PROTOCOL.md",
+        ):
             self.assertIn(required, template)
-        for forbidden in ("strategy_v1.yaml", "October spend", "approved_spot_source_order", "monthly_cap_usd: 500"):
+        for forbidden in (
+            "strategy_v1.yaml",
+            "October spend",
+            "approved_spot_source_order",
+            "monthly_cap_usd: 500",
+            "execution_enabled: false",
+            "at most 3 attempts",
+        ):
             self.assertNotIn(forbidden, template)
 
     def test_normal_loader_resolves_manifest_strategy(self):

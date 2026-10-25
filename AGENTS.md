@@ -11,6 +11,7 @@
 
 - Preserve the approved LIVE V1 strategy economics. Change them only under an explicit, separately reviewed strategy-change task.
 - Preserve fail-closed execution controls. Explicit task authorization is necessary but never sufficient for real-money execution or policy changes: all canonical readiness gates, fresh Risk checks, and intended-account restrictions still apply. Never activate execution, disable the kill switch, or submit/cancel orders to complete documentation or ordinary engineering tasks.
+- Follow the single [Codebase-to-PR Workflow](docs/ENGINEERING_WORKFLOW.md): verify a fresh baseline, identify a real invariant, make one focused change, validate, and update one PR. Do not create PRs or GitHub Actions without demonstrated need.
 - Prefer focused work and the minimum changes needed to complete the task. Inspect the current worktree and relevant source before editing; do not overwrite unrelated work.
 - Verify claims against canonical source and report unresolved conflicts instead of guessing.
 
