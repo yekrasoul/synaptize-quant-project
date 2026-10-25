@@ -8,9 +8,9 @@ BTC Adaptive DCA V1 is recommendation-first. Bybit BTCUSDT Spot is the sole V1 m
 
 ## Execution architecture
 
-V2 is the target execution architecture: StrategyDecision → OrderIntent → Risk → OMS → EMS/VenueAdapter → reconciliation → accounting. The durable OMS owns mutable order lifecycle state and its execution record is an audit projection. The V2 composition and single-writer route are not permission to activate execution; checked-in policy and readiness controls remain authoritative. Read [Architecture V2](../ARCHITECTURE_V2.md), [Execution V2](../EXECUTION_V2.md), [cutover evidence](../BYBIT_CCXT_CUTOVER.md), and the [activation checklist](../btc_dca_bridge/config/v2_activation_checklist.yaml).
+V2 is the target execution architecture: StrategyDecision → OrderIntent → Risk → OMS → EMS/VenueAdapter → reconciliation → accounting. The durable OMS owns mutable order lifecycle state and its execution record is an audit projection. The V2 composition and single-writer route are not permission to activate execution; checked-in [V2 runtime policy](../btc_dca_bridge/config/runtime_execution_policy.yaml) and [activation checklist](../btc_dca_bridge/config/v2_activation_checklist.yaml) remain authoritative. Read [Architecture V2](../ARCHITECTURE_V2.md), [Execution V2](../EXECUTION_V2.md), and [cutover evidence](../BYBIT_CCXT_CUTOVER.md).
 
-Legacy Phase 5 paths remain in the repository for gated compatibility and historical safety behavior. They are not the target architecture, and their presence does not mean a live path is enabled. See the [single-writer migration audit](../SINGLE_WRITER_MIGRATION_AUDIT.md) for per-entrypoint reachability.
+Historical Phase 5 components remain for compatibility, audit, and read-only reconciliation; `canary-execute` is retired and fail-closed, not a production submit path. See the [single-writer migration audit](../SINGLE_WRITER_MIGRATION_AUDIT.md) and [cutover record](../BYBIT_CCXT_CUTOVER.md) for per-entrypoint reachability.
 
 ## Accounting and reconciliation
 
