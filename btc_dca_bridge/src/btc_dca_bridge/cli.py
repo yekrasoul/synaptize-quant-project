@@ -69,7 +69,7 @@ from .ttl_policy import (
 )
 from .production_status import ProductionStatusService
 from .ledger_gateway import LedgerGateway
-from .infrastructure.policy import load_runtime_execution_policy
+from .infrastructure.policy import load_runtime_execution_policy, load_v2_activation_gate
 
 
 # These internal factories are deliberately not CLI options.  They provide a
@@ -79,6 +79,19 @@ _private_read_client_factory = BybitPrivateReadClient.from_environment
 _submission_transport_factory = SignedBybitSubmissionTransport
 _post_ack_reconciler_factory = BybitPostAckReconciler
 _production_status_service_factory = ProductionStatusService
+
+def _production_v2_runtime_factory(*, data_root: Path, ledger_path: Path, policy_path: Path):
+    # Imported lazily: checked-in blocked policy and activation gate must stop
+    # before credentials, CCXT, or any venue runtime is constructed.
+    from .infrastructure.v2_production import build_production_v2_runtime
+    return build_production_v2_runtime(
+        data_root=data_root,
+        ledger_path=ledger_path,
+        policy_path=policy_path,
+    )
+
+
+_v2_execution_runtime_factory = _production_v2_runtime_factory
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -181,6 +194,8 @@ def _parser() -> argparse.ArgumentParser:
     execute_v2 = subparsers.add_parser("execute", help="V2 automated execution entry point; no confirmation ceremony")
     execute_v2.add_argument("--decision-json", type=Path, required=True)
     execute_v2.add_argument("--policy", type=Path, default=Path("config/runtime_execution_policy.yaml"))
+    execute_v2.add_argument("--data-root", type=Path, default=DATA_PATH)
+    execute_v2.add_argument("--ledger", type=Path, default=LEDGER_PATH)
     private = subparsers.add_parser("private-verify", help="read-only authenticated Bybit verification")
     private.add_argument("--order-link-id", help="exact deterministic client order ID to reconcile")
     capture = subparsers.add_parser("capture-bybit-evidence", help="read-only authenticated sanitized Bybit evidence")
@@ -263,7 +278,7 @@ def _parser() -> argparse.ArgumentParser:
     approve.add_argument("--manifest-sha", required=True); approve.add_argument("--amount", required=True)
     approve.add_argument("--client-order-id", required=True); approve.add_argument("--payload-fingerprint", required=True)
     approve.add_argument("--data-root", type=Path, default=DATA_PATH); approve.add_argument("--json", action="store_true")
-    execute = subparsers.add_parser("canary-execute", help="one exact manual invocation of the guarded engine")
+    execute = subparsers.add_parser("canary-execute", help="retired legacy writer; always fail-closed")
     execute.add_argument("--run-id", required=True); execute.add_argument("--canary-id", required=True); execute.add_argument("--approval-id", required=True)
     execute.add_argument("--manifest-sha", required=True); execute.add_argument("--approval-sha", required=True)
     execute.add_argument("--authorization-id"); execute.add_argument("--authorization-sha")
@@ -628,19 +643,70 @@ def _live_submit(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _execute_v2(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    """Safe CLI seam for the V2 service.
+    """Canonical production execution seam.
 
-    The shipped policy is fail-closed, so this command performs no credential
-    lookup or network I/O in normal operation.  Enabling it is deliberately a
-    separate, reviewed deployment step after CCXT parity characterization.
+    Policy and the activation checklist are evaluated before credentials,
+    repositories, CCXT, or venue clients are constructed.  When those gates
+    are eventually VERIFIED, this command has exactly one writer path: the V2
+    composition root.
     """
     policy = load_runtime_execution_policy(args.policy)
     decision = read_json_object(args.decision_json)
+    decision_id = decision.get("decision_id")
+
     if policy.kill_switch_active:
-        return {"status": "BLOCKED", "reason_codes": ["KILL_SWITCH_ACTIVE"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
+        return {
+            "status": "BLOCKED",
+            "reason_codes": ["KILL_SWITCH_ACTIVE"],
+            "decision_id": decision_id,
+            "message": "NO ORDER SUBMITTED",
+        }, 2
     if not policy.execution_enabled:
-        return {"status": "BLOCKED", "reason_codes": ["EXECUTION_POLICY_DISABLED"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
-    return {"status": "BLOCKED", "reason_codes": ["VENUE_ADAPTER_NOT_ACTIVATED"], "decision_id": decision.get("decision_id"), "message": "NO ORDER SUBMITTED"}, 2
+        return {
+            "status": "BLOCKED",
+            "reason_codes": ["EXECUTION_POLICY_DISABLED"],
+            "decision_id": decision_id,
+            "message": "NO ORDER SUBMITTED",
+        }, 2
+
+    activation = load_v2_activation_gate(Path("config/v2_activation_checklist.yaml"))
+    if not activation.allowed:
+        return {
+            "status": "BLOCKED",
+            "reason_codes": ["V2_ACTIVATION_GATE_BLOCKED", *activation.reason_codes],
+            "decision_id": decision_id,
+            "message": "NO ORDER SUBMITTED",
+        }, 2
+
+    if not isinstance(decision_id, str) or not decision_id:
+        raise ValueError("decision_id is required")
+    created_at = str(decision.get("created_at_utc") or "")
+    if not created_at:
+        raise ValueError("created_at_utc is required")
+
+    runtime = _v2_execution_runtime_factory(
+        data_root=args.data_root,
+        ledger_path=args.ledger,
+        policy_path=args.policy,
+    )
+    intent = runtime.intent_from_decision(
+        decision,
+        run_id=f"execute_{decision_id}",
+        created_at_utc=created_at,
+    )
+    initial_context = runtime.context_provider.current(intent)
+    result = runtime.execute(intent, initial_context)
+    payload = {
+        "status": result.order.state.value,
+        "risk_status": result.risk_status,
+        "reason_codes": list(result.reason_codes),
+        "decision_id": decision_id,
+        "intent_id": intent.intent_id,
+        "client_order_id": intent.client_order_id,
+        "venue_order_id": result.order.venue_order_id,
+        "message": "ORDER CONFIRMED" if result.order.state.value == "CONFIRMED" else "NO CONFIRMED ORDER",
+    }
+    return payload, 0 if result.order.state.value == "CONFIRMED" else 2
 
 
 _READINESS_ARTIFACTS = (
@@ -1487,79 +1553,13 @@ def _gate_d_evidence(bundle: dict[str, object], *, enablement: dict[str, object]
 
 
 def _canary_execute(args: argparse.Namespace) -> tuple[dict[str, object], int]:
-    config = load_execution_config()
-    try:
-        chain = _load_controlled_execution_artifacts(args)
-        _assert_readiness_selected_chain(chain, now_utc=datetime.now(UTC))
-        verifier = ControlledProductionExecutor(engine=None, store=chain["store"])
-        verifier._verify_persisted_chain(
-            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
-            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
-            activation=chain["activation"], activation_sha256=chain["activation_sha"],
-            approval=chain["approval"], approval_sha256=chain["approval_sha"],
-            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"],
-            intent=chain["intent"], decision=chain["decision"],
-            decision_sha256=chain["decision_sha"], order_intent_sha256=chain["intent_sha"],
-            evidence=chain["evidence"], evidence_sha256=chain["evidence_sha"],
-            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
-            calendar_month=args.month,
-        )
-        policy = derive_ephemeral_execution_policy(
-            canonical_config=config,
-            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
-            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
-            activation=chain["activation"], activation_sha256=chain["activation_sha"],
-            approval=chain["approval"], approval_sha256=chain["approval_sha"],
-            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"],
-            decision=chain["decision"], decision_sha256=chain["decision_sha"],
-            intent=chain["intent"], intent_sha256=chain["intent_sha"],
-            evidence=chain["evidence"], repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
-            calendar_month=args.month, now_utc=datetime.now(UTC),
-        )
-        runtime_config = policy.runtime_config
-        policy.assert_current(
-            client_order_id=chain["intent"].client_order_id,
-            quote_amount_usdt=chain["intent"].quote_amount_usdt,
-            calendar_month=args.month,
-            now_utc=datetime.now(UTC),
-        )
-        preliminary_d = gate_d(
-            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
-            runtime_config=runtime_config, store=chain["store"],
-            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
-            evidence=_gate_d_evidence(chain["evidence"], enablement=chain["enablement"]), now_utc=datetime.now(UTC),
-        )
-        if preliminary_d.status.value != "READY_FOR_SUBMISSION":
-            return ({"status": "blocked", "gate": "D", "reasons": preliminary_d.reasons, "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
-        gate_d_evidence = _gate_d_evidence(chain["evidence"], enablement=chain["enablement"])
-        client = _private_read_client_factory()
-        reconciler = _post_ack_reconciler_factory(client)
-        gate_a_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=runtime_config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
-        gate_b_current = _fresh_gate_snapshot(client=client, intent=chain["intent"], approval=chain["approval"], authorization=chain["authorization"], approval_sha256=chain["approval_sha"], authorization_sha256=chain["authorization_sha"], config=runtime_config, ledger_path=args.ledger, now_utc=datetime.now(UTC))
-
-        def lazy_transport():
-            return _submission_transport_factory(os.environ.get("BYBIT_API_KEY", ""), os.environ.get("BYBIT_API_SECRET", ""))
-
-        result = ControlledProductionExecutor(engine=LiveOrderEngine(artifact_store=chain["store"]), store=chain["store"]).execute(
-            enablement=chain["enablement"], enablement_sha256=chain["enablement_sha"],
-            authorization=chain["authorization"], authorization_sha256=chain["authorization_sha"],
-            activation=chain["activation"], activation_sha256=chain["activation_sha"],
-            capability=None, approval=chain["approval"], approval_sha256=chain["approval_sha"],
-            manifest=chain["manifest"], manifest_sha256=chain["manifest_sha"], intent=chain["intent"],
-            decision=chain["decision"], runtime_config=runtime_config, evidence=gate_d_evidence,
-            repository_commit_sha=str(chain["approval"].get("repository_commit_sha", "")),
-            calendar_month=args.month, ledger_path=args.ledger, read_client=client,
-            reconciler=reconciler, run_id=args.run_id, transport_factory=lazy_transport,
-            artifact_evidence=chain["evidence"],
-            decision_sha256=chain["decision_sha"], order_intent_sha256=chain["intent_sha"], evidence_sha256=chain["evidence_sha"],
-            gate_a_current=gate_a_current, gate_b_current=gate_b_current,
-        )
-        if isinstance(result, SubmissionResult):
-            payload = result.outcome.to_dict()
-            return payload, 0 if payload.get("outcome_category") == "confirmed_execution" else EXIT_RECONCILIATION
-        return dict(result), EXIT_BLOCKED
-    except (ArtifactNotFoundError, ValueError, KeyError) as exc:
-        return ({"status": "blocked", "reason": str(exc), "outcome_category": "request_not_sent", "message": "NO ORDER SUBMITTED"}, EXIT_BLOCKED)
+    """Legacy production writer is permanently retired after V2 cutover."""
+    return ({
+        "status": "blocked",
+        "reason": "LEGACY_WRITER_RETIRED",
+        "outcome_category": "request_not_sent",
+        "message": "NO ORDER SUBMITTED",
+    }, EXIT_BLOCKED)
 
 
 def _reconcile_existing(args: argparse.Namespace) -> tuple[dict[str, object], int]:

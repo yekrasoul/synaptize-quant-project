@@ -34,3 +34,26 @@ def load_runtime_execution_policy(path: Path) -> RuntimeExecutionPolicy:
     if raw["allowed_market"] != "BTC/USDT:spot" or raw["allowed_venue"] != "bybit":
         raise ValueError("current production market policy is Bybit BTC/USDT Spot")
     return RuntimeExecutionPolicy(raw["execution_enabled"], raw["kill_switch_active"], cap, raw["allowed_venue"], raw["allowed_market"], str(raw["expected_account_fingerprint"]))
+
+
+@dataclass(frozen=True)
+class V2ActivationGate:
+    allowed: bool
+    reason_codes: tuple[str, ...]
+
+
+def load_v2_activation_gate(path: Path) -> V2ActivationGate:
+    """Fail closed unless the canonical V2 checklist is unanimously VERIFIED."""
+    try:
+        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f"V2 activation checklist is unreadable: {exc}") from exc
+    if not isinstance(raw, dict) or not isinstance(raw.get("requirements"), dict):
+        raise ValueError("V2 activation checklist is malformed")
+    reasons: list[str] = []
+    if raw.get("activation_decision") != "READY":
+        reasons.append("ACTIVATION_DECISION_NOT_READY")
+    for name, status in raw["requirements"].items():
+        if status != "VERIFIED":
+            reasons.append(f"{str(name).upper()}_{str(status)}")
+    return V2ActivationGate(not reasons, tuple(reasons))
