@@ -21,8 +21,8 @@ Shadow calls the V2 pre-network planning path and cannot create a claim or POST.
 
 Venue health is owned by `VenueCircuitBreaker`, outside Risk; Risk consumes its
 current state while the kill switch remains a separate authoritative control.
-Similarly, confirmed V2 accounting persistence is not yet consumed by the
-legacy monthly-spend projection, so that integration remains NOT VERIFIED.
+Confirmed V2 accounting persistence is included in the unified monthly-spend
+projection; the activation checklist records this integration as VERIFIED.
 
 The V2 cutover decision and remaining legacy boundaries are in
 [`BYBIT_CCXT_CUTOVER.md`](BYBIT_CCXT_CUTOVER.md).
@@ -36,10 +36,9 @@ context, Risk, OMS, `ExecutionService`, an injected `VenueAdapter`, and
 confirmed-only accounting. It does not import or construct CCXT; infrastructure
 supplies the adapter and authenticated context explicitly.
 
-The `btc-dca execute` command remains fail-closed before this runtime can be
-constructed while the committed policy and activation checklist are blocked.
-Production Shadow can receive the same runtime and call its shared
-pre-submit planner, which stops before OMS claim and `submit_once`. The
-scheduled shadow path supplies no authenticated V2 runtime when that context is
-unavailable, so `production_shadow_v2_pre_network` remains
-`PARTIALLY_VERIFIED`.
+`btc-dca execute` routes through this V2 composition after its readiness gates;
+the checked-in policy and activation checklist still block activation. The
+legacy `canary-execute` writer is retired and fail-closed. Production Shadow
+uses the shared pre-submit planner and stops before OMS claim and `submit_once`.
+Its operational V2 pre-network status remains `PARTIALLY_VERIFIED` while safe
+authenticated account and venue context is unavailable.

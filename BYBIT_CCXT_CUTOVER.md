@@ -2,6 +2,17 @@
 
 Baseline: `ca6fb1b250ce7c1c248c14db1c6e4992acf7946e`.
 
+## Current status
+
+The cutover is implemented on current `main`: `btc-dca execute` routes only to
+the V2 runtime after readiness gates, and the legacy `canary-execute` writer is
+permanently retired and fail-closed. The activation checklist marks
+`one_reachable_production_submit_path` VERIFIED. The older writer reachability
+matrix below is a pre-cutover snapshot and must not be read as current routing
+state. Activation remains BLOCKED by incomplete account/environment and
+credential-scope evidence and partially verified operational Production
+Shadow parity.
+
 ## Decision
 
 **BLOCKED.** `runtime_execution_policy.yaml` remains `execution_enabled: false`
