@@ -7,6 +7,7 @@ import json
 import socket
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlencode
 
@@ -15,6 +16,7 @@ from ..errors import NotificationError, NotificationErrorCode
 
 TELEGRAM_HOST = "api.telegram.org"
 MAX_MESSAGE_LENGTH = 4096
+CANONICAL_MONTHLY_CAP_USD = Decimal("500")
 
 
 @dataclass(frozen=True)
@@ -196,29 +198,26 @@ def format_success_message(outcome: Mapping[str, Any]) -> str:
     """Format only canonical structured values; no calculations occur here."""
     shadow = _mapping(outcome.get("shadow_result"), "shadow_result")
     market = _mapping(shadow.get("market_snapshot"), "market_snapshot")
-    market_metadata = _mapping(
-        market.get("market_data_metadata"), "market_snapshot.market_data_metadata"
-    )
     sentiment = _mapping(shadow.get("sentiment_snapshot"), "sentiment_snapshot")
     decision = _mapping(shadow.get("decision"), "decision")
     lines = [
-        "mode: SHADOW",
-        f"run_id: {outcome['run_id']}",
-        f"market source: {market_metadata['source']}",
-        f"BTC price: ${market['current_price_usdt']}",
-        f"rolling 7D high: ${market['rolling_7d_high_usdt']}",
-        f"drawdown: {decision['drawdown_percent']}%",
+        "BTC DCA — SHADOW",
+        "BTC/USDT · Bybit",
+        f"Price: ${_display_number(market['current_price_usdt'])}",
+        f"7D High: ${_display_number(market['rolling_7d_high_usdt'])}",
+        f"Drawdown: {_display_number(decision['drawdown_percent'], fixed_places=2)}%",
         f"Fear & Greed: {sentiment['value']}",
-        f"base allocation: ${decision['base_allocation_usd']}",
-        f"sentiment multiplier: x{decision['sentiment_multiplier']}",
-        f"calculated allocation: ${decision['calculated_allocation_usd']}",
-        f"monthly spent: ${decision['monthly_spent_before_usd']}",
-        f"remaining monthly budget: ${decision['remaining_budget_before_usd']}",
-        f"FINAL PURCHASE: ${decision['final_purchase_usd']}",
-        "NO ORDER EXECUTED",
-        "MULTIPLE CHECKS MAY ARRIVE PER DAY — EXECUTE AT MOST ONE DAILY V1 PURCHASE.",
-        "If you already bought today, treat later checks as informational until the ledger is updated.",
-        f"SHADOW — BUY ${decision['final_purchase_usd']} BTC TODAY — NO ORDER EXECUTED",
+        "",
+        f"Base: ${_display_number(decision['base_allocation_usd'])} · Multiplier: x{_display_number(decision['sentiment_multiplier'])}",
+        f"Allocation: ${_display_number(decision['final_purchase_usd'])}",
+        "",
+        f"Month: ${_display_number(decision['monthly_spent_before_usd'])} / ${_display_number(CANONICAL_MONTHLY_CAP_USD)}",
+        f"Remaining: ${_display_number(decision['remaining_budget_before_usd'])}",
+        "",
+        f"DECISION: BUY ${_display_number(decision['final_purchase_usd'])} BTC",
+        "EXECUTION: NONE — SHADOW",
+        "",
+        f"run: {outcome['run_id']}",
     ]
     return "\n".join(lines)
 
@@ -232,31 +231,46 @@ def format_failure_message(
     failure = outcome.get("failure")
     details = failure if isinstance(failure, Mapping) else {}
     selected_stage = stage or str(details.get("stage") or "UNKNOWN")
-    selected_category = category or str(details.get("category") or "UNKNOWN_FAILURE")
+    selected_category = category or str(details.get("reason") or details.get("category") or "UNKNOWN_FAILURE")
     source = details.get("source")
     lines = [
-        "mode: SHADOW",
-        "PRODUCTION SHADOW FAILED",
-        f"run_id: {outcome.get('run_id', 'unknown')}",
-        f"failed stage: {selected_stage}",
-        f"category: {selected_category}",
+        "BTC DCA — SHADOW FAILED",
+        f"Stage: {selected_stage}",
+        f"Reason: {selected_category}",
     ]
     if isinstance(source, str) and source:
-        lines.append(f"source: {source}")
+        lines.append(f"Source: {source}")
     if details.get("status_code") is not None:
-        lines.append(f"HTTP status: {details['status_code']}")
+        lines.append(f"HTTP: {details['status_code']}")
     if details.get("retryable") is not None:
-        lines.append(f"retryable: {str(details['retryable']).lower()}")
+        lines.append(f"Retryable: {str(details['retryable']).lower()}")
     cause_message = details.get("cause_message")
     if isinstance(cause_message, str) and cause_message:
-        lines.append(f"cause: {cause_message}")
+        lines.append(f"Cause: {cause_message}")
     lines.extend(
         (
-            f"timestamp: {outcome.get('process_started_at_utc', 'unknown')}",
-            "NO ORDER EXECUTED",
+            "",
+            "EXECUTION: NONE",
+            f"run: {outcome.get('run_id', 'unknown')}",
         )
     )
     return "\n".join(lines)
+
+
+def _display_number(value: object, *, fixed_places: int | None = None) -> str:
+    """Round only for display and always emit fixed-point decimal text."""
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("notification value must be numeric") from exc
+    if not number.is_finite():
+        raise ValueError("notification value must be finite")
+    places = 2 if fixed_places is None else fixed_places
+    quantum = Decimal("1") if places == 0 else Decimal("1") / (10 ** places)
+    rendered = format(number.quantize(quantum, rounding=ROUND_HALF_UP), "f")
+    if fixed_places is None and "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
 
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:

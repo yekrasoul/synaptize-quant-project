@@ -73,44 +73,39 @@ class SequenceTransport(TelegramTransport):
 
 class TelegramNotificationTest(unittest.TestCase):
     def test_success_message_contains_every_required_current_schema_field(self):
-        message = format_success_message(
-            completed_outcome(source="tradingview", fallback_attempted=True)
-        )
+        message = format_success_message(completed_outcome())
         for expected in (
-            "mode: SHADOW",
-            "BTC price: $80000",
-            "rolling 7D high: $100000",
-            "drawdown: -20%",
+            "BTC DCA — SHADOW",
+            "BTC/USDT · Bybit",
+            "Price: $80000",
+            "7D High: $100000",
+            "Drawdown: -20.00%",
             "Fear & Greed: 35",
-            "base allocation: $75",
-            "sentiment multiplier: x1.3",
-            "calculated allocation: $98",
-            "monthly spent: $60",
-            "remaining monthly budget: $440",
-            "FINAL PURCHASE: $98",
-            "market source: tradingview",
-            "NO ORDER EXECUTED",
-            "SHADOW — BUY $98 BTC TODAY — NO ORDER EXECUTED",
+            "Base: $75 · Multiplier: x1.3",
+            "Allocation: $98",
+            "Month: $60 / $500",
+            "Remaining: $440",
+            "DECISION: BUY $98 BTC",
+            "EXECUTION: NONE — SHADOW",
+            "run: run_20261007T110000Z_scheduled_123456789abc",
         ):
             self.assertIn(expected, message)
+        self.assertEqual(message.count("DECISION: BUY $98 BTC"), 1)
+        self.assertEqual(message.count("EXECUTION:"), 1)
+        self.assertNotIn("MULTIPLE CHECKS MAY ARRIVE PER DAY", message)
+        self.assertNotIn("If you already bought today", message)
 
-    def test_tradingview_fallback_snapshot_formats_without_key_error(self):
-        message = format_success_message(
-            completed_outcome(source="tradingview", fallback_attempted=True)
-        )
-        self.assertIn("market source: tradingview", message)
-        self.assertIn("SHADOW", message)
-        self.assertIn("NO ORDER EXECUTED", message)
-        self.assertIn("FINAL PURCHASE: $98", message)
-
-    def test_bybit_direct_snapshot_formats_without_key_error(self):
-        message = format_success_message(
-            completed_outcome(source="bybit_api", fallback_attempted=False)
-        )
-        self.assertIn("market source: bybit_api", message)
-        self.assertIn("SHADOW", message)
-        self.assertIn("NO ORDER EXECUTED", message)
-        self.assertIn("FINAL PURCHASE: $98", message)
+    def test_success_formatter_rounds_display_values_without_recalculating_decision(self):
+        outcome = completed_outcome()
+        outcome["shadow_result"]["market_snapshot"]["current_price_usdt"] = 80000.126
+        outcome["shadow_result"]["market_snapshot"]["rolling_7d_high_usdt"] = 100000.125
+        outcome["shadow_result"]["decision"]["drawdown_percent"] = -19.876
+        message = format_success_message(outcome)
+        self.assertIn("Price: $80000.13", message)
+        self.assertIn("7D High: $100000.13", message)
+        self.assertIn("Drawdown: -19.88%", message)
+        self.assertIn("DECISION: BUY $98 BTC", message)
+        self.assertEqual(outcome["shadow_result"]["decision"]["final_purchase_usd"], 98)
 
     def test_failure_message_includes_available_diagnostics_and_no_order(self):
         outcome = {
@@ -126,14 +121,15 @@ class TelegramNotificationTest(unittest.TestCase):
             },
         }
         message = format_failure_message(outcome)
-        self.assertIn("PRODUCTION SHADOW FAILED", message)
-        self.assertIn("failed stage: MARKET_DATA", message)
-        self.assertIn("category: SOURCE_UNAVAILABLE", message)
-        self.assertIn("source: bybit_api", message)
-        self.assertIn("HTTP status: 403", message)
-        self.assertIn("retryable: false", message)
-        self.assertIn("cause: SOURCE_UNAVAILABLE: Bybit returned HTTP 403", message)
-        self.assertIn("NO ORDER EXECUTED", message)
+        self.assertIn("BTC DCA — SHADOW FAILED", message)
+        self.assertIn("Stage: MARKET_DATA", message)
+        self.assertIn("Reason: SOURCE_UNAVAILABLE", message)
+        self.assertIn("Source: bybit_api", message)
+        self.assertIn("HTTP: 403", message)
+        self.assertIn("Retryable: false", message)
+        self.assertIn("Cause: SOURCE_UNAVAILABLE: Bybit returned HTTP 403", message)
+        self.assertIn("EXECUTION: NONE", message)
+        self.assertEqual(message.count("EXECUTION:"), 1)
         self.assertNotIn("Traceback", message)
 
     def test_failure_message_omits_absent_diagnostics_and_untrusted_fields(self):
@@ -151,24 +147,19 @@ class TelegramNotificationTest(unittest.TestCase):
             },
         }
         message = format_failure_message(outcome)
-        self.assertIn("cause: connection timed out", message)
+        self.assertIn("Cause: connection timed out", message)
         self.assertNotIn("bot-token-secret", message)
         self.assertNotIn("Traceback", message)
         self.assertNotIn("TELEGRAM_BOT_TOKEN", message)
         self.assertNotIn("retCode", message)
-        self.assertNotIn("HTTP status:", message)
-        self.assertNotIn("retryable:", message)
+        self.assertNotIn("HTTP:", message)
+        self.assertNotIn("Retryable:", message)
 
     def test_success_message_substantive_v1_fields_remain_unchanged(self):
         message = format_success_message(completed_outcome())
-        for expected in (
-            "market source: bybit_api",
-            "BTC price: $80000",
-            "Fear & Greed: 35",
-            "FINAL PURCHASE: $98",
-            "SHADOW — BUY $98 BTC TODAY — NO ORDER EXECUTED",
-        ):
-            self.assertIn(expected, message)
+        self.assertIn("Price: $80000", message)
+        self.assertIn("Fear & Greed: 35", message)
+        self.assertIn("DECISION: BUY $98 BTC", message)
 
     def test_success_delivery_uses_plain_text_and_confirms_message_id(self):
         response = TelegramResponse(
