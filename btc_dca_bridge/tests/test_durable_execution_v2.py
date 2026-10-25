@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from btc_dca_bridge.accounting.service import AccountingService
+from btc_dca_bridge.accounting.deployment import confirmed_monthly_spend
 from btc_dca_bridge.core.models import AccountIdentity, Asset, Fill, Market, OrderIntent, OrderType, Side
 from btc_dca_bridge.core.state import ExecutionState, Order
 from btc_dca_bridge.execution_v2.service import ExecutionService, VenueHealthRiskContextProvider, UnifiedSpendRiskContextProvider
@@ -86,6 +87,22 @@ class Venue:
 class Provider:
     def __init__(self, value): self.value, self.calls = value, 0
     def current(self, _): self.calls += 1; return self.value
+
+
+def prepare_recovery_order(repository, state: ExecutionState):
+    order = repository.save(repository.create(Order(intent())).transition(ExecutionState.RISK_APPROVED))
+    order = repository.claim_submission(order)
+    if state is ExecutionState.SUBMISSION_STARTED:
+        return order
+    order = repository.save(order.transition(ExecutionState.AMBIGUOUS) if state is ExecutionState.AMBIGUOUS else order.transition(ExecutionState.SUBMITTED, venue_order_id="venue-1"))
+    if state is ExecutionState.PARTIALLY_FILLED:
+        order = repository.save(order.transition(ExecutionState.RECONCILING).transition(ExecutionState.PARTIALLY_FILLED))
+    return order
+
+
+class FailingAccountingRepository:
+    def post_once(self, _entry):
+        raise OSError("simulated accounting persistence failure")
 
 
 class DurableExecutionV2Tests(unittest.TestCase):
@@ -213,6 +230,78 @@ class DurableExecutionV2Tests(unittest.TestCase):
             self.assertEqual(len(list((Path(root) / "accounting").glob("*.json"))), 1)
             service.post_confirmed(order, VenueReconciliation("CONFIRMED", "venue-1", (fill,)))
             self.assertEqual(len(list((Path(root) / "accounting").glob("*.json"))), 1)
+
+    def test_recovery_from_submission_started_accounts_confirmed_once(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            prepare_recovery_order(repository, ExecutionState.SUBMISSION_STARTED)
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(accounting))
+            recovered = service.recover_unresolved()
+            self.assertEqual(recovered[0].order.state, ExecutionState.CONFIRMED)
+            self.assertEqual(len(accounting.read_confirmed()), 1)
+
+    def test_normal_and_recovery_confirmation_share_accounting_payload(self):
+        with TemporaryDirectory() as normal_root, TemporaryDirectory() as recovery_root:
+            normal_accounting = JsonAccountingRepository(Path(normal_root) / "accounting")
+            normal = ExecutionService(oms=JsonExecutionRepository(Path(normal_root) / "executions"), risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(normal_accounting))
+            self.assertEqual(normal.execute(intent(), context()).order.state, ExecutionState.CONFIRMED)
+
+            recovery_repository = JsonExecutionRepository(Path(recovery_root) / "executions")
+            prepare_recovery_order(recovery_repository, ExecutionState.AMBIGUOUS)
+            recovery_accounting = JsonAccountingRepository(Path(recovery_root) / "accounting")
+            recovery = ExecutionService(oms=recovery_repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(recovery_accounting))
+            self.assertEqual(recovery.recover_unresolved()[0].order.state, ExecutionState.CONFIRMED)
+            self.assertEqual(normal_accounting.read_confirmed(), recovery_accounting.read_confirmed())
+
+    def test_recovery_from_ambiguous_submitted_and_partial_accounts_once(self):
+        for state in (ExecutionState.AMBIGUOUS, ExecutionState.SUBMITTED, ExecutionState.PARTIALLY_FILLED):
+            with self.subTest(state=state), TemporaryDirectory() as root:
+                repository = JsonExecutionRepository(Path(root) / "executions")
+                prepare_recovery_order(repository, state)
+                accounting = JsonAccountingRepository(Path(root) / "accounting")
+                service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(accounting))
+                recovered = service.recover_unresolved()
+                self.assertEqual(recovered[0].order.state, ExecutionState.CONFIRMED)
+                self.assertEqual(len(accounting.read_confirmed()), 1)
+
+    def test_recovery_replay_after_confirmation_has_no_duplicate_accounting(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            prepare_recovery_order(repository, ExecutionState.AMBIGUOUS)
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(accounting))
+            service.recover_unresolved()
+            self.assertEqual(service.recover_unresolved(), ())
+            self.assertEqual(len(accounting.read_confirmed()), 1)
+
+    def test_non_confirmed_recovery_does_not_account(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            prepare_recovery_order(repository, ExecutionState.AMBIGUOUS)
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="AMBIGUOUS"), accounting=AccountingService(accounting))
+            recovered = service.recover_unresolved()
+            self.assertEqual(recovered[0].order.state, ExecutionState.AMBIGUOUS)
+            self.assertEqual(accounting.read_confirmed(), ())
+
+    def test_accounting_failure_leaves_recovery_state_reconciling(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            prepare_recovery_order(repository, ExecutionState.SUBMITTED)
+            service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(FailingAccountingRepository()))
+            with self.assertRaises(OSError):
+                service.recover_unresolved()
+            self.assertEqual(repository.get(intent().client_order_id).state, ExecutionState.RECONCILING)
+
+    def test_recovered_confirmation_enters_monthly_spend_projection_once(self):
+        with TemporaryDirectory() as root:
+            repository = JsonExecutionRepository(Path(root) / "executions")
+            prepare_recovery_order(repository, ExecutionState.AMBIGUOUS)
+            accounting = JsonAccountingRepository(Path(root) / "accounting")
+            service = ExecutionService(oms=repository, risk_engine=RiskEngine(), venue=Venue(reconcile="CONFIRMED"), accounting=AccountingService(accounting))
+            service.recover_unresolved()
+            self.assertEqual(confirmed_monthly_spend(legacy=(), v2_entries=accounting.read_confirmed(), calendar_month="2026-10"), Decimal("25"))
 
 
 if __name__ == "__main__": unittest.main()
