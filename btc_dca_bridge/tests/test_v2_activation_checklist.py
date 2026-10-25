@@ -15,6 +15,7 @@ class V2ActivationChecklistTests(unittest.TestCase):
         policy = yaml.safe_load((ROOT / "config" / "runtime_execution_policy.yaml").read_text(encoding="utf-8"))
         self.assertEqual(checklist["activation_decision"], "BLOCKED")
         self.assertIn("NOT_VERIFIED", set(checklist["requirements"].values()))
+        self.assertEqual(checklist["requirements"]["one_reachable_production_submit_path"], "VERIFIED")
         self.assertFalse(policy["execution_enabled"])
         self.assertTrue(policy["kill_switch_active"])
 
