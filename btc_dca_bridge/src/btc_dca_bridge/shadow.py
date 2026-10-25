@@ -33,6 +33,7 @@ from .schemas import validate_artifact
 from .sentiment import AlternativeMeFearGreedAdapter, SentimentSnapshot
 from .execution_v2.composition import V2ExecutionRuntime
 from .execution_v2.shadow import plan_v2_shadow
+from .real_money_authorization import artifact_sha256
 
 
 class MarketProvider(Protocol):
@@ -176,6 +177,12 @@ class ShadowPipeline:
                 portfolio.monthly_confirmed_usd_deployed,
                 self.strategy,
             )
+            decision = StrategyDecision({
+                **decision.to_dict(),
+                "market_snapshot_sha256": artifact_sha256(market.to_dict()),
+                "sentiment_snapshot_id": sentiment.snapshot_id,
+                "sentiment_snapshot_sha256": artifact_sha256(sentiment.to_dict()),
+            })
             validate_artifact("decision", decision.to_dict())
         except Exception as exc:
             self._raise(ShadowRunErrorCode.DECISION_FAILED, "V1 decision calculation failed", exc)

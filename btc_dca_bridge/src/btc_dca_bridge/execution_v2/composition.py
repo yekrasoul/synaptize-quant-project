@@ -61,6 +61,11 @@ def order_intent_from_decision(
         preferred_venue="bybit",
         client_order_id=client_order_id,
         created_at_utc=created_at_utc,
+        market_snapshot_id=decision.get("market_snapshot_id"),
+        market_snapshot_sha256=decision.get("market_snapshot_sha256"),
+        sentiment_snapshot_id=decision.get("sentiment_snapshot_id"),
+        sentiment_snapshot_sha256=decision.get("sentiment_snapshot_sha256"),
+        fear_greed_index=decision.get("fear_greed_index"),
     )
 
 

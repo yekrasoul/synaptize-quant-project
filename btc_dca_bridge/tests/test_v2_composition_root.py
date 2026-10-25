@@ -16,7 +16,7 @@ from btc_dca_bridge.execution_v2.oms import InMemoryOms
 from btc_dca_bridge.execution_v2.service import ExecutionService
 from btc_dca_bridge.infrastructure.accounting_repository import JsonAccountingRepository
 from btc_dca_bridge.infrastructure.policy import RuntimeExecutionPolicy
-from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
+from btc_dca_bridge.risk.engine import MarketEvidenceBinding, RiskContext, RiskEngine
 from btc_dca_bridge.venues.base import VenueOrderAcknowledgement, VenueReconciliation
 from btc_dca_bridge.venues.health import VenueCircuitBreaker
 
@@ -33,6 +33,7 @@ def intent() -> OrderIntent:
         "bybit",
         "v2-composition-client",
         "2026-10-25T00:00:00Z",
+        "market-composition", "a" * 64, "sentiment-composition", "b" * 64, 35,
     )
 
 
@@ -50,6 +51,7 @@ def account_context() -> RiskContext:
         False,
         False,
         venue_health="healthy",
+        market_evidence=MarketEvidenceBinding("decision-composition", "market-composition", "a" * 64, "sentiment-composition", "b" * 64, True, 35, Decimal("25")),
     )
 
 
@@ -141,7 +143,7 @@ class V2CompositionRootTests(unittest.TestCase):
     def test_shadow_plan_uses_same_pre_submit_boundary_without_claim_or_post(self):
         with self.build() as (runtime, _account, venue, accounting):
             result = runtime.plan_shadow(
-                {"decision_id": "decision-shadow", "strategy_id": "adaptive_dca_v1", "final_purchase_usd": 25},
+                {"decision_id": "decision-composition", "strategy_id": "adaptive_dca_v1", "final_purchase_usd": 25, "market_snapshot_id": "market-composition", "market_snapshot_sha256": "a" * 64, "sentiment_snapshot_id": "sentiment-composition", "sentiment_snapshot_sha256": "b" * 64, "fear_greed_index": 35},
                 run_id="run_20261025T000000Z_shadow",
                 created_at_utc="2026-10-25T00:00:00Z",
                 context=runtime.context_provider.current(intent()),

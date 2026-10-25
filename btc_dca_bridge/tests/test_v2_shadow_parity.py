@@ -5,7 +5,7 @@ import unittest
 
 from btc_dca_bridge.core.models import AccountIdentity
 from btc_dca_bridge.execution_v2.shadow import plan_v2_shadow
-from btc_dca_bridge.risk.engine import RiskContext
+from btc_dca_bridge.risk.engine import MarketEvidenceBinding, RiskContext
 
 
 class RecordingVenue:
@@ -17,13 +17,13 @@ class RecordingVenue:
 
 
 def context():
-    return RiskContext("2026-10", Decimal("0"), Decimal("500"), True, False, True, AccountIdentity("bybit", "account-1"), "account-1", Decimal("100"), False, False, venue_health="healthy")
+    return RiskContext("2026-10", Decimal("0"), Decimal("500"), True, False, True, AccountIdentity("bybit", "account-1"), "account-1", Decimal("100"), False, False, venue_health="healthy", market_evidence=MarketEvidenceBinding("decision-x", "market-x", "a" * 64, "sentiment-x", "b" * 64, True, 35, Decimal("25")))
 
 
 class V2ShadowParityTests(unittest.TestCase):
     def test_shadow_uses_shared_pre_submit_contract_without_claim_or_post(self):
         venue = RecordingVenue()
-        result = plan_v2_shadow({"decision_id": "decision-x", "strategy_id": "adaptive_dca_v1", "final_purchase_usd": 25}, run_id="run_20261024T000000Z_shadowv2", created_at_utc="2026-10-24T00:00:00Z", monthly_spend=Decimal("0"), context=context(), venue=venue)
+        result = plan_v2_shadow({"decision_id": "decision-x", "strategy_id": "adaptive_dca_v1", "final_purchase_usd": 25, "market_snapshot_id": "market-x", "market_snapshot_sha256": "a" * 64, "sentiment_snapshot_id": "sentiment-x", "sentiment_snapshot_sha256": "b" * 64, "fear_greed_index": 35}, run_id="run_20261024T000000Z_shadowv2", created_at_utc="2026-10-24T00:00:00Z", monthly_spend=Decimal("0"), context=context(), venue=venue)
         self.assertTrue(result["would_submit"])
         self.assertTrue(result["no_order_executed"])
         self.assertEqual(result["prepared_submission"]["symbol"], "BTC/USDT")

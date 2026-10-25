@@ -69,6 +69,11 @@ class OrderIntent:
     preferred_venue: str
     client_order_id: str
     created_at_utc: str
+    market_snapshot_id: str | None = None
+    market_snapshot_sha256: str | None = None
+    sentiment_snapshot_id: str | None = None
+    sentiment_snapshot_sha256: str | None = None
+    fear_greed_index: int | None = None
 
     def __post_init__(self) -> None:
         if not self.intent_id or not self.strategy_id or not self.decision_id or not self.client_order_id:

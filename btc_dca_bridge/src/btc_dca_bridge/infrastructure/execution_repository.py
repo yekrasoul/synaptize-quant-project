@@ -41,7 +41,7 @@ class JsonExecutionRepository:
     def _payload(order: Order) -> dict[str, object]:
         i = order.intent
         return {"schema_version": "2.0.0", "state": order.state.value, "venue_order_id": order.venue_order_id, "reason": order.reason,
-                "intent": {"intent_id": i.intent_id, "strategy_id": i.strategy_id, "decision_id": i.decision_id, "base": i.market.base.code, "quote": i.market.quote.code, "instrument_type": i.market.instrument_type, "side": i.side.value, "order_type": i.order_type.value, "quote_quantity": str(i.quote_quantity), "preferred_venue": i.preferred_venue, "client_order_id": i.client_order_id, "created_at_utc": i.created_at_utc}}
+                "intent": {"intent_id": i.intent_id, "strategy_id": i.strategy_id, "decision_id": i.decision_id, "base": i.market.base.code, "quote": i.market.quote.code, "instrument_type": i.market.instrument_type, "side": i.side.value, "order_type": i.order_type.value, "quote_quantity": str(i.quote_quantity), "preferred_venue": i.preferred_venue, "client_order_id": i.client_order_id, "created_at_utc": i.created_at_utc, "market_snapshot_id": i.market_snapshot_id, "market_snapshot_sha256": i.market_snapshot_sha256, "sentiment_snapshot_id": i.sentiment_snapshot_id, "sentiment_snapshot_sha256": i.sentiment_snapshot_sha256, "fear_greed_index": i.fear_greed_index}}
 
     @staticmethod
     def _order(payload: object) -> Order:
@@ -49,7 +49,7 @@ class JsonExecutionRepository:
             raise ValueError("execution repository record is corrupt")
         v = payload["intent"]
         try:
-            intent = OrderIntent(str(v["intent_id"]), str(v["strategy_id"]), str(v["decision_id"]), Market(Asset(str(v["base"])), Asset(str(v["quote"])), str(v["instrument_type"])), Side(str(v["side"])), OrderType(str(v["order_type"])), Decimal(str(v["quote_quantity"])), str(v["preferred_venue"]), str(v["client_order_id"]), str(v["created_at_utc"]))
+            intent = OrderIntent(str(v["intent_id"]), str(v["strategy_id"]), str(v["decision_id"]), Market(Asset(str(v["base"])), Asset(str(v["quote"])), str(v["instrument_type"])), Side(str(v["side"])), OrderType(str(v["order_type"])), Decimal(str(v["quote_quantity"])), str(v["preferred_venue"]), str(v["client_order_id"]), str(v["created_at_utc"]), v.get("market_snapshot_id"), v.get("market_snapshot_sha256"), v.get("sentiment_snapshot_id"), v.get("sentiment_snapshot_sha256"), v.get("fear_greed_index"))
             return Order(intent, ExecutionState(str(payload["state"])), payload.get("venue_order_id") if isinstance(payload.get("venue_order_id"), str) else None, payload.get("reason") if isinstance(payload.get("reason"), str) else None)
         except (KeyError, ValueError) as exc:
             raise ValueError("execution repository record is corrupt") from exc
