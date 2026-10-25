@@ -38,7 +38,11 @@ class BybitEvidenceTests(unittest.TestCase):
         fixture.credential_info = lambda: ApiCredentialInfo(
             CredentialClassification.INVALID, False, {"Authorization": ("api-secret-value",)}
         )
-        payload = capture(fixture, environment="testnet")
+        payload = capture(
+            fixture,
+            environment="testnet",
+            observed_at=datetime(2026, 10, 24, tzinfo=UTC),
+        )
         with TemporaryDirectory() as temporary:
             root = Path(temporary) / "data"
             store = ArtifactStore(root)
