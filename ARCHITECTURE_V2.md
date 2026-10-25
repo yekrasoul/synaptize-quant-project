@@ -1,6 +1,6 @@
 # Architecture V2
 
-Baseline: `4c6a94ebd8f78bdcab0043fa095fdcad604d2fb1`.
+Baseline: `ca6fb1b250ce7c1c248c14db1c6e4992acf7946e`.
 
 The current-generation dependency direction is:
 
@@ -26,3 +26,20 @@ legacy monthly-spend projection, so that integration remains NOT VERIFIED.
 
 The V2 cutover decision and remaining legacy boundaries are in
 [`BYBIT_CCXT_CUTOVER.md`](BYBIT_CCXT_CUTOVER.md).
+
+## Canonical target composition root
+
+`execution_v2.composition.build_v2_execution_runtime` is the single
+dependency-injected TARGET_V2 composition root. It assembles the canonical
+V1 decision input, V2 `OrderIntent`, fresh policy/account/spend/venue-health
+context, Risk, OMS, `ExecutionService`, an injected `VenueAdapter`, and
+confirmed-only accounting. It does not import or construct CCXT; infrastructure
+supplies the adapter and authenticated context explicitly.
+
+The `btc-dca execute` command remains fail-closed before this runtime can be
+constructed while the committed policy and activation checklist are blocked.
+Production Shadow can receive the same runtime and call its shared
+pre-submit planner, which stops before OMS claim and `submit_once`. The
+scheduled shadow path supplies no authenticated V2 runtime when that context is
+unavailable, so `production_shadow_v2_pre_network` remains
+`PARTIALLY_VERIFIED`.

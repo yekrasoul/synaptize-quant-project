@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 
 from ..core.models import OrderIntent
 from ..core.state import ExecutionState, Order
+from ..accounting.service import AccountingService
 from ..risk.engine import RiskContext, RiskEngine
 from ..venues.base import DeterministicVenueRejection, PreSubmissionFailure, VenueAdapter
 from ..venues.health import VenueCircuitBreaker
@@ -45,12 +46,13 @@ class ExecutionResult:
 
 
 class ExecutionService:
-    def __init__(self, *, oms: ExecutionRepository, risk_engine: RiskEngine, venue: VenueAdapter, risk_context_provider: FreshRiskContextProvider | None = None, venue_breaker: VenueCircuitBreaker | None = None) -> None:
+    def __init__(self, *, oms: ExecutionRepository, risk_engine: RiskEngine, venue: VenueAdapter, risk_context_provider: FreshRiskContextProvider | None = None, venue_breaker: VenueCircuitBreaker | None = None, accounting: AccountingService | None = None) -> None:
         self.oms = oms
         self.risk_engine = risk_engine
         self.venue = venue
         self.risk_context_provider = risk_context_provider
         self.venue_breaker = venue_breaker
+        self.accounting = accounting
 
     def _context(self, intent: OrderIntent, fallback: RiskContext) -> RiskContext:
         return self.risk_context_provider.current(intent) if self.risk_context_provider else fallback
@@ -106,7 +108,12 @@ class ExecutionService:
         reconciliation = self.venue.reconcile(order.intent, ack.venue_order_id)
         order = self.oms.save(order.transition(ExecutionState.RECONCILING))
         state = ExecutionState(reconciliation.status)
-        return ExecutionResult(self.oms.save(order.transition(state, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason)), "APPROVED")
+        final_order = order.transition(state, venue_order_id=reconciliation.venue_order_id, reason=reconciliation.reason)
+        if self.accounting is not None and state is ExecutionState.CONFIRMED:
+            # Accounting is downstream of reconciliation; if this fails the
+            # lifecycle remains RECONCILING and can be recovered safely.
+            self.accounting.post_confirmed(final_order, reconciliation)
+        return ExecutionResult(self.oms.save(final_order), "APPROVED")
 
     def recover_unresolved(self) -> tuple[ExecutionResult, ...]:
         """Restart path: reconcile durable identities only; never submit again."""
