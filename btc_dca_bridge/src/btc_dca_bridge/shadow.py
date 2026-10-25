@@ -31,6 +31,7 @@ from .paths import CONFIG_PATH, DATA_PATH, LEDGER_PATH, PROJECT_ROOT
 from .portfolio import derive_portfolio
 from .schemas import validate_artifact
 from .sentiment import AlternativeMeFearGreedAdapter, SentimentSnapshot
+from .execution_v2.composition import V2ExecutionRuntime
 from .execution_v2.shadow import plan_v2_shadow
 
 
@@ -111,6 +112,7 @@ class ShadowPipeline:
         ledger_path: Path = LEDGER_PATH,
         ledger_reader: Callable[[Path], tuple[Execution, ...]] = read_executions,
         decision_calculator: Callable[[MarketSnapshot, int, Any, StrategyConfig], StrategyDecision] = calculate_decision,
+        v2_runtime: V2ExecutionRuntime | None = None,
     ) -> None:
         self.market_provider = market_provider
         self.sentiment_provider = sentiment_provider
@@ -119,6 +121,7 @@ class ShadowPipeline:
         self.ledger_path = Path(ledger_path)
         self._ledger_reader = ledger_reader
         self._decision_calculator = decision_calculator
+        self._v2_runtime = v2_runtime
 
     def run(
         self,
@@ -197,7 +200,13 @@ class ShadowPipeline:
             self._raise(ShadowRunErrorCode.PERSISTENCE_FAILED, "immutable artifact publication failed", exc)
 
         instant = _iso(run_at)
-        v2_preflight = plan_v2_shadow(decision.to_dict(), run_id=shared_run_id, created_at_utc=instant, monthly_spend=portfolio.monthly_confirmed_usd_deployed)
+        v2_preflight = plan_v2_shadow(
+            decision.to_dict(),
+            run_id=shared_run_id,
+            created_at_utc=instant,
+            monthly_spend=portfolio.monthly_confirmed_usd_deployed,
+            runtime=self._v2_runtime,
+        )
         return ShadowRunResult(
             shared_run_id,
             instant,
@@ -290,6 +299,7 @@ def build_live_shadow_pipeline(
     ledger_path: Path = LEDGER_PATH,
     data_root: Path | None = None,
     operational_config: OperationalConfig | None = None,
+    v2_runtime: V2ExecutionRuntime | None = None,
 ) -> ShadowPipeline:
     """Build the public-read-only pipeline; no credentials or order client exist."""
     run_at = _utc(run_at_utc)
@@ -337,6 +347,7 @@ def build_live_shadow_pipeline(
             Path(data_root) if data_root is not None else PROJECT_ROOT / operational.persistence.artifact_root
         ),
         ledger_path=ledger_path,
+        v2_runtime=v2_runtime,
     )
 
 
