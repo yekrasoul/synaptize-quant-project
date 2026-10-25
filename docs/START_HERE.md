@@ -10,6 +10,7 @@ This repository contains the BTC Adaptive DCA V1 project and its evolving execut
 4. [Ledger reconciliation](../btc_dca_bridge/docs/LEDGER_RECONCILIATION.md) and [Ledger Gateway](../btc_dca_bridge/docs/LEDGER_GATEWAY.md) for accounting authority.
 5. [Source of truth](reference/source-of-truth.md) and [glossary](reference/glossary.md) for concise navigation and terms.
 6. [Agent Working Agreement](../AGENTS.md) and [Resume Protocol](continuity/RESUME_PROTOCOL.md) for focused engineering and recovering interrupted work, with the [task checkpoint template](continuity/TASK_CHECKPOINT.md).
-7. [Thin Project Instructions template](../btc_dca_bridge/docs/PROJECT_INSTRUCTIONS_TEMPLATE.md) for the optional, manually applied ChatGPT Project bootstrap (not runtime policy).
+7. [Codebase-to-PR Workflow](ENGINEERING_WORKFLOW.md) for one lightweight development, verification, and review path.
+8. [Thin Project Instructions template](../btc_dca_bridge/docs/PROJECT_INSTRUCTIONS_TEMPLATE.md) for the optional, manually applied ChatGPT Project bootstrap (not runtime policy).
 
 Historical phase documents remain useful evidence of past decisions. Follow current configuration and canonical contracts where historical text conflicts.
