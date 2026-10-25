@@ -28,7 +28,7 @@ from btc_dca_bridge.execution_v2.oms import InMemoryOms
 from btc_dca_bridge.execution_v2.service import ExecutionService
 from btc_dca_bridge.live_order import LiveOrderEngine, ReconciliationEvidence
 from btc_dca_bridge.market_data.http import HttpResponse
-from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
+from btc_dca_bridge.risk.engine import MarketEvidenceBinding, RiskContext, RiskEngine
 from btc_dca_bridge.venues.base import (
     DeterministicVenueRejection,
     VenueReconciliation,
@@ -40,6 +40,11 @@ DECISION = {
     "strategy_version": "1.0.0",
     "decision_id": "decision-parity",
     "final_purchase_usd": 25,
+    "market_snapshot_id": "market-parity",
+    "market_snapshot_sha256": "a" * 64,
+    "sentiment_snapshot_id": "sentiment-parity",
+    "sentiment_snapshot_sha256": "b" * 64,
+    "fear_greed_index": 35,
 }
 RUN_ID = "run_20261025T000000Z_parity"
 CREATED = "2026-10-25T00:00:00Z"
@@ -59,6 +64,7 @@ def v2_context(**changes: object) -> RiskContext:
         False,
         False,
         venue_health="healthy",
+        market_evidence=MarketEvidenceBinding("decision-parity", "market-parity", "a" * 64, "sentiment-parity", "b" * 64, True, 35),
     )
     return replace(base, **changes)
 

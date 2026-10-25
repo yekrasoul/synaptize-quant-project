@@ -15,7 +15,7 @@ from btc_dca_bridge.core.state import ExecutionState, Order
 from btc_dca_bridge.execution_v2.service import ExecutionService, VenueHealthRiskContextProvider, UnifiedSpendRiskContextProvider
 from btc_dca_bridge.infrastructure.accounting_repository import JsonAccountingRepository
 from btc_dca_bridge.infrastructure.execution_repository import JsonExecutionRepository
-from btc_dca_bridge.risk.engine import RiskContext, RiskEngine
+from btc_dca_bridge.risk.engine import MarketEvidenceBinding, RiskContext, RiskEngine
 from btc_dca_bridge.venues.base import AmbiguousSubmissionError, DeterministicVenueRejection, VenueOrderAcknowledgement, VenueReconciliation
 from btc_dca_bridge.venues.health import VenueCircuitBreaker
 
@@ -55,11 +55,12 @@ def _concurrent_service_resume(root: str, start, results) -> None:
 
 
 def intent() -> OrderIntent:
-    return OrderIntent("intent-durable", "adaptive_dca_v1", "decision-durable", Market(Asset("BTC"), Asset("USDT")), Side.BUY, OrderType.MARKET, Decimal("25"), "bybit", "dca-durable-1", "2026-10-24T00:00:00Z")
+    return OrderIntent("intent-durable", "adaptive_dca_v1", "decision-durable", Market(Asset("BTC"), Asset("USDT")), Side.BUY, OrderType.MARKET, Decimal("25"), "bybit", "dca-durable-1", "2026-10-24T00:00:00Z", "market-durable", "a" * 64, "sentiment-durable", "b" * 64, 35)
 
 
 def context(**changes) -> RiskContext:
-    values = dict(calendar_month="2026-10", monthly_spend=Decimal("0"), monthly_cap=Decimal("500"), runtime_execution_enabled=True, kill_switch_active=False, market_data_fresh=True, account_identity=AccountIdentity("bybit", "account"), expected_account_fingerprint="account", quote_balance=Decimal("100"), unresolved_execution_exists=False, duplicate_execution_exists=False, venue_health="healthy")
+    decision_id = changes.pop("decision_id", "decision-durable")
+    values = dict(calendar_month="2026-10", monthly_spend=Decimal("0"), monthly_cap=Decimal("500"), runtime_execution_enabled=True, kill_switch_active=False, market_data_fresh=True, account_identity=AccountIdentity("bybit", "account"), expected_account_fingerprint="account", quote_balance=Decimal("100"), unresolved_execution_exists=False, duplicate_execution_exists=False, venue_health="healthy", market_evidence=MarketEvidenceBinding(decision_id, "market-durable", "a" * 64, "sentiment-durable", "b" * 64, True, 35))
     values.update(changes); return RiskContext(**values)
 
 
@@ -124,11 +125,11 @@ class DurableExecutionV2Tests(unittest.TestCase):
         with TemporaryDirectory() as root:
             breaker = VenueCircuitBreaker(); source = Provider(context())
             venue = Venue()
-            service = self.service(root, venue, VenueHealthRiskContextProvider(source, breaker))
+            service = self.service(root, venue, VenueHealthRiskContextProvider(Provider(context(decision_id="next")), breaker))
             result = service.execute(intent(), context())
             self.assertEqual((result.order.state, venue.posts), (ExecutionState.BLOCKED, 0))
             breaker.record_success()
-            result = self.service(root, venue, VenueHealthRiskContextProvider(source, breaker)).execute(OrderIntent("next", "adaptive_dca_v1", "next", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-client", "2026-10-24T00:00:00Z"), context())
+            result = self.service(root, venue, VenueHealthRiskContextProvider(Provider(context(decision_id="next")), breaker)).execute(OrderIntent("next", "adaptive_dca_v1", "next", intent().market, intent().side, intent().order_type, Decimal("25"), "bybit", "next-client", "2026-10-24T00:00:00Z", "market-durable", "a" * 64, "sentiment-durable", "b" * 64, 35), context(decision_id="next"))
             self.assertEqual(venue.posts, 1)
 
     def test_final_risk_reads_unified_confirmed_spend_before_claim(self):

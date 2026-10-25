@@ -13,6 +13,17 @@ from ..core.models import AccountIdentity, OrderIntent, Side
 
 
 @dataclass(frozen=True)
+class MarketEvidenceBinding:
+    decision_id: str
+    market_snapshot_id: str
+    market_snapshot_sha256: str
+    sentiment_snapshot_id: str
+    sentiment_snapshot_sha256: str
+    verified: bool
+    fear_greed_index: int | None = None
+
+
+@dataclass(frozen=True)
 class RiskContext:
     calendar_month: str
     monthly_spend: Decimal
@@ -30,6 +41,7 @@ class RiskContext:
     allowed_market: str = "BTC/USDT:spot"
     leverage_enabled: bool = False
     borrowing_enabled: bool = False
+    market_evidence: MarketEvidenceBinding | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +80,18 @@ class RiskEngine:
             reasons.append("BORROWING_PROHIBITED")
         if not context.market_data_fresh:
             reasons.append("STALE_MARKET_DATA")
+        evidence = context.market_evidence
+        if (
+            evidence is None
+            or not evidence.verified
+            or evidence.decision_id != intent.decision_id
+            or evidence.market_snapshot_id != intent.market_snapshot_id
+            or evidence.market_snapshot_sha256 != intent.market_snapshot_sha256
+            or evidence.sentiment_snapshot_id != intent.sentiment_snapshot_id
+            or evidence.sentiment_snapshot_sha256 != intent.sentiment_snapshot_sha256
+            or evidence.fear_greed_index != intent.fear_greed_index
+        ):
+            reasons.append("MARKET_DATA_EVIDENCE_UNVERIFIED")
         if context.account_identity is None or context.account_identity.fingerprint != context.expected_account_fingerprint:
             reasons.append("ACCOUNT_IDENTITY_MISMATCH")
         if context.unresolved_execution_exists:
