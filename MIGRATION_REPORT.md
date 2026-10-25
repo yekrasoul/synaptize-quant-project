@@ -24,10 +24,10 @@ migration is meant to preserve. They are explicitly legacy debt, not V2 owners.
 
 ## Remaining gates
 
-Before activation: obtain a controlled, non-production Bybit/CCXT signed-wire
-and response capture; verify credential scope/account identity; then route all
-production submission through V2 and remove the legacy submit path in a
-separately reviewable change.
+Before activation: obtain direct authenticated evidence for credential scope,
+intended account/environment, and withdrawal exclusion; prove operational V2
+Production Shadow parity; then route all production submission through V2 and
+remove the legacy submit path in a separately reviewable change.
 
 ## Durable safety layer
 
@@ -35,8 +35,9 @@ This phase adds a V2-only durable execution repository, crash/restart recovery,
 client-identity reconciliation, fresh-risk provider, venue-health risk input,
 and idempotent accounting repository. This branch adds a schema-validated
 `execution_record_v2` projection and read-only Production Shadow V2
-planning/mapping parity. Live request-byte parity and cutover from the legacy
-submit path remain unverified activation blockers; V2 remains fail-closed.
+planning/mapping parity. Pinned-CCXT offline signed-wire characterization is
+now verified, but authenticated account/response parity and cutover from the
+legacy submit path remain activation blockers; V2 remains fail-closed.
 The full matrix is in [`BYBIT_CCXT_CUTOVER.md`](BYBIT_CCXT_CUTOVER.md).
 
 The durable claim is filesystem compare-and-set, not an in-memory lock:
@@ -51,12 +52,14 @@ no POST and cannot overwrite the winner's unresolved lifecycle state.
 
 ## Wire parity and writer audit
 
-A no-network CCXT interception test now executes the real installed Bybit
-CCXT order constructor from `ExecutionService` and records its generated V5
-Spot request. This verifies quote-denominated BTC/USDT market-buy mapping,
-`marketUnit=quoteCoin`, `isLeverage=0`, and canonical `orderLinkId` at the
-closest safe pre-network boundary. It does not verify signed HTTP bytes or
-headers, so `bybit_ccxt_request_mapping` remains PARTIALLY VERIFIED.
+A no-network CCXT interception test now executes the real pinned Bybit CCXT
+order constructor and captures the signed request at the exchange instance's
+`fetch(url, method, headers, body)` boundary. It verifies the V5 method/path,
+body, authentication-header structure, deterministic timestamp/receive-window,
+quote-denominated BTC/USDT market-buy mapping, `marketUnit=quoteCoin`,
+`isLeverage=0`, and canonical `orderLinkId`, while a socket guard proves zero
+network I/O. This is offline characterization only; account/environment,
+withdrawal, response, and operational Production Shadow evidence remain open.
 
 The writer audit finds zero production-reachable network writers on committed
 main: V2 is not wired into a CLI, and the historical canary writer is blocked

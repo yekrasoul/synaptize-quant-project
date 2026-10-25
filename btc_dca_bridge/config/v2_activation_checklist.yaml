@@ -11,7 +11,7 @@ requirements:
   venue_health_circuit_breaker: VERIFIED
   account_environment_identity: NOT_VERIFIED
   credential_scope_withdrawal_exclusion: NOT_VERIFIED
-  bybit_ccxt_request_mapping: PARTIALLY_VERIFIED
+  bybit_ccxt_request_mapping: VERIFIED
   acknowledgement_fill_fee_parity: VERIFIED
   canonical_execution_record_schema: VERIFIED
   reconciliation_gated_durable_accounting: VERIFIED

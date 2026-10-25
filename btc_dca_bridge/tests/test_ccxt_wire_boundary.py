@@ -1,11 +1,14 @@
 """No-network characterization of the V2 CCXT -> Bybit order boundary."""
 from __future__ import annotations
 
+import json
+import socket
 from decimal import Decimal
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 import unittest
 from unittest.mock import patch
 
@@ -69,6 +72,37 @@ class RecordingBybit:
         return {"retCode": 0, "result": {"orderId": "wire-order-1", "orderLinkId": "wire-client-identity"}}
 
 
+class SignedWireRecorder:
+    """Capture CCXT's signed request immediately before its HTTP transport."""
+
+    def __init__(self) -> None:
+        self.api_key = "fixture-api-key"
+        self.secret = "fixture-secret"
+        self.requests: list[dict[str, object]] = []
+        self.exchange = ccxt.bybit({
+            "apiKey": self.api_key,
+            "secret": self.secret,
+            "options": {"defaultType": "spot"},
+        })
+        market = {
+            "id": "BTCUSDT", "symbol": "BTC/USDT", "base": "BTC", "quote": "USDT",
+            "baseId": "BTC", "quoteId": "USDT", "settle": None, "type": "spot",
+            "spot": True, "margin": False, "swap": False, "future": False, "option": False,
+            "contract": False, "linear": False, "inverse": False, "active": True,
+            "precision": {"amount": 0.000001, "price": 0.01, "cost": 0.01},
+            "limits": {"amount": {"min": 0.00001, "max": None}, "price": {"min": None, "max": None}, "cost": {"min": 10, "max": None}},
+        }
+        self.exchange.markets = {"BTC/USDT": market}
+        self.exchange.markets_by_id = {"BTCUSDT": [market]}
+        self.exchange.is_unified_enabled = lambda: (True, True)
+        self.exchange.nonce = lambda: 1_700_000_000_000
+        self.exchange.fetch = self._record_fetch  # type: ignore[method-assign]
+
+    def _record_fetch(self, url, method="GET", headers=None, body=None):
+        self.requests.append({"url": url, "method": method, "headers": dict(headers or {}), "body": body})
+        return {"retCode": 0, "result": {"orderId": "wire-order-1", "orderLinkId": "wire-client-identity"}}
+
+
 class CcxtWireBoundaryTests(unittest.TestCase):
     def _service(self, recorder: RecordingBybit) -> ExecutionService:
         venue = CcxtVenueAdapter("bybit", recorder.exchange, identity_factory=lambda _: "account-1")
@@ -101,6 +135,37 @@ class CcxtWireBoundaryTests(unittest.TestCase):
         self.assertEqual((uncertain_result.order.state, len(uncertain.requests)), (ExecutionState.AMBIGUOUS, 1))
         self.assertEqual(duplicate.risk_status, "DUPLICATE_OR_RECONCILIATION_REQUIRED")
         self.assertEqual(len(uncertain.requests), 1)
+
+    def test_ccxt_signs_expected_bybit_v5_request_without_network_io(self):
+        recorder = SignedWireRecorder()
+        venue = CcxtVenueAdapter("bybit", recorder.exchange, identity_factory=lambda _: "account-1")
+
+        with patch.object(socket.socket, "connect", side_effect=AssertionError("network I/O is forbidden")):
+            acknowledgement = venue.submit_once(intent())
+
+        self.assertEqual(acknowledgement.client_order_id, "wire-client-identity")
+        self.assertEqual(len(recorder.requests), 1)
+        request = recorder.requests[0]
+        parsed_url = urlparse(str(request["url"]))
+        self.assertEqual((parsed_url.path, parsed_url.query, request["method"]), ("/v5/order/create", "", "POST"))
+
+        body = json.loads(str(request["body"]))
+        self.assertEqual(
+            {key: body[key] for key in ("category", "symbol", "side", "orderType", "qty", "marketUnit", "isLeverage", "orderLinkId")},
+            {
+                "category": "spot", "symbol": "BTCUSDT", "side": "Buy", "orderType": "Market",
+                "qty": "25", "marketUnit": "quoteCoin", "isLeverage": 0,
+                "orderLinkId": "wire-client-identity",
+            },
+        )
+        headers = request["headers"]
+        assert isinstance(headers, dict)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(headers["X-BAPI-API-KEY"], recorder.api_key)
+        self.assertEqual(headers["X-BAPI-TIMESTAMP"], "1700000000000")
+        self.assertEqual(headers["X-BAPI-RECV-WINDOW"], "5000")
+        self.assertTrue(headers["X-BAPI-SIGN"])
+        self.assertNotIn(recorder.secret, repr(request))
 
 
 class CurrentWriterReachabilityTests(unittest.TestCase):
