@@ -2,10 +2,14 @@
 
 Versioned foundation for the BTC Adaptive DCA strategy. The canonical implementation lives in [`btc_dca_bridge/`](btc_dca_bridge/README.md).
 
-It is recommendation-first and fail-closed. A narrowly scoped guarded execution
-engine exists for future explicitly authorized operation, but checked-in
-production defaults disable it and the external quote-limit blocker prevents
-production execution today.
+Normal V1 operation is recommendation-first. V2 execution routing is gated and
+production activation remains blocked by incomplete readiness evidence.
+
+For current architecture, readiness, and documentation navigation, start with
+the [Docs-as-Code entrypoint](docs/START_HERE.md) and
+[project baseline](docs/PROJECT_BASELINE.md). Current evidence shows activation
+is blocked by incomplete account/credential evidence and operational Shadow
+parity, not the previously reported quote-limit blocker.
 
 ## Architecture and operations index
 

@@ -2,9 +2,16 @@
 
 Baseline: `03e5c018b3b7cb416e418c07080c36cedd13e89c` (canonical `main`).
 
-This is a documentation-only audit. It does not enable execution, change V1
-economics, remove a writer, or change the activation checklist. The committed
-activation decision remains `BLOCKED`.
+This audit records the migration plan and historical responsibilities. Its
+original component matrix and Gate Reality snapshot predate the completed V2
+single-writer cutover and are not current reachability evidence. Current state:
+the legacy `canary-execute` writer is permanently retired, `btc-dca execute`
+routes only to V2 after gates, and the activation checklist marks
+`one_reachable_production_submit_path: VERIFIED`. Activation remains
+`BLOCKED` because account/credential evidence is incomplete and Production
+Shadow V2 pre-network evidence is only partially verified. See the
+[current V2 cutover record](BYBIT_CCXT_CUTOVER.md) and
+[activation checklist](btc_dca_bridge/config/v2_activation_checklist.yaml).
 
 ## Classification rules
 
@@ -121,7 +128,8 @@ candidate for cleanup, but no cleanup is required to establish this audit.
 
 ## Gate reality
 
-The checklist remains unchanged:
+The checklist values below describe the state when this audit was written and
+are superseded by the current activation checklist linked above:
 
 ```text
 account_environment_identity              NOT_VERIFIED

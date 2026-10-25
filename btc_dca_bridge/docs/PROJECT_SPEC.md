@@ -4,7 +4,7 @@
 
 This repository provides the auditable foundation for BTC Adaptive DCA V1: collect valid market data, produce a deterministic purchase recommendation, reconcile confirmed spot purchases, and notify an operator. It is a disciplined six-month accumulation workflow, not a price-prediction or trading system.
 
-The repository contains the production-shadow path plus guarded Phase 5 canary/live-order components. Normal V1 operation remains recommendation-only: checked-in execution configuration keeps live execution disabled, the kill switch enabled, and order submission unavailable. No standing authorization, custody logic, leverage, or V2 indicator/rule change is implied by the presence of those guarded components.
+The repository contains the production-shadow path and V2 execution architecture. Normal V1 operation remains recommendation-only, and activation remains blocked by the checked-in activation controls. The legacy Phase 5 `canary-execute` writer is retired and fail-closed. No standing authorization, custody logic, leverage, or V2 indicator/rule change is implied by the presence of execution components.
 
 ## 2. Canonical sources of truth
 
@@ -31,9 +31,8 @@ were retired in Phase 3.9. They are not valid compatibility or recovery paths.
 ## 3. Component boundaries
 
 ```text
-Bybit Spot ─┐
-Binance Spot├─> ordered atomic source selector ─> MarketSnapshot ─> deterministic V1 engine ─> Decision
-KuCoin Spot ┘                                      ▲                                  │
+Bybit Spot ────────────────────────────────────────> MarketSnapshot ─> deterministic V1 engine ─> Decision
+                                                                                         ▲
 Alternative.me Fear & Greed ──────────────────────┘                                  ├─> Telegram / operator output
 Execution evidence ─> LedgerGateway ─> execution ledger ─> PortfolioState ───────────┘
 ```
@@ -50,11 +49,11 @@ The canonical config preserves the approved V1 rules exactly: $10 daily core/min
 
 A current price above its stated rolling 7-day high is contradictory input. It is rejected rather than clamped or converted into a positive drawdown.
 
-The normal daily V1 calculation is recommendation-only. An operator executes any purchase separately and reconciles it after confirmation. Guarded Phase 5 canary/live-order code is outside the normal daily path and remains blocked by checked-in production defaults unless a separate, explicit authorization process changes those controls.
+The normal daily V1 calculation is recommendation-only. Confirmed purchases are reconciled into the canonical ledger. The V2 `btc-dca execute` route is gated by activation controls; the legacy Phase 5 writer is retired. See the [V2 cutover record](../../BYBIT_CCXT_CUTOVER.md) for routing and activation evidence.
 
 ## 5. Failure policy
 
-- Missing, stale, contradictory, incomplete, or invalid approved-Spot market data fails closed; no allocation is fabricated.
+- Missing, stale, contradictory, incomplete, or invalid Bybit Spot market data fails closed; no allocation is fabricated.
 - Market source is fixed to Bybit BTCUSDT Spot. There is no cross-exchange fallback. A price from another venue may never be used for a V1 decision.
 - Perpetuals, futures, options, mark/index prices, leveraged products, TradingView runtime fallback, unapproved exchanges, and mixed-source calculations are prohibited for V1 execution inputs.
 - Invalid Fear & Greed data also yields `data_unavailable`; it is a required V1 input for a final recommendation.
