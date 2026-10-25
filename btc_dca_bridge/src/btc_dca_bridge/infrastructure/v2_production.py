@@ -20,6 +20,25 @@ from ..venues.health import VenueCircuitBreaker
 
 MAX_DECISION_AGE = timedelta(minutes=15)
 MAX_CLOCK_SKEW = timedelta(minutes=5)
+EXPECTED_BYBIT_ENVIRONMENT = "mainnet"
+
+
+def _account_identity_fingerprint(*, identity: str | None, environment: str | None, account: object) -> str:
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError("provider-backed account identity is unavailable")
+    if environment != EXPECTED_BYBIT_ENVIRONMENT:
+        raise ValueError("authenticated Bybit environment is not production mainnet")
+    material = "|".join(
+        (
+            "Bybit",
+            environment,
+            identity,
+            str(account.unified_margin_status),
+            str(account.margin_mode),
+            str(account.spot_hedging_status),
+        )
+    )
+    return hashlib.sha256(material.encode()).hexdigest()
 
 
 class BybitProductionAccountContext:
@@ -57,12 +76,16 @@ class BybitProductionAccountContext:
             balances = self.client.wallet_balances()
             availability = self.client.spot_quote_availability()
             server_time_ms = self.client.server_time_ms()
+            fingerprint = _account_identity_fingerprint(
+                identity=credential.identity,
+                environment=self.client.environment,
+                account=account,
+            )
         except Exception as exc:
             self.breaker.record_failure(type(exc).__name__)
             raise
 
         self.breaker.record_success()
-        fingerprint = hashlib.sha256(str(account).encode()).hexdigest()
         created = datetime.fromisoformat(intent.created_at_utc.replace("Z", "+00:00"))
         if created.tzinfo is None:
             raise ValueError("intent timestamp must be timezone-aware")

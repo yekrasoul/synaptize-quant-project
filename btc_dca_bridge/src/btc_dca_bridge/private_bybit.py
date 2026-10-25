@@ -295,6 +295,14 @@ class SignedBybitTransport:
         self.api_key, self._api_secret = api_key, api_secret
         self._clock, self.timeout_seconds, self.max_attempts, self._sleep = clock or (lambda: int(time.time() * 1000)), timeout_seconds, max_attempts, sleep
 
+    @property
+    def environment(self) -> str | None:
+        """Return the environment established by the configured Bybit host."""
+        return {
+            "api.bybit.com": "mainnet",
+            "api-testnet.bybit.com": "testnet",
+        }.get(self._host)
+
     def get(self, path: str, params: Mapping[str, str], headers: Mapping[str, str]) -> HttpResponse:
         if path not in PRIVATE_GET_ALLOWLIST | PUBLIC_GET_ALLOWLIST: raise PermissionError("endpoint is not in the read-only allowlist")
         query = canonical_query(params)
@@ -325,6 +333,11 @@ class SignedBybitTransport:
 
 class BybitPrivateReadClient:
     def __init__(self, transport: ReadTransport): self._transport = transport
+
+    @property
+    def environment(self) -> str | None:
+        """Expose only the transport-derived environment binding."""
+        return getattr(self._transport, "environment", None)
 
     @classmethod
     def from_environment(cls, *, transport_factory: Callable[[str, str], ReadTransport] = SignedBybitTransport) -> "BybitPrivateReadClient":
