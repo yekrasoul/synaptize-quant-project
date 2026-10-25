@@ -105,11 +105,38 @@ retried; persistent rate limiting, non-2xx status, timeout, connection failure,
 and malformed success payloads raise typed notification errors. Error messages
 never contain the bot token or chat ID.
 
-A success message includes the canonical market source, price, 7D high,
-drawdown, numeric Fear & Greed value, allocations, monthly state, final
-purchase, and run ID. It ends with the shadow recommendation and `NO ORDER
-EXECUTED`. A failed pipeline sends stage, typed category, source when available,
-timestamp, run ID, and the same no-order statement without a traceback.
+Telegram success output is a concise operational view of canonical values; it is
+not canonical state. Its deterministic contract is:
+
+```text
+BTC DCA — SHADOW
+BTC/USDT · Bybit
+Price: $<price>
+7D High: $<7d high>
+Drawdown: <drawdown>%
+Fear & Greed: <value>
+
+Base: $<base> · Multiplier: x<multiplier>
+Allocation: $<allocation>
+
+Month: $<spent> / $500
+Remaining: $<remaining>
+
+DECISION: BUY $<allocation> BTC
+EXECUTION: NONE — SHADOW
+
+run: <run_id>
+```
+
+Prices, highs, and monetary values use fixed-point presentation with at most two
+decimal places; drawdown uses two decimal places; the multiplier is concise.
+Formatting rounds for display only and does not recalculate the V1 decision.
+There are no daily-execution policy warnings in Telegram prose.
+
+A failed pipeline sends `Stage`, `Reason`, and only available `Source`, `HTTP`,
+`Retryable`, and `Cause` fields, followed by `EXECUTION: NONE` and the run ID.
+Tracebacks, raw responses, and secrets remain excluded. Telegram is not
+canonical state.
 
 Notification is not canonical state. If delivery fails after a completed and
 retained run, the job fails as `NOTIFICATION_FAILED` (or its more specific typed
@@ -123,7 +150,7 @@ Manual read-only production shadow:
 1. Open the **Production shadow** workflow in GitHub Actions.
 2. Choose **Run workflow** on the desired reviewed ref.
 3. Confirm the job summary shows one run ID, retention success, Telegram sent,
-   and `SHADOW — NO ORDER EXECUTED`.
+   and shadow execution remains disabled.
 
 For a failed workflow:
 
