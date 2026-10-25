@@ -64,17 +64,20 @@ This shared-path capability is VERIFIED by tests. Operational Production Shadow
 parity is only PARTIALLY VERIFIED until the runtime can supply safe current
 account and venue context; its current `NOT_VERIFIED` output is intentional.
 
-## CCXT pre-network boundary
+## CCXT signed pre-transport boundary
 
-The V2 writer is exercised without credentials in
-`test_ccxt_wire_boundary.py`. The test runs the actual installed CCXT Bybit
-`create_order` implementation with account probing and the final generated
-POST method replaced by fixtures. It proves the durable service reaches one
-CCXT request builder after its claim and produces the intended Bybit Spot
-quote-buy request, including `marketUnit=quoteCoin`, `isLeverage=0`, and
-`orderLinkId`. It also proves deterministic rejection versus ambiguous timeout
-semantics and no automatic re-submit.
+The V2 writer is characterized without credentials in
+`test_ccxt_wire_boundary.py`. One test runs the actual pinned CCXT 4.5.90
+Bybit `create_order` implementation with dummy credentials and replaces only
+the exchange instance's final `fetch(url, method, headers, body)` transport.
+The test captures CCXT's signed request after `sign()` and before any network
+I/O, proving the V5 method/path, JSON body, authentication-header structure,
+timestamp/receive-window fields, and canonical Spot quote-buy parameters.
+The socket-connect guard proves zero network writes. Separate tests continue to
+prove deterministic rejection versus ambiguous timeout semantics and no
+automatic re-submit.
 
-It does not prove signed bytes, authentication headers, or a live HTTP path.
-Those are intentionally NOT VERIFIED; V2 remains fail-closed and has no
-production CLI composition on committed main.
+This verifies the pinned CCXT offline signed representation, not an
+authenticated production account/environment, withdrawal exclusion, live
+response parity, or operational Production Shadow parity. V2 remains
+fail-closed and has no production CLI composition on committed main.

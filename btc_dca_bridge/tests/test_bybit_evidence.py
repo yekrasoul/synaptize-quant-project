@@ -28,6 +28,12 @@ class BybitEvidenceTests(unittest.TestCase):
         forbidden = {"api_key", "api_secret", "secret", "signature", "headers", "raw_response"}
         self.assertFalse(forbidden & set(payload))
 
+    def test_operator_environment_label_does_not_prove_authenticated_identity(self):
+        payload = capture(ReadOnlyFixture(), environment="production")
+        self.assertEqual(payload["environment"], "production")
+        self.assertEqual(payload["withdrawal_permission_status"], "UNKNOWN")
+        self.assertNotIn("account_environment_identity", payload)
+
     def test_capture_port_has_only_the_four_read_operations(self):
         methods = {name for name, value in BybitEvidenceReadPort.__dict__.items() if callable(value) and not name.startswith("_")}
         self.assertEqual(methods, {"credential_info", "account_info", "wallet_balances", "server_time_ms"})
