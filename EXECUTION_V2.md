@@ -10,9 +10,11 @@ after that boundary becomes `AMBIGUOUS`; it cannot transition to a new
 submission. Only reconciliation may subsequently establish venue truth.
 
 `btc-dca execute --decision-json ...` is the V2 non-interactive entry point.
-The committed policy blocks it before credentials or network access. Enabling
-live submission is intentionally deferred until CCXT/Bybit parity fixtures and
-durable V2 execution-record persistence are accepted.
+The committed policy blocks it before credentials or network access. The CLI routes `execute` exclusively to the gated V2 production runtime; the
+legacy `canary-execute` writer is retired and fails closed. The checked-in
+activation checklist and runtime policy block execution before private-client
+construction or network access. Routing tests do not establish operational
+account readiness or permission to submit orders.
 
 ## Durable recovery and network boundary
 
@@ -79,5 +81,6 @@ automatic re-submit.
 
 This verifies the pinned CCXT offline signed representation, not an
 authenticated production account/environment, withdrawal exclusion, live
-response parity, or operational Production Shadow parity. V2 remains
-fail-closed and has no production CLI composition on committed main.
+response parity, or operational Production Shadow parity. V2 remains fail-closed on committed main even though its sole production
+`execute` CLI route composes the V2 runtime behind independent activation and
+runtime-policy gates.
