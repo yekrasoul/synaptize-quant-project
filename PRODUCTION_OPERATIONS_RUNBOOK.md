@@ -11,15 +11,18 @@ btc-dca contract-status --json
 btc-dca preauthorization-status --json
 ```
 
-Expected current state: software health
-`HEALTHY_BLOCKED_EXTERNAL_DEPENDENCY`; production readiness `NOT_READY`;
-preauthorization `BLOCKED`; blocker `BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED`; and
-authorization `NOT_AUTHORIZED`. A production block is not permission to work
-around a failed gate.
-
-The `btc-dca` spelling is the operator-installed command wrapper. In a source
-checkout without that wrapper, run the equivalent as
-`uv run python -m btc_dca_bridge <command> ...` from `btc_dca_bridge/`.
+These commands report the legacy observe-only operations model and may not
+reflect current V2 activation blockers. Do **not** interpret old
+`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` results as the V2 readiness decision:
+the current quote-limit policy does not require an independently exposed
+quote-unit maximum. Confirm actual output against
+[`v2_activation_checklist.yaml`](btc_dca_bridge/config/v2_activation_checklist.yaml)
+and [`runtime_execution_policy.yaml`](btc_dca_bridge/config/runtime_execution_policy.yaml).
+V2 is presently `BLOCKED`, execution is disabled, and the kill switch is
+active. Account/environment identity, credential withdrawal exclusion and
+operational Shadow evidence remain incomplete; no execution authorization is
+implied. The only gated CLI writer route is `btc-dca execute`;
+`canary-execute` is permanently retired and fail-closed.
 
 ## Immutable checkpoint
 
@@ -48,33 +51,24 @@ order for that identity. Never retry or top up. Use only the existing
 `reconcile-existing` recovery path for the exact prior identity; it is a
 no-POST recovery operation. Do not edit the canonical ledger manually.
 
-## External contract blocker
+## Quote-limit policy and historical workflow
 
-`BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` means the supported Bybit contract does not
-currently provide an approved, authoritative quote-denominated maximum for a
-BTCUSDT Spot Market Buy sized with `marketUnit=quoteCoin`. No base-quantity ×
-price estimate, wallet arithmetic, pre-check POST, or other substitute is
-approved. **No safe workaround is approved.** Production execution remains
-disabled while this blocker is active.
+The old Phase 5 guidance treated `BYBIT_QUOTE_UNIT_MAX_NOT_EXPOSED` as a
+required external blocker and described a future `canary-execute`
+authorization sequence. That sequence is **historical and not an active
+production activation procedure**. The current
+[`QuoteUnitLimitPolicy`](btc_dca_bridge/src/btc_dca_bridge/quote_limits.py)
+has `quote_unit_maximum_required=False`; no base-quantity × price estimate
+or substitute quote ceiling is approved. The exchange may still reject a
+submitted quote-sized order; no retry/top-up is implied.
 
-## Future activation boundary
+For current V2 execution readiness, use the activation checklist, runtime
+policy, [V2 cutover](BYBIT_CCXT_CUTOVER.md), and
+[Execution V2](EXECUTION_V2.md) together. All independent readiness and
+account/credential gates must be satisfied through authorized operational
+evidence before any activation; this runbook neither authorizes nor
+initiates an order.
 
-A future real-money canary requires every step below, in order; no step may be
-skipped:
-
-1. An authoritative quote-unit maximum becomes available in an official Bybit contract.
-2. The official source and its exact semantics are researched.
-3. The endpoint and field receive manual review for the precise Spot operation.
-4. The production quote-limit policy is explicitly updated in reviewed source code.
-5. The shared validator and tests are updated and pass.
-6. The change is reviewed and merged.
-7. Fresh, build- and host-bound production evidence is collected.
-8. Production readiness reports ready.
-9. Preauthorization reports ready.
-10. The user separately provides explicit real-money authorization for the exact canary.
-
-Evidence, readiness, credentials, a canary manifest, or a software merge is
-not authorization. This runbook stops before approval or execution.
 # Quote-sized order constraint
 
 The live payload is an exact Bybit Spot BTCUSDT Market Buy with
